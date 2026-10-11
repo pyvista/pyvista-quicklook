@@ -404,6 +404,7 @@ def test_parser_accepts_every_subcommand():
         ['plist', '--app', 'a.plist', '--extension', 'e.plist'],
         ['config', '--init'],
         ['cache', '--clear'],
+        ['finder'],
         ['doctor'],
         ['daemon'],
         ['service', '--install'],

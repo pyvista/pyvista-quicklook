@@ -3,17 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-import plistlib
 import re
 import shlex
 import subprocess
-import sys
 import tomllib
 
 import pytest
-
-from pyvista_quicklook import daemon as daemon_mod
-from pyvista_quicklook import plist as plist_mod
 
 ROOT = Path(__file__).parents[1]
 INSTALLER = ROOT / 'scripts' / 'install-from-source.sh'
@@ -178,78 +173,55 @@ def test_a_failed_finder_restart_does_not_stop_the_install(tmp_path):
     assert result.stdout.endswith('reached the end\n'), result.stderr
 
 
-def test_without_a_terminal_the_installer_says_how_to_finish():
-    """With no terminal to ask on, the installer prints the remedy and goes on."""
-    dispatch = script_lines('if [[ "$STALE_FINDER" == 1 ]]; then', '\nfi\n')
-    result = run_strict(
-        f'STALE_FINDER=1\nrestart_finder() {{ echo asked; }}\n{dispatch}',
+def check_finder(tmp_path, helper_body):
+    """Run the installer's Finder check, with no terminal, against a stand-in pvql."""
+    helper = tmp_path / 'pvql'
+    helper.write_text(f'#!/bin/sh\n{helper_body}\n')
+    helper.chmod(0o755)
+    check = script_lines('if [[ "$("$HELPER" finder', '\nfi\n')
+    return run_strict(
+        f'HELPER={shlex.quote(str(helper))}\nrestart_finder() {{ echo asked; }}\n{check}',
         stdin=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+
+def test_without_a_terminal_the_installer_says_how_to_finish(tmp_path):
+    """With no terminal to ask on, a stale Finder gets the remedy and the install goes on."""
+    result = check_finder(tmp_path, 'echo stale')
     assert 'asked' not in result.stdout
     assert 'to finish the upgrade' in result.stdout
     assert result.stdout.endswith('reached the end\n'), result.stderr
 
 
-def test_an_old_install_is_looked_for_before_it_is_replaced():
-    """The old app and service are checked before the installer replaces and retires them."""
-    detection = SCRIPT.index('STALE_FINDER=0')
-    assert detection < SCRIPT.index('rm -rf "$APP"')
-    assert detection < SCRIPT.index('rm -rf "$LEGACY_APP"')
-    assert detection < SCRIPT.index('service --install')
+@pytest.mark.parametrize('helper_body', ['echo current', 'exit 1'])
+def test_a_current_finder_is_left_alone(tmp_path, helper_body):
+    """A Finder that needs no restart, or a check that fails, asks nothing and says nothing."""
+    result = check_finder(tmp_path, helper_body)
+    assert result.stdout == 'reached the end\n', result.stderr
 
 
-@pytest.mark.skipif(sys.platform != 'darwin', reason='PlistBuddy is macOS only')
-@pytest.mark.parametrize('bundle', ['PyVista Quick Look.app', 'PyVistaQuickLook.app'])
-@pytest.mark.parametrize(
-    ('identifier', 'stale'),
-    [(plist_mod.LEGACY_APP_BUNDLE_ID, '1'), (plist_mod.APP_BUNDLE_ID, '0'), (None, '0')],
-)
-def test_an_install_under_the_old_identifier_is_detected(tmp_path, bundle, identifier, stale):
-    """Only an app installed under the identifier from before 0.7.0 marks the Finder stale."""
-    if identifier:
-        contents = tmp_path / bundle / 'Contents'
-        contents.mkdir(parents=True)
-        (contents / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': identifier}))
-    assert stale_finder(tmp_path) == stale
-
-
-@pytest.mark.skipif(sys.platform != 'darwin', reason='PlistBuddy is macOS only')
-def test_an_old_service_marks_the_finder_stale(tmp_path, monkeypatch):
-    """The service from before 0.7.0 marks the Finder stale wherever that app was installed."""
-    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
-    agent = daemon_mod.legacy_agent_path()
-    agent.parent.mkdir(parents=True)
-    agent.touch()
-    assert stale_finder(tmp_path) == '1'
-
-
-def stale_finder(folder):
-    """Run the installer's detection against apps in ``folder``; return what it decided."""
-    names = script_lines('LEGACY_BUNDLE_ID=', '\n') + script_lines('LEGACY_SERVICE_PLIST=', '\n')
-    apps = (
-        f'APP={shlex.quote(str(folder / "PyVista Quick Look.app"))}\n'
-        f'LEGACY_APP={shlex.quote(str(folder / "PyVistaQuickLook.app"))}\n'
-    )
-    detection = script_lines('STALE_FINDER=0', '\ndone\n')
-    result = run_strict(f'{names}{apps}{detection}echo "$STALE_FINDER"\n')
-    assert result.returncode == 0, result.stderr
-    return result.stdout.split()[0]
+def test_the_finder_is_checked_after_the_old_extension_is_retired():
+    """Installing the service retires the old extension, which the Finder check reads."""
+    assert SCRIPT.index('service --install') < SCRIPT.index('"$HELPER" finder')
 
 
 def test_upgrades_from_before_0_7_are_retired_by_python_3_17():
     """The code that upgrades installs from before 0.7.0 goes once the app moves to Python 3.17."""
     assert tuple(int(part) for part in PYTHON_VERSION.split('.')) < (3, 17), (
         'Upgrades from before 0.7.0 are long past; remove the code that handles them:\n'
-        '- scripts/install-from-source.sh: LEGACY_BUNDLE_NAME, LEGACY_BUNDLE_ID,\n'
-        '  LEGACY_SERVICE_PLIST, LEGACY_APP and its removal, restart_finder, STALE_FINDER\n'
+        '- scripts/install-from-source.sh: LEGACY_BUNDLE_NAME, LEGACY_APP and its removal,\n'
+        '  restart_finder and the Finder check that calls it\n'
         '- pyvista_quicklook/cli.py: retire_legacy_service and its calls, the old bundle\n'
-        '  name in installed_apps, the legacy paths in uninstall_targets\n'
+        '  name in installed_apps, the legacy paths in uninstall_targets, finder_started,\n'
+        '  finder_is_stale, cmd_finder and its parser, the finder line in cmd_doctor\n'
         '- pyvista_quicklook/daemon.py: LEGACY_LABEL, legacy_agent_path, legacy_drop_dir\n'
         '- pyvista_quicklook/plist.py: LEGACY_APP_BUNDLE, LEGACY_APP_BUNDLE_ID,\n'
         '  LEGACY_EXT_BUNDLE_ID\n'
-        '- tests/test_install.py: the Finder restart and old-install tests, script_lines,\n'
-        '  run_strict, ask_to_restart_finder, stale_finder, and this test\n'
+        '- tests/test_install.py: the Finder restart and check tests, script_lines,\n'
+        '  run_strict, ask_to_restart_finder, check_finder, and this test\n'
+        '- tests/test_cli.py: the finder tests\n'
+        '- README.md: the Finder troubleshooting entry\n'
         '- tests/test_pyvista_quicklook.py: test_uninstall_removes_a_bundle_under_the_old_name,\n'
         '  test_uninstall_removes_the_service_under_the_old_label, and the old service in\n'
         '  test_service_install_runs_the_daemon_under_the_package_name\n'
