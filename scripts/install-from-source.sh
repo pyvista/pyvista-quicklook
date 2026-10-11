@@ -177,7 +177,7 @@ if [[ "$("$HELPER" finder 2>/dev/null)" == stale ]]; then
     exec 3<&-
   else
     echo
-    echo "Restart the Finder with \"killall Finder\", or log out and back in, to finish the upgrade."
+    echo "Restart the Finder with \"killall Finder\", or log out and back in, to finish installing."
   fi
 fi
 

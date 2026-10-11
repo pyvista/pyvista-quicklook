@@ -266,6 +266,7 @@ pvql warm DIR         # build previews for a directory ahead of time
 pvql warmup           # load PyVista and VTK ahead of the first preview
 pvql types            # list claimed extensions
 pvql doctor           # check every part of the integration
+pvql finder           # say whether the Finder must restart to show previews
 pvql service          # manage the render service
 pvql config --init    # write a config file with discovered defaults
 pvql cache --clear    # delete cached previews

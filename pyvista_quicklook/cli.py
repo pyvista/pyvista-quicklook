@@ -253,7 +253,8 @@ def _succeeds(command: list[str]) -> bool:
 
 def finder_started() -> float | None:
     """Return when the running Finder started, or None when no Finder is running."""
-    pids = _run(['/usr/bin/pgrep', '-x', 'Finder']).split()
+    # Other users logged in through fast user switching run Finders of their own.
+    pids = _run(['/usr/bin/pgrep', '-x', '-U', str(os.getuid()), 'Finder']).split()
     elapsed = _run(['/bin/ps', '-o', 'etime=', '-p', pids[0]]) if pids else ''
     match = re.fullmatch(r'(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)', elapsed)
     if not match:
@@ -265,10 +266,13 @@ def finder_started() -> float | None:
 def finder_is_stale() -> bool:
     """Return whether the Finder still asks for the extension by its pre-0.7.0 identifier."""
     # Retiring the old extension removes its exchange directory, which touches the folder above.
+    # Nothing else writes there, so that folder's time is when the old extension went away.
     retired = daemon_mod.legacy_drop_dir().parent
+    if not retired.is_dir():
+        return False
     started = finder_started()
     # ps reports whole seconds, so a Finder restarted right after the retirement is not stale.
-    return started is not None and retired.is_dir() and started + 2 < retired.stat().st_mtime
+    return started is not None and started + 2 < retired.stat().st_mtime
 
 
 def cmd_finder(_: argparse.Namespace) -> int:
@@ -319,6 +323,8 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     if finder_is_stale():
         problems += 1
         print('✗ finder     still asks for the old extension; run "killall Finder"')
+    else:
+        print('✓ finder     asks for the current extension')
 
     target = f'gui/{os.getuid()}/{daemon_mod.LABEL}'
     if _run(['/bin/launchctl', 'print', target]):

@@ -190,7 +190,7 @@ def test_without_a_terminal_the_installer_says_how_to_finish(tmp_path):
     """With no terminal to ask on, a stale Finder gets the remedy and the install goes on."""
     result = check_finder(tmp_path, 'echo stale')
     assert 'asked' not in result.stdout
-    assert 'to finish the upgrade' in result.stdout
+    assert 'to finish installing' in result.stdout
     assert result.stdout.endswith('reached the end\n'), result.stderr
 
 
