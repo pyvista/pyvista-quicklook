@@ -6,9 +6,6 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 BUNDLE_NAME="PyVista Quick Look"
 # Installations before 0.4.1 named the bundle after the build.
 LEGACY_BUNDLE_NAME="PyVistaQuickLook"
-# Installations before 0.7.0 used identifiers under the old owner.
-LEGACY_BUNDLE_ID="io.github.user27182.PyVistaQuickLook"
-LEGACY_SERVICE_PLIST="$HOME/Library/LaunchAgents/io.github.user27182.pvqld.plist"
 EXT_NAME="PyVistaQuickLookExtension"
 EXT_ID="org.pyvista.PyVistaQuickLook.QuickLook"
 SUPPORT="$HOME/Library/Application Support/PyVistaQuickLook"
@@ -146,20 +143,6 @@ fi
 
 APP="$DEST/$BUNDLE_NAME.app"
 LEGACY_APP="$DEST/$LEGACY_BUNDLE_NAME.app"
-# The Finder goes on asking for a replaced extension by its old identifier until it restarts.
-# The old service is found wherever the old app was installed, and is retired further down.
-STALE_FINDER=0
-if [[ -f "$LEGACY_SERVICE_PLIST" ]]; then
-  STALE_FINDER=1
-fi
-for existing in "$APP" "$LEGACY_APP"; do
-  identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
-    "$existing/Contents/Info.plist" 2>/dev/null || true)
-  if [[ "$identifier" == "$LEGACY_BUNDLE_ID" ]]; then
-    STALE_FINDER=1
-  fi
-done
-
 echo "==> installing $APP"
 mkdir -p "$DEST"
 rm -rf "$APP"
@@ -186,14 +169,15 @@ LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 echo "==> installing the render service"
 "$HELPER" service --install --helper "$HELPER"
 
-if [[ "$STALE_FINDER" == 1 ]]; then
+# A Finder started before the old extension was retired still asks for it by its old identifier.
+if [[ "$("$HELPER" finder 2>/dev/null)" == stale ]]; then
   # Under curl | sh, stdin is the script being run, so the answer comes from the terminal.
   if { exec 3</dev/tty; } 2>/dev/null; then
     restart_finder
     exec 3<&-
   else
     echo
-    echo "Restart the Finder with \"killall Finder\", or log out and back in, to finish the upgrade."
+    echo "Restart the Finder with \"killall Finder\", or log out and back in, to finish installing."
   fi
 fi
 

@@ -6,6 +6,7 @@ import argparse
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -250,6 +251,36 @@ def _succeeds(command: list[str]) -> bool:
     return completed.returncode == 0
 
 
+def finder_started() -> float | None:
+    """Return when the running Finder started, or None when no Finder is running."""
+    # Other users logged in through fast user switching run Finders of their own.
+    pids = _run(['/usr/bin/pgrep', '-x', '-U', str(os.getuid()), 'Finder']).split()
+    elapsed = _run(['/bin/ps', '-o', 'etime=', '-p', pids[0]]) if pids else ''
+    match = re.fullmatch(r'(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)', elapsed)
+    if not match:
+        return None
+    days, hours, minutes, seconds = (int(part or 0) for part in match.groups())
+    return time.time() - (((days * 24 + hours) * 60 + minutes) * 60 + seconds)
+
+
+def finder_is_stale() -> bool:
+    """Return whether the Finder still asks for the extension by its pre-0.7.0 identifier."""
+    # Retiring the old extension removes its exchange directory, which touches the folder above.
+    # Nothing else writes there, so that folder's time is when the old extension went away.
+    retired = daemon_mod.legacy_drop_dir().parent
+    if not retired.is_dir():
+        return False
+    started = finder_started()
+    # ps reports whole seconds, so a Finder restarted right after the retirement is not stale.
+    return started is not None and started + 2 < retired.stat().st_mtime
+
+
+def cmd_finder(_: argparse.Namespace) -> int:
+    """Print whether the Finder must restart before it can use the extension."""
+    print('stale' if finder_is_stale() else 'current')
+    return 0
+
+
 def cmd_doctor(_: argparse.Namespace) -> int:
     """Check that every piece of the Quick Look integration is in place."""
     config = config_mod.load()
@@ -288,6 +319,12 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     else:
         problems += 1
         print('✗ extension  not registered with pluginkit')
+
+    if finder_is_stale():
+        problems += 1
+        print('✗ finder     still asks for the old extension; run "killall Finder"')
+    else:
+        print('✓ finder     asks for the current extension')
 
     target = f'gui/{os.getuid()}/{daemon_mod.LABEL}'
     if _run(['/bin/launchctl', 'print', target]):
@@ -459,6 +496,9 @@ def build_parser() -> argparse.ArgumentParser:
     cache = sub.add_parser('cache', help='show or clear the preview cache')
     cache.add_argument('--clear', action='store_true')
     cache.set_defaults(func=cmd_cache)
+
+    finder = sub.add_parser('finder', help='say whether the Finder must restart to show previews')
+    finder.set_defaults(func=cmd_finder)
 
     doctor = sub.add_parser('doctor', help='check the Quick Look integration')
     doctor.set_defaults(func=cmd_doctor)

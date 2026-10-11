@@ -318,10 +318,10 @@ def test_uninstall_removes_the_service_under_the_old_label(installation):
     """A service installed under the io.github.user27182 label is stopped and removed."""
     tmp_path, commands = installation
     (tmp_path / 'old-agent.plist').write_text('x')
-    (tmp_path / 'old-container').mkdir()
+    cli.daemon_mod.legacy_drop_dir().mkdir(parents=True)
     assert cli.cmd_uninstall(argparse.Namespace(yes=True, all=False)) == 0
     assert not (tmp_path / 'old-agent.plist').exists()
-    assert not (tmp_path / 'old-container').exists()
+    assert not cli.daemon_mod.legacy_drop_dir().exists()
     joined = [' '.join(str(part) for part in command) for command in commands]
     assert any('bootout' in c and c.endswith(f'/{daemon.LEGACY_LABEL}') for c in joined)
 
@@ -404,6 +404,7 @@ def test_parser_accepts_every_subcommand():
         ['plist', '--app', 'a.plist', '--extension', 'e.plist'],
         ['config', '--init'],
         ['cache', '--clear'],
+        ['finder'],
         ['doctor'],
         ['daemon'],
         ['service', '--install'],

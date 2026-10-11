@@ -266,6 +266,7 @@ pvql warm DIR         # build previews for a directory ahead of time
 pvql warmup           # load PyVista and VTK ahead of the first preview
 pvql types            # list claimed extensions
 pvql doctor           # check every part of the integration
+pvql finder           # say whether the Finder must restart to show previews
 pvql service          # manage the render service
 pvql config --init    # write a config file with discovered defaults
 pvql cache --clear    # delete cached previews
@@ -275,12 +276,15 @@ pvql uninstall        # remove everything, asking first
 ## Troubleshooting
 
 Run `pvql doctor` first; it checks the helper, the app, the extension registration, the
-service, and a real preview.
+Finder, the service, and a real preview.
 
 - **The panel says the service is not answering.** Run `pvql service --install`.
 - **Nothing happens on space bar.** Confirm the type is claimed with `pvql types`, then
   check that Finder resolves it: `mdls -name kMDItemContentType yourfile.vtu` should
   report an `org.pyvista.pyvista-quicklook.*` type.
+- **The panel says "Extension org.pyvista.PyVistaQuickLook.QuickLook not found".** The
+  Finder has run since before 0.7.0 and still asks for the extension by its old
+  identifier. Run `killall Finder` once no files are being copied or moved.
 - **Previews are stale.** `pvql cache --clear`.
 - **A preview fails.** Set `"log": true` in the config; activity is appended to
   `pvql.log` beside it. The extension's own log is in
