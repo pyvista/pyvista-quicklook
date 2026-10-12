@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import sys
 
 import pytest
@@ -83,13 +84,46 @@ def test_a_scene_cached_without_its_description_is_described(tmp_path, env):
     assert not list(config.CACHE_DIR.glob('*.tmp*'))
 
 
-def test_a_description_that_fails_leaves_the_preview_alone(tmp_path, env):
-    """A file that cannot be described still has its preview, and nothing is cached for it."""
+def test_a_description_that_fails_is_not_tried_again(tmp_path, env, monkeypatch):
+    """A file that cannot be described has no panel, and is not read again to find that out."""
     source = tmp_path / 'broken.vtp'
     source.write_text('not a mesh')
     preview = config.CACHE_DIR / 'key.png'
+
+    def fail(config, command, **kwargs):
+        # Output written before a failure is not trusted.
+        Path(command[-1]).write_text('{"type": "PolyData"}')
+        message = 'Describing failed.'
+        raise environment.RenderError(message)
+
+    monkeypatch.setattr(environment, 'run', fail)
     assert convert.describe(source, preview, env) is None
-    assert not list(config.CACHE_DIR.glob('*.json'))
+    assert json.loads(convert.info_path(preview).read_text()) == {}
+    monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: pytest.fail('read again'))
+    assert convert.describe(source, preview, env) is None
+    assert convert.describe(source, preview, env, read=False) is None
+
+
+def test_only_a_cached_description_is_given_without_reading(tmp_path, env, monkeypatch):
+    """Asked not to read, describe returns what is cached and starts nothing."""
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    preview = config.CACHE_DIR / 'key.png'
+    monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: pytest.fail('read'))
+    assert convert.describe(source, preview, env, read=False) is None
+    monkeypatch.undo()
+    assert convert.describe(source, preview, env)['type'] == 'PolyData'
+    assert convert.describe(source, preview, env, read=False)['type'] == 'PolyData'
+
+
+def test_a_missing_file_or_environment_is_not_remembered(tmp_path, env):
+    """Nothing is cached when the file is gone or no environment is set up, as both may change."""
+    preview = config.CACHE_DIR / 'key.png'
+    assert convert.describe(tmp_path / 'gone.vtp', preview, env) is None
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    assert convert.describe(source, preview, {**env, 'python': '/no/such/python'}) is None
+    assert not convert.info_path(preview).exists()
 
 
 def test_warm_runs_the_warmer_and_leaves_a_stamp(env):

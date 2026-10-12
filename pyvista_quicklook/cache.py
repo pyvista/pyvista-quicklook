@@ -75,7 +75,7 @@ def files(patterns: tuple[str, ...] = SUFFIXES + SIDECARS) -> list[Path]:
     return [e for pattern in patterns for e in config_mod.CACHE_DIR.glob(pattern)]
 
 
-def discard_other_scenes(version: str) -> int:
+def discard_other_versions(version: str) -> int:
     """Delete scenes and descriptions from other exporter versions, returning how many."""
     removed = 0
     for entry in files(('*.ply', *SIDECARS)):

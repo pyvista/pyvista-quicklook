@@ -113,6 +113,31 @@ def produce(
     return render_mod.preview(target, config, identity=identity)
 
 
+# Descriptions being written on threads of their own, so each file is read once at a time.
+_describing: set[Path] = set()
+_describing_guard = threading.Lock()
+
+
+def describe_later(target: str, preview: Path, config: dict[str, Any]) -> threading.Thread | None:
+    """Describe a file on a thread of its own, unless the panel is hidden or it already is."""
+    described = convert_mod.info_path(preview)
+    with _describing_guard:
+        if not convert_mod.wants_info(config) or described in _describing:
+            return None
+        _describing.add(described)
+
+    def work() -> None:
+        try:
+            convert_mod.describe(target, preview, config)
+        finally:
+            with _describing_guard:
+                _describing.discard(described)
+
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    return thread
+
+
 def handle(request: Path) -> None:
     """Render the file named by one request and write the reply beside it."""
     reply = request.with_suffix(REPLY_SUFFIX)
@@ -157,7 +182,15 @@ def handle(request: Path) -> None:
     shutil.copyfile(built, delivered)
     kind = 'scene' if built.suffix == '.ply' else 'png'
     answer: dict[str, Any] = {'ok': True, kind: str(delivered)}
-    if (info := convert_mod.describe(target, built, config)) is not None:
+    # A scene is described as it is built; a still image is described in a read of its own.
+    info = convert_mod.describe(target, built, config, read=False)
+    if info is None and target != source:
+        # The copy is removed once the reply is read, so it is described before replying.
+        info = convert_mod.describe(target, built, config)
+    elif info is None:
+        # The image is sent at once, and its description is ready the next time.
+        describe_later(target, built, config)
+    if info is not None:
         answer['info'] = info
     write_json(reply, answer)
 
@@ -197,7 +230,7 @@ def serve(poll: float = 0.05) -> int:
     """Answer preview requests until the process is stopped."""
     directory = drop_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    cache.discard_other_scenes(convert_mod.SCENE_VERSION)
+    cache.discard_other_versions(convert_mod.SCENE_VERSION)
     startup = config_mod.load()
     if startup.get('warm_on_start', True):
         warm_in_background(startup)

@@ -16,13 +16,13 @@ EXPORTER = Path(__file__).with_name('_scene_export.py')
 DESCRIBER = Path(__file__).with_name('_dataset_info.py')
 
 
-def exporter_version(exporter: Path = EXPORTER, describer: Path = DESCRIBER) -> str:
+def converter_version(exporter: Path = EXPORTER, describer: Path = DESCRIBER) -> str:
     """Return a short digest of the exporter and describer, which changes with their output."""
     return hashlib.sha256(exporter.read_bytes() + describer.read_bytes()).hexdigest()[:12]
 
 
-# Scenes carry this in their key and their name, so an update never serves an old one.
-SCENE_VERSION = exporter_version()
+# Scenes and descriptions carry this in their names, so an update never serves an old one.
+SCENE_VERSION = converter_version()
 
 
 def budget(config: dict[str, Any], key: str) -> int:
@@ -55,34 +55,48 @@ def wants_info(config: dict[str, Any]) -> bool:
 
 
 def describe(
-    source: str | os.PathLike[str], preview: Path, config: dict[str, Any]
+    source: str | os.PathLike[str],
+    preview: Path,
+    config: dict[str, Any],
+    *,
+    read: bool = True,
 ) -> dict[str, Any] | None:
-    """Return the info panel's description of a file, describing it if not cached."""
+    """Return the info panel's description of a file, describing it if not cached.
+
+    With ``read`` false only a cached description is returned, and the file is not read.
+    """
     if not wants_info(config):
         return None
     described = info_path(preview)
     # Named after the file's identity and the describer's version, so never stale.
     if not described.is_file():
-        scratch = described.with_name(f'{described.stem}.{os.getpid()}.tmp.json')
+        if not read:
+            return None
         try:
-            command = [
-                environment.interpreter(config),
-                str(EXPORTER),
-                str(source),
-                '--info',
-                str(scratch),
-            ]
-            environment.run(config, command, task='Describing', cwd=Path(source).parent)
-            if scratch.is_file():
-                scratch.replace(described)
+            path = environment.source_path(source)
+            command = [environment.interpreter(config), str(EXPORTER), str(path), '--info']
         except environment.RenderError:
             return None
+        scratch = described.with_name(f'{described.stem}.{os.getpid()}.tmp.json')
+        try:
+            described.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                environment.run(
+                    config, [*command, str(scratch)], task='Describing', cwd=path.parent
+                )
+            except environment.RenderError:
+                scratch.unlink(missing_ok=True)
+            # A file that cannot be described is remembered as such, so it is not read again.
+            if not scratch.is_file():
+                scratch.write_text('{}')
+            scratch.replace(described)
         finally:
             scratch.unlink(missing_ok=True)
     try:
-        return json.loads(described.read_text())
+        info = json.loads(described.read_text())
     except OSError, ValueError:
         return None
+    return info or None
 
 
 def scene_path(identity: tuple[str, int, int], config: dict[str, Any]) -> Path:

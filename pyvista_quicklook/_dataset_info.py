@@ -445,7 +445,8 @@ def composite_facts(multiblock: pv.MultiBlock) -> tuple[list[list[Any]], list[di
     found = leaves(multiblock)
     datasets = [block for _, block in found if block is not None]
     kinds, depth = block_kinds(multiblock)
-    facts = [['Blocks', count(len(multiblock))]]
+    # Counted as the block list counts them: every dataset or empty block, at any depth.
+    facts = [['Blocks', count(len(found))]]
     if depth > 1:
         facts.append(['Depth', str(depth)])
     facts += [

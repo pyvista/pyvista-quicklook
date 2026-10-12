@@ -599,10 +599,10 @@ def test_scene_version_follows_the_exporter(tmp_path):
     """Any change to the exporter changes the version scenes are keyed and named by."""
     exporter = tmp_path / 'exporter.py'
     exporter.write_text('a')
-    before = convert.exporter_version(exporter)
+    before = convert.converter_version(exporter)
     exporter.write_text('b')
-    assert convert.exporter_version(exporter) != before
-    assert convert.exporter_version() == convert.SCENE_VERSION
+    assert convert.converter_version(exporter) != before
+    assert convert.converter_version() == convert.SCENE_VERSION
 
 
 def test_scenes_of_other_versions_are_discarded(tmp_path, monkeypatch):
@@ -612,7 +612,7 @@ def test_scenes_of_other_versions_are_discarded(tmp_path, monkeypatch):
     names = ('old-1.ply', 'old-1.json', f'{current}-2.ply', f'{current}-2.json', 'image.png')
     for name in names:
         (tmp_path / name).write_bytes(b'x')
-    assert cache.discard_other_scenes(current) == 2
+    assert cache.discard_other_versions(current) == 2
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         f'{current}-2.json',
         f'{current}-2.ply',
@@ -815,3 +815,11 @@ def test_resolve_pyvista_stays_inside_the_configured_environment(tmp_path):
     sibling.write_text('#!/bin/sh\n')
     sibling.chmod(0o755)
     assert config.resolve_pyvista({'python': str(interpreter)}) == str(sibling)
+
+
+def test_an_unreadable_description_is_none(tmp_path, monkeypatch):
+    """A cached description that is not JSON leaves the panel out."""
+    monkeypatch.setattr(convert.config_mod, 'CACHE_DIR', tmp_path)
+    preview = tmp_path / 'key.png'
+    convert.info_path(preview).write_text('{not json')
+    assert convert.describe('/data/x.vtp', preview, {}, read=False) is None
