@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
 from pathlib import Path
+import queue
 import shutil
 import sys
 import threading
@@ -38,6 +40,8 @@ TAKEN_SUFFIX = '.pvqltaken'
 EARLY_SUFFIX = '.pvqlpre'
 EARLY_BYTES = 32 * 1024 * 1024
 STALE_SECONDS = 600
+# How much of the extension's wait for a reply is kept in hand.
+REPLY_MARGIN_SECONDS = 5
 
 UNREADABLE_MESSAGE = """The render service could not read
 
@@ -56,6 +60,11 @@ def drop_dir() -> Path:
 def legacy_drop_dir() -> Path:
     """Return the exchange directory of installations before the org.pyvista identifiers."""
     return Path.home() / 'Library' / 'Containers' / LEGACY_EXT_BUNDLE_ID / 'Data' / 'tmp'
+
+
+def reply_seconds(config: dict[str, Any]) -> float:
+    """Return how long the extension waits for a reply: the conversion's limit, and some."""
+    return float(config.get('timeout') or config_mod.DEFAULTS['timeout']) + 30
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -110,16 +119,15 @@ def readable(path: str, seconds: float = 2.0) -> bool:
     return bool(answer and answer[0])
 
 
-def cached(identity: tuple[str, int, int] | None, config: dict[str, Any]) -> bool:
-    """Return whether the preview a request asks for, and its description, are cached."""
+def cached_preview(identity: tuple[str, int, int] | None, config: dict[str, Any]) -> Path | None:
+    """Return the cached preview a request asks for, or None when it must be built."""
     if identity is None or not config.get('cache', True):
-        return False
+        return None
     if config.get('interactive', True):
         preview = convert_mod.scene_path(identity, config)
     else:
         preview = render_mod.preview_path(identity, config)
-    described = not convert_mod.wants_info(config) or convert_mod.info_path(preview).is_file()
-    return preview.is_file() and described
+    return preview if preview.is_file() else None
 
 
 def send_early(
@@ -141,7 +149,7 @@ class MemoryBudget:
     """Lets conversions run together while their estimated memory fits, and any one alone.
 
     Waiting conversions start in the order they asked, so a large one is never held off
-    by a stream of small ones.
+    by a stream of small ones; background work waits behind any the reader asked for.
     """
 
     def __init__(self) -> None:
@@ -149,20 +157,20 @@ class MemoryBudget:
         self.condition = threading.Condition()
         self.used = 0
         self.running = 0
-        self.waiting: list[int] = []
+        self.waiting: list[tuple[bool, int]] = []
         self.tickets = 0
 
     @contextlib.contextmanager
-    def reserve(self, amount: int, limit: int) -> Iterator[None]:
+    def reserve(self, amount: int, limit: int, *, background: bool = False) -> Iterator[None]:
         """Wait until ``amount`` fits under ``limit`` beside what runs, or nothing runs."""
         with self.condition:
             self.tickets += 1
-            ticket = self.tickets
+            ticket = (background, self.tickets)
             self.waiting.append(ticket)
             try:
                 self.condition.wait_for(
                     lambda: (
-                        self.waiting[0] == ticket
+                        min(self.waiting) == ticket
                         and (self.running == 0 or self.used + amount <= limit)
                     )
                 )
@@ -250,57 +258,100 @@ def answer(request: Path) -> None:
         request.unlink(missing_ok=True)
 
 
-# Descriptions being written on threads of their own, so each file is read once at a time.
+# Still images waiting to be described after their replies, and the files among them.
+_descriptions: queue.Queue[tuple[str, dict[str, Any], tuple[str, int, int]]] = queue.Queue()
 _describing: set[Path] = set()
 _describing_guard = threading.Lock()
 
 
-def describe_later(
-    target: str,
-    preview: Path,
-    config: dict[str, Any],
-    identity: tuple[str, int, int] | None = None,
-) -> threading.Thread | None:
-    """Describe a file on a thread of its own, unless that is done, underway, or not wanted."""
-    described = convert_mod.info_path(preview)
-    with _describing_guard:
-        wanted = convert_mod.wants_info(config) and not described.is_file()
-        if not wanted or described in _describing:
-            return None
-        _describing.add(described)
-
-    def work() -> None:
+def describe_queued() -> None:
+    """Describe queued files one after another, so their reads never pile up."""
+    while True:
+        target, config, identity = _descriptions.get()
         try:
-            # Reading the file again takes as much memory as building its preview did.
-            with CONVERTING.reserve(conversion_memory(target, identity), memory_budget(config)):
-                convert_mod.describe(target, preview, config)
+            # Reading a file again takes as much memory as building its preview did, and
+            # waits behind any preview the reader asked for.
+            amount = conversion_memory(target, identity)
+            with CONVERTING.reserve(amount, memory_budget(config), background=True):
+                convert_mod.describe(target, config, identity)
+        except Exception as error:  # noqa: BLE001
+            environment.log(config, f'describing {target} failed: {error}')
         finally:
             with _describing_guard:
-                _describing.discard(described)
+                _describing.discard(convert_mod.info_path(identity))
+            _descriptions.task_done()
 
-    thread = threading.Thread(target=work, daemon=True)
+
+@functools.cache
+def describer() -> threading.Thread:
+    """Return the thread that describes queued files, starting it the first time."""
+    thread = threading.Thread(target=describe_queued, daemon=True)
     thread.start()
     return thread
+
+
+def describe_later(
+    target: str, config: dict[str, Any], identity: tuple[str, int, int] | None
+) -> bool:
+    """Queue a file to be described, unless that is done, queued, or not wanted."""
+    if identity is None or not convert_mod.wants_info(config):
+        return False
+    described = convert_mod.info_path(identity)
+    with _describing_guard:
+        if described.is_file() or described in _describing:
+            return False
+        _describing.add(described)
+    describer()
+    _descriptions.put((target, config, identity))
+    return True
+
+
+# Folders of copies the extension staged that a request still reads, kept from the sweep.
+_staged: set[Path] = set()
+_staged_guard = threading.Lock()
+
+
+@contextlib.contextmanager
+def staged_in_use(copy: str | None) -> Iterator[None]:
+    """Keep the folder of a staged copy from the sweep while its request is handled."""
+    folder = Path(copy).parent if copy else None
+    if folder is not None:
+        with _staged_guard:
+            _staged.add(folder)
+    try:
+        yield
+    finally:
+        if folder is not None:
+            with _staged_guard:
+                _staged.discard(folder)
 
 
 def handle(request: Path) -> None:
     """Render the file named by one request and write the reply beside it."""
     reply = request.with_suffix(REPLY_SUFFIX)
     try:
+        asked = request.stat().st_mtime
         payload = json.loads(request.read_text())
         source = payload['path']
     except (OSError, ValueError, KeyError) as error:
         request.unlink(missing_ok=True)
         write_json(reply, {'ok': False, 'error': f'Malformed preview request: {error}'})
         return
-
     request.unlink(missing_ok=True)
+    with staged_in_use(payload.get('copy')):
+        respond(request, source, payload, asked)
+
+
+def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -> None:
+    """Answer a request for ``source``, given what it asked and when."""
+    reply = request.with_suffix(REPLY_SUFFIX)
     identity = None
     if payload.get('mtime') is not None and payload.get('size') is not None:
         identity = (source, int(payload['mtime']), int(payload['size']))
 
     config = config_mod.load()
-    if payload.get('force') is True or cached(identity, config):
+    ready = cached_preview(identity, config)
+    if payload.get('force') is True or ready is not None:
         # Asked for whatever its size, or previewed already, so no step of it applies the limit.
         config = {**config, 'max_file_size_mb': 0}
     if identity is not None:
@@ -315,9 +366,10 @@ def handle(request: Path) -> None:
             write_json(reply, refusal)
             return
 
-    # Prefer the original so datasets that reference neighbouring files still resolve.
-    target = source if folder_is_reachable(source) else payload.get('copy')
-
+    reachable = folder_is_reachable(source)
+    # Prefer the original so datasets that reference neighbouring files still resolve; a
+    # cached preview is served without reading the file at all.
+    target = source if reachable or ready is not None else payload.get('copy')
     if not target:
         message = UNREADABLE_MESSAGE.format(path=source)
         # The extension copies the file somewhere readable and asks again, when it can.
@@ -325,9 +377,8 @@ def handle(request: Path) -> None:
         return
 
     done, lock = threading.Event(), threading.Lock()
-    ready = cached(identity, config)
     large = identity is not None and identity[2] >= EARLY_BYTES
-    if large and convert_mod.wants_info(config) and not ready:
+    if large and convert_mod.wants_info(config) and ready is None:
         early = threading.Thread(target=send_early, args=(request, target, config, done, lock))
         early.start()
 
@@ -340,15 +391,19 @@ def handle(request: Path) -> None:
     try:
         # Quick Look asks for each file twice; the second request reuses the first's preview.
         with one_at_a_time(identity, config):
+            ready = cached_preview(identity, config)
             # A cached preview is only copied, so it never waits for memory.
             budget = CONVERTING.reserve(conversion_memory(target, identity), memory_budget(config))
-            with contextlib.nullcontext() if cached(identity, config) else budget:
-                built = produce(target, config, identity)
+            with contextlib.nullcontext() if ready is not None else budget:
+                built = ready or produce(target, config, identity)
                 # A scene is described as it is built; a still image in a read of its own.
-                info = convert_mod.describe(target, built, config, read=False)
+                info = convert_mod.describe(target, config, identity, read=False)
                 if info is None and target != source:
-                    # The copy is removed once the reply is read, so it is described first.
-                    info = convert_mod.describe(target, built, config)
+                    # The copy is removed once the reply is read, so it is described now, in
+                    # the time the extension still waits; past that the reply goes without.
+                    left = reply_seconds(config) - REPLY_MARGIN_SECONDS - (time.time() - asked)
+                    if left > 1:
+                        info = convert_mod.describe(target, config, identity, timeout=left)
         delivered = reply.with_suffix(built.suffix)
         shutil.copyfile(built, delivered)
     except environment.NotAMeshError as error:
@@ -363,12 +418,12 @@ def handle(request: Path) -> None:
         return
     kind = 'scene' if built.suffix == '.ply' else 'png'
     preview: dict[str, Any] = {'ok': True, kind: str(delivered)}
-    if info is None and target == source:
-        # The image is sent at once, and its description is ready the next time.
-        describe_later(target, built, config, identity)
     if info is not None:
         preview['info'] = info
     answer_with(preview)
+    if info is None and target == source and reachable:
+        # The image went out first, and its description is ready the next time.
+        describe_later(target, config, identity)
 
 
 def sweep(directory: Path) -> None:
@@ -383,9 +438,11 @@ def sweep(directory: Path) -> None:
         # Copies the extension staged and left, when Quick Look stopped it or it moved on.
         *directory.glob('*.staging'),
     ]
+    with _staged_guard:
+        in_use = set(_staged)
     for entry in stale:
         try:
-            if entry.stat().st_mtime >= cutoff:
+            if entry.stat().st_mtime >= cutoff or entry in in_use:
                 continue
             if entry.is_dir():
                 shutil.rmtree(entry, ignore_errors=True)
@@ -415,6 +472,7 @@ def serve(poll: float = 0.05) -> int:
     directory = drop_dir()
     directory.mkdir(parents=True, exist_ok=True)
     cache.discard_other_versions(convert_mod.SCENE_VERSION)
+    cache.discard_scratch(STALE_SECONDS)
     startup = config_mod.load()
     if startup.get('warm_on_start', True):
         warm_in_background(startup)

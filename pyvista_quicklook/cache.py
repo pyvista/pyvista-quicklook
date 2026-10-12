@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import threading
@@ -88,6 +89,18 @@ def discard_other_versions(version: str) -> int:
         if not entry.name.startswith(f'{version}-'):
             entry.unlink(missing_ok=True)
             removed += 1
+    return removed
+
+
+def discard_scratch(older_than: float) -> int:
+    """Delete scratch files a stopped build left behind, once older than ``older_than`` seconds."""
+    cutoff = time.time() - older_than
+    removed = 0
+    for entry in files(('*.tmp.*',)):
+        with contextlib.suppress(OSError):
+            if entry.stat().st_mtime < cutoff:
+                entry.unlink()
+                removed += 1
     return removed
 
 
