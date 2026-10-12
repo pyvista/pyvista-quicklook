@@ -6,8 +6,8 @@ import UniformTypeIdentifiers
 
 /// What to put in the panel once the render service has answered.
 enum Preview {
-    case scene(SCNScene)
-    case image(Data)
+    case scene(SCNScene, MeshInfo?)
+    case image(Data, MeshInfo?)
     case text(String)
     case details(URL)
     case message(String)
@@ -200,6 +200,16 @@ func detailsView(_ url: URL) -> NSView {
     return container
 }
 
+/// Returns the render with the dataset's info beside it, or the render alone without info.
+@MainActor
+func withInfo(_ render: NSView, _ info: MeshInfo?) -> NSView {
+    guard let info, !info.isEmpty else {
+        return render
+    }
+    let arrangement = (Helper.configuration()?["info_panel"] as? String).flatMap(InfoArrangement.init)
+    return MeshPreviewView(render: render, info: info, arrangement: arrangement ?? .automatic)
+}
+
 /// Builds a view showing text, used when a mesh cannot be previewed.
 @MainActor
 func messageView(_ text: String) -> NSView {
@@ -268,12 +278,14 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
 
             let outcome: Preview
             do {
-                switch try Helper.requestPreview(url) {
+                let reply = try Helper.requestPreview(url)
+                let info = MeshInfo(reply.info)
+                switch reply.payload {
                 case let .scene(sceneURL):
                     defer { try? FileManager.default.removeItem(at: sceneURL) }
-                    outcome = .scene(try SCNScene(url: sceneURL, options: nil))
+                    outcome = .scene(try SCNScene(url: sceneURL, options: nil), info)
                 case let .image(png):
-                    outcome = .image(png)
+                    outcome = .image(png, info)
                 }
             } catch {
                 let failure = error as? Helper.Failure
@@ -295,14 +307,14 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
 
             DispatchQueue.main.async {
                 switch outcome {
-                case let .scene(scene):
-                    self.show(sceneView(for: scene))
+                case let .scene(scene, info):
+                    self.show(withInfo(sceneView(for: scene), info))
                     pvqlLog("showing an interactive scene in \(self.view.bounds.size)")
-                case let .image(png):
+                case let .image(png, info):
                     let imageView = NSImageView()
                     imageView.imageScaling = .scaleProportionallyUpOrDown
                     imageView.image = NSImage(data: png)
-                    self.show(imageView)
+                    self.show(withInfo(imageView, info))
                     pvqlLog("showing a rendered image in \(self.view.bounds.size)")
                 case let .text(text):
                     self.show(textView(text))
