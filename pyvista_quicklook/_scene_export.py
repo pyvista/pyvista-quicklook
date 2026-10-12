@@ -166,7 +166,9 @@ def read_for_preview(source: str) -> tuple[object, dict[str, Any] | None]:
 def point_count(dataset: object) -> int:
     """Return how many points a dataset or composite holds, counting a mystery as some."""
     if isinstance(dataset, pv.MultiBlock):
-        return sum(block.n_points for block in dataset.recursive_iterator('blocks'))
+        return sum(
+            block.n_points for block in dataset.recursive_iterator('blocks', skip_none=True)
+        )
     return int(getattr(dataset, 'n_points', 1))
 
 
@@ -226,7 +228,11 @@ def to_surface(dataset: object) -> pv.PolyData:
     if isinstance(dataset, pv.PartitionedDataSet):
         dataset = pv.MultiBlock(list(dataset))
     if isinstance(dataset, pv.MultiBlock):
-        dataset = dataset.combine()
+        # combine() fails on an empty nested composite, so only the leaves are joined.
+        leaves = list(dataset.recursive_iterator('blocks', skip_none=True))
+        if not leaves:
+            return pv.PolyData()
+        dataset = pv.MultiBlock(leaves).combine()
     surface = (
         dataset.extract_surface(algorithm='dataset_surface')
         if hasattr(dataset, 'extract_surface')
