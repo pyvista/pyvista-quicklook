@@ -7,6 +7,7 @@ imports only PyVista and its own dependencies.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 from pathlib import Path
@@ -15,6 +16,11 @@ import tempfile
 
 import numpy as np
 import pyvista as pv
+
+if __package__:
+    from . import _dataset_info
+else:
+    import _dataset_info
 
 # Readers tried in turn for extensions two formats share; None is PyVista's own choice.
 ATTEMPTS = {'.inp': (None, 'abaqus'), '.msh': (None, 'ansys')}
@@ -220,9 +226,27 @@ def colours_for(surface: pv.PolyData) -> np.ndarray | None:
     return ramp()[(normalised * 255).round().astype(np.intp)]
 
 
-def export(source: str, destination: str, max_points: int, max_glyphs: int) -> None:
+def write_info(dataset: object, source: str, destination: str) -> None:
+    """Write what the info panel shows about a dataset; a failure leaves the panel out."""
+    try:
+        info = _dataset_info.describe(dataset, source)
+    except Exception as error:  # noqa: BLE001
+        sys.stderr.write(f'info skipped: {type(error).__name__}: {error}\n')
+        return
+    Path(destination).write_text(json.dumps(info))
+
+
+def export(
+    source: str,
+    destination: str,
+    max_points: int,
+    max_glyphs: int,
+    info: str | None = None,
+) -> None:
     """Write a mesh file out as a PLY with vertex colours; a budget of zero is no cap."""
     dataset = read(source)
+    if info:
+        write_info(dataset, source, info)
     if isinstance(dataset, pv.DataSet):
         dataset = slice_volume(choose_scalars(thin(dataset, max_points)))
     # Triangulating first would discard the vertex and line cells solidify needs.
@@ -262,12 +286,18 @@ def main() -> int:
     """Run the converter from the command line."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source')
-    parser.add_argument('destination')
-    parser.add_argument('--max-points', type=int, required=True)
-    parser.add_argument('--max-glyphs', type=int, required=True)
+    parser.add_argument('destination', nargs='?', help='the scene; leave out to only describe')
+    parser.add_argument('--max-points', type=int, default=0)
+    parser.add_argument('--max-glyphs', type=int, default=0)
+    parser.add_argument('--info')
     args = parser.parse_args()
+    if args.destination is None and args.info is None:
+        parser.error('give a destination, --info, or both')
     try:
-        export(args.source, args.destination, args.max_points, args.max_glyphs)
+        if args.destination is not None:
+            export(args.source, args.destination, args.max_points, args.max_glyphs, args.info)
+        else:
+            write_info(read(args.source), args.source, args.info)
     except Exception as error:
         # The reason is shown in the Quick Look panel, where a traceback would fill it.
         if os.environ.get('PVQL_TRACEBACK'):
