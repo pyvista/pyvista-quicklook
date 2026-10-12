@@ -76,7 +76,10 @@ def colour_choice(rows: list[dict[str, Any]]) -> tuple[str, str] | None:
         return active['name'], active['association']
     for association in ('Point', 'Cell'):
         for row in rows:
-            if row['association'] == association and not row['name'].startswith('vtk'):
+            if row['association'] != association or row['name'].startswith('vtk'):
+                continue
+            # Normals are unit length everywhere, so they would colour the mesh one shade.
+            if row['name'] != 'Normals' and 'normals' not in row['active']:
                 return row['name'], association
     return None
 
@@ -312,7 +315,11 @@ def choose_scalars(dataset: pv.DataSet) -> pv.DataSet:
         return dataset
     if not name.startswith('vtk'):
         return dataset
-    normals = {'Normals', dataset.point_data.active_normals_name}
+    normals = {
+        'Normals',
+        dataset.point_data.active_normals_name,
+        dataset.cell_data.active_normals_name,
+    }
     for source in (dataset.point_data, dataset.cell_data):
         for candidate in source:
             # Normals are unit length everywhere, so they would colour the mesh one shade.
@@ -409,7 +416,7 @@ def export(
     surface = recentre(to_point_scalars(surface))
     colours = colours_for(surface)
     if colours is None:
-        # Without scalars the scene would be drawn white; PyVista draws the theme's colour.
+        # Without usable scalars the scene would be drawn white; PyVista draws the theme's colour.
         colours = np.tile(
             np.array(pv.global_theme.color.int_rgb, dtype=np.uint8), (surface.n_points, 1)
         )
@@ -418,11 +425,10 @@ def export(
     if normals is not None and len(normals) == surface.n_points:
         surface.point_data['Normals'] = normals
         surface.point_data.active_normals_name = 'Normals'
-    if colours is not None and len(colours) == surface.n_points:
-        surface['RGB'] = colours
+    surface['RGB'] = colours
     if is_open:
         surface = both_sides(surface)
-    surface.save(destination, texture='RGB' if 'RGB' in surface.point_data else None)
+    surface.save(destination, texture='RGB')
 
 
 def summary(error: BaseException) -> str:

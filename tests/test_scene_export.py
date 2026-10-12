@@ -147,6 +147,24 @@ def test_vtk_bookkeeping_arrays_are_stepped_over(tmp_path):
     assert coloured(out)
 
 
+def test_a_selectively_read_file_steps_over_normals(tmp_path):
+    """A .pv file read array by array is coloured by a real array, not by its normals."""
+    mesh = pv.Sphere(theta_resolution=8, phi_resolution=8).triangulate()
+    mesh.cell_data['vtkGhostType'] = np.zeros(mesh.n_cells, np.uint8)
+    mesh.cell_data['region'] = (np.arange(mesh.n_cells) % 3).astype(float)
+    mesh.set_active_scalars('vtkGhostType')
+    source = tmp_path / 'in.pv'
+    mesh.save(source)
+    assert coloured(written(str(source), tmp_path))
+
+
+def test_the_plain_colour_follows_the_theme(tmp_path, monkeypatch):
+    """A mesh without scalars takes the theme's colour, whatever the theme is."""
+    monkeypatch.setattr(pv.global_theme, 'color', 'red')
+    out = written(pv.Sphere(theta_resolution=8, phi_resolution=8), tmp_path)
+    assert (out['RGB'] == (255, 0, 0)).all()
+
+
 def test_the_result_is_centred(tmp_path):
     """Coordinates are moved to the origin, so distant datasets keep their precision."""
     mesh = pv.Sphere(theta_resolution=8, phi_resolution=8)

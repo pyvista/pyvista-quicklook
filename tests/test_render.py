@@ -77,6 +77,14 @@ def test_a_surface_is_drawn(tmp_path):
     assert 0.10 < covered(pixels) < 0.95
 
 
+def test_a_plain_surface_is_drawn_in_the_theme_colour(tmp_path):
+    """A mesh without scalars is drawn light blue, as PyVista draws it, rather than grey."""
+    pixels = rendered(pv.Sphere(theta_resolution=16, phi_resolution=16), tmp_path)
+    lit = pixels.reshape(-1, 3).astype(int)
+    lit = lit[lit.sum(axis=1) > 60]
+    assert (lit[:, 2] - lit[:, 0]).mean() > 20
+
+
 def test_a_point_cloud_is_drawn(tmp_path):
     """Glyphed points reach the frame instead of rendering blank."""
     cloud = pv.PolyData(np.random.default_rng(0).random((400, 3)))
