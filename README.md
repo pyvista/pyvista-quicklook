@@ -255,11 +255,14 @@ extension checks whether a folder holds DICOM files before it asks the render se
 it looks for the `DICM` marker in the first few entries, whatever they are named, and an
 ordinary folder shows its own details immediately, as the Finder would.
 
-### Still images
+### Pictures first
 
-After `pvql config set interactive false`, every preview is a still image rendered by
-`pyvista plot --off-screen --screenshot` instead, which keeps the scalar bar and axes
-the interactive view leaves out.
+Pressing space shows a picture of the dataset, its details, and an **Interactive View**
+button that loads the surface to turn and zoom. A `.pv` or `.3mf` file that carries a
+picture of itself shows that one at once, without reading the data; any other file is
+rendered by `pyvista plot --off-screen --screenshot`, which keeps the scalar bar and axes
+the interactive view leaves out. After `pvql config set interactive true`, every preview
+starts as the interactive view instead. Opening a file with the app always shows it in 3D.
 
 ### The render service
 
@@ -304,7 +307,7 @@ They are kept in `~/Library/Application Support/PyVistaQuickLook/config.json`.
 | --- | --- | --- |
 | `python` | set at install | Interpreter of the PyVista environment |
 | `pvql` | discovered | Absolute path to the `pvql` helper |
-| `interactive` | `true` | Show a turnable surface; `false` renders a still image instead |
+| `interactive` | `false` | Start previews as the turnable surface rather than a picture |
 | `info_panel` | `automatic` | Where the dataset's details go: `side`, `below`, `compact`, `hidden`, or `automatic` to choose by the panel's size |
 | `max_scene_points` | `2000000` | Thin surfaces above this many points; `0` never does |
 | `max_glyph_points` | `20000` | Draw at most this many points of a point cloud; `0` draws all |

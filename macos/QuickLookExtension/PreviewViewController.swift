@@ -467,6 +467,15 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         }
     }
 
+    /// Returns a picture of the file with a button that loads its 3D view in its place.
+    func pictureWithButton(_ url: URL, _ png: Data, force: Bool) -> NSView? {
+        guard let view = pictureView(png) else {
+            return nil
+        }
+        let button = ActionButton(title: "Interactive View", onPress: loadScene(url, png, force: force))
+        return overlaid(view, corner: button)
+    }
+
     /// Returns what pressing "Preview Anyway" does: load the file past its size limit.
     func previewAnyway(_ url: URL, _ info: MeshInfo?, _ thumbnail: Data?) -> () -> Void {
         { [weak self] in
@@ -481,14 +490,14 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
     }
 
     /// Returns what pressing "Interactive View" does: load the 3D view in place of the picture.
-    func loadScene(_ url: URL, _ png: Data) -> () -> Void {
+    func loadScene(_ url: URL, _ png: Data, force: Bool) -> () -> Void {
         { [weak self] in
             guard let self else {
                 return
             }
             self.show(placeholderView(url.lastPathComponent, png))
             DispatchQueue.global(qos: .userInitiated).async {
-                self.load(url, force: false, picture: false, handler: nil)
+                self.load(url, force: force, picture: false, handler: nil)
             }
         }
     }
@@ -496,24 +505,22 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
     /// Fetches a preview and shows it, showing what the header says first when that comes early.
     ///
     /// `handler` is Quick Look's, called once the panel has something to show; it is nil when a
-    /// file is loaded again from a panel already showing. `picture` false skips a picture the
-    /// file carries in favour of the service's preview.
+    /// file is loaded again from a panel already showing. Previews start as a picture with a
+    /// button to the 3D view, unless the settings, the app or `picture` false ask for 3D.
     nonisolated func load(_ url: URL, force: Bool, picture: Bool = true, handler: ((Error?) -> Void)?) {
         let completion = DispatchQueue.main.sync { Completion(handler) }
         let name = url.lastPathComponent
-        // A current picture the file carries of itself is the preview, without the service.
         let prefersPicture = DispatchQueue.main.sync { self.prefersPicture }
-        if !force, picture, prefersPicture, let png = EmbeddedThumbnail.read(url, allowStale: false) {
-            let interactive = (Helper.configuration()?["interactive"] as? Bool) ?? true
+        let startsInteractive = (Helper.configuration()?["interactive"] as? Bool) ?? false
+        let wantsPicture = picture && prefersPicture && !startsInteractive
+        // A current picture the file carries of itself is the preview, without the service.
+        if wantsPicture, let png = EmbeddedThumbnail.read(url, allowStale: false) {
             DispatchQueue.main.async {
-                guard let view = pictureView(png) else {
+                guard let picture = self.pictureWithButton(url, png, force: force) else {
                     self.show(messageView("Could not preview \(name)"))
                     completion.finish(nil)
                     return
                 }
-                // The 3D view is loaded only when asked for, and only when previews are interactive.
-                let button = ActionButton(title: "Interactive View", onPress: self.loadScene(url, png))
-                let picture = interactive ? overlaid(view, corner: button) : view
                 self.show(picture)
                 completion.finish(nil)
                 pvqlLog("showing the picture \(name) carries as its preview")
@@ -544,7 +551,7 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         }
         let outcome: Preview
         do {
-            let reply = try Helper.requestPreview(url, force: force) { info in
+            let reply = try Helper.requestPreview(url, force: force, scene: !wantsPicture) { info in
                 DispatchQueue.main.async {
                     self.show(withInfo(placeholderView(name, thumbnail), MeshInfo(info)))
                     completion.finish(nil)
@@ -606,7 +613,7 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 self.show(withInfo(sceneView(for: scene), info))
                 pvqlLog("showing an interactive scene in \(self.view.bounds.size)")
             case let .image(png, info):
-                self.show(withInfo(pictureView(png) ?? NSImageView(), info))
+                self.show(withInfo(self.pictureWithButton(url, png, force: force) ?? NSImageView(), info))
                 pvqlLog("showing a rendered image in \(self.view.bounds.size)")
             case let .tooLarge(message, info):
                 let notice = largeFileView(message, thumbnail: thumbnail, onPreview: self.previewAnyway(url, info, thumbnail))

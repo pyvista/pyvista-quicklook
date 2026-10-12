@@ -29,7 +29,7 @@ THUMB_BUNDLE_ID = f'{APP_BUNDLE_ID}.Thumbnail'
 THUMB_EXECUTABLE = 'PyVistaQuickLookThumbnail'
 THUMB_PRINCIPAL_CLASS = 'PVQLThumbnailProvider'
 # Only these formats can carry a picture of themselves.
-THUMBNAIL_EXTENSIONS = ('.pv',)
+THUMBNAIL_EXTENSIONS = ('.pv', '.3mf')
 
 
 def bundle_version(version: str = __version__) -> str:
@@ -149,9 +149,7 @@ def thumbnail_plist(extensions: list[str]) -> dict[str, Any]:
             'NSExtensionPointIdentifier': 'com.apple.quicklook.thumbnail',
             'NSExtensionPrincipalClass': THUMB_PRINCIPAL_CLASS,
             'NSExtensionAttributes': {
-                'QLSupportedContentTypes': [
-                    uti_for(e) for e in extensions if e in THUMBNAIL_EXTENSIONS
-                ],
+                'QLSupportedContentTypes': pictured,
                 'QLThumbnailMinimumDimension': 0,
             },
         },

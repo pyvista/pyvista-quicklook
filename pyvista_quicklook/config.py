@@ -16,7 +16,7 @@ LOG_PATH = APP_SUPPORT / 'pvql.log'
 DEFAULTS: dict[str, Any] = {
     'python': None,
     'pvql': None,
-    'interactive': True,
+    'interactive': False,
     'info_panel': 'automatic',
     'warm_on_start': True,
     'max_scene_points': 2000000,

@@ -63,7 +63,7 @@ def test_handle_answers_with_a_scene_for_a_real_file(tmp_path, env, monkeypatch)
     source = tmp_path / 'sphere.vtp'
     pv.Sphere().save(source)
     request = tmp_path / 'token.pvqlreq'
-    request.write_text(json.dumps({'path': str(source), 'mtime': 1, 'size': 2}))
+    request.write_text(json.dumps({'path': str(source), 'mtime': 1, 'size': 2, 'scene': True}))
     daemon.handle(request)
     reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
     assert reply['ok'] is True

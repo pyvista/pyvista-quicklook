@@ -194,7 +194,7 @@ def test_config_lists_every_setting_and_marks_the_changed_ones(capsys, home):
         ('max_file_size_mb', ['0'], 0, '0'),
         ('timeout', ['90'], 90, '90'),
         ('timeout', ['2.5'], 2.5, '2.5'),
-        ('interactive', ['no'], False, 'false'),
+        ('interactive', ['yes'], True, 'true'),
         ('info_panel', ['side'], 'side', 'side'),
         ('window_size', ['1280', '720'], [1280, 720], '1280 720'),
         (

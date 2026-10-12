@@ -106,9 +106,12 @@ def test_scenes_blend_colours_as_vtk_does():
 
 def test_thumbnail_plist_covers_only_types_that_carry_a_picture():
     """The Finder asks the thumbnail extension only for claimed types that can embed one."""
-    thumb = plist.thumbnail_plist(['.pv', '.vtu'])
+    thumb = plist.thumbnail_plist(['.pv', '.3mf', '.vtu'])
     attributes = thumb['NSExtension']['NSExtensionAttributes']
-    assert attributes['QLSupportedContentTypes'] == [formats.uti_for('.pv')]
+    assert attributes['QLSupportedContentTypes'] == [
+        formats.uti_for('.pv'),
+        formats.uti_for('.3mf'),
+    ]
     assert thumb['NSExtension']['NSExtensionPointIdentifier'] == 'com.apple.quicklook.thumbnail'
     assert thumb['NSExtension']['NSExtensionPrincipalClass'] == plist.THUMB_PRINCIPAL_CLASS
     assert (
@@ -287,6 +290,7 @@ def test_handle_falls_back_to_the_staged_copy(tmp_path, monkeypatch):
                 'copy': str(tmp_path / 'copy.vtu'),
                 'mtime': 7,
                 'size': 3,
+                'scene': True,
             }
         )
     )
@@ -1191,7 +1195,9 @@ def test_handle_delivers_an_interactive_scene(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon.convert_mod, 'scene', lambda target, config, identity=None: ply)
 
     request = tmp_path / 'token.pvqlreq'
-    request.write_text(json.dumps({'path': str(tmp_path / 'mesh.vtu'), 'mtime': 1, 'size': 2}))
+    request.write_text(
+        json.dumps({'path': str(tmp_path / 'mesh.vtu'), 'mtime': 1, 'size': 2, 'scene': True})
+    )
     daemon.handle(request)
 
     reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
@@ -1289,7 +1295,9 @@ def test_handle_reports_why_the_scene_failed(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
     monkeypatch.setattr(daemon.convert_mod, 'scene', no_scene)
     request = tmp_path / 'token.pvqlreq'
-    request.write_text(json.dumps({'path': str(tmp_path / 'mesh.vtu'), 'mtime': 1, 'size': 2}))
+    request.write_text(
+        json.dumps({'path': str(tmp_path / 'mesh.vtu'), 'mtime': 1, 'size': 2, 'scene': True})
+    )
     daemon.handle(request)
     reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
     assert reply['ok'] is False

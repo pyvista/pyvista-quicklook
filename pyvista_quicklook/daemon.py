@@ -123,7 +123,7 @@ def cached_preview(identity: tuple[str, int, int] | None, config: dict[str, Any]
     """Return the cached preview a request asks for, or None when it must be built."""
     if identity is None or not config.get('cache', True):
         return None
-    if config.get('interactive', True):
+    if config.get('interactive', config_mod.DEFAULTS['interactive']):
         preview = convert_mod.scene_path(identity, config)
     else:
         preview = render_mod.preview_path(identity, config)
@@ -201,7 +201,7 @@ def one_at_a_time(identity: tuple[str, int, int] | None, config: dict[str, Any])
     if identity is None:
         yield
         return
-    key = (*identity, config.get('interactive', True))
+    key = (*identity, config.get('interactive', config_mod.DEFAULTS['interactive']))
     with _previewing_guard:
         entry = _previewing.setdefault(key, [threading.Lock(), 0])
         entry[1] += 1
@@ -242,7 +242,7 @@ def produce(
     identity: tuple[str, int, int] | None = None,
 ) -> Path:
     """Return a cached preview of a file: an interactive scene, or a still image if asked."""
-    if config.get('interactive', True):
+    if config.get('interactive', config_mod.DEFAULTS['interactive']):
         return convert_mod.scene(target, config, identity=identity)
     return render_mod.preview(target, config, identity=identity)
 
@@ -364,6 +364,9 @@ def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -
     if payload.get('describe') is True:
         write_json(reply, {'ok': True, 'info': description_only(source, config, identity)})
         return
+    if payload.get('scene') is True:
+        # The reader asked for the 3D view, whatever previews start as.
+        config = {**config, 'interactive': True}
     ready = cached_preview(identity, config)
     if payload.get('force') is True or ready is not None:
         # Asked for whatever its size, or previewed already, so no step of it applies the limit.

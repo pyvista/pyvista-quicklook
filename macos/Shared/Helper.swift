@@ -243,10 +243,11 @@ enum Helper {
     static func requestPreview(
         _ url: URL,
         force: Bool = false,
+        scene: Bool = false,
         early: (([String: Any]) -> Void)? = nil
     ) throws -> Reply {
         do {
-            return try exchange(url, force: force, copy: nil, early: early)
+            return try exchange(url, force: force, copy: nil, early: early, scene: scene)
         } catch let failure as Failure where failure.needsCopy {
             let directory = exchangeDirectory() as NSString
             let stagingPath = directory.appendingPathComponent("\(UUID().uuidString).staging")
@@ -256,7 +257,7 @@ enum Helper {
             }
             pvqlLog("staged a copy the service can read")
             do {
-                let reply = try exchange(url, force: force, copy: copy, early: early)
+                let reply = try exchange(url, force: force, copy: copy, early: early, scene: scene)
                 try? FileManager.default.removeItem(atPath: stagingPath)
                 return reply
             } catch let underway as Failure where underway.isUnderway {
@@ -302,6 +303,7 @@ enum Helper {
         force: Bool,
         copy: String?,
         early: (([String: Any]) -> Void)?,
+        scene: Bool = false,
         describe: Bool = false
     ) throws -> Reply {
         let directory = exchangeDirectory() as NSString
@@ -318,6 +320,9 @@ enum Helper {
         }
         if let copy {
             body["copy"] = copy
+        }
+        if scene {
+            body["scene"] = true
         }
         if describe {
             body["describe"] = true

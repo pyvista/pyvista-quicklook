@@ -147,6 +147,27 @@ def test_a_description_alone_converts_nothing(tmp_path, monkeypatch, cached, rea
     assert all(read is False for read in reads)
 
 
+@pytest.mark.parametrize(('payload', 'interactive'), [({}, False), ({'scene': True}, True)])
+def test_previews_are_pictures_unless_a_scene_is_asked_for(
+    tmp_path, monkeypatch, payload, interactive
+):
+    """A preview starts as a still image, and a request for the 3D view gets a scene."""
+    asked = []
+
+    def produce(target, config, identity):
+        asked.append(config.get('interactive', daemon.config_mod.DEFAULTS['interactive']))
+        message = 'stop'
+        raise RenderError(message)
+
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'produce', produce)
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/data/mesh.vtu', **payload}))
+    daemon.handle(request)
+    assert asked == [interactive]
+
+
 def test_a_still_image_is_sent_before_its_description(tmp_path, monkeypatch):
     """An image whose description is not cached is sent at once and described afterwards."""
     png = tmp_path / 'cached.png'
