@@ -83,6 +83,8 @@ def app_plist(extensions: list[str], helper: str | None = None) -> dict[str, Any
         'LSMinimumSystemVersion': MIN_MACOS,
         'LSApplicationCategoryType': 'public.app-category.developer-tools',
         'NSPrincipalClass': 'NSApplication',
+        # SceneKit then blends colours as VTK does, rather than in linear light.
+        'SCNDisableLinearSpaceRendering': True,
         'NSHighResolutionCapable': True,
         'UTExportedTypeDeclarations': exported_types(extensions),
         'CFBundleDocumentTypes': document_types(extensions),
@@ -107,6 +109,7 @@ def extension_plist(extensions: list[str], helper: str | None = None) -> dict[st
         'CFBundleShortVersionString': VERSION,
         'CFBundleVersion': VERSION,
         'LSMinimumSystemVersion': MIN_MACOS,
+        'SCNDisableLinearSpaceRendering': True,
         'NSExtension': {
             'NSExtensionPointIdentifier': 'com.apple.quicklook.preview',
             'NSExtensionPrincipalClass': EXT_PRINCIPAL_CLASS,

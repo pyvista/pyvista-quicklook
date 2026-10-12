@@ -39,17 +39,24 @@ func textContents(of url: URL) -> String? {
     return size > data.count ? text + "\n\n[first \(data.count / 1_000_000) MB of \(size / 1_000_000) MB]" : text
 }
 
+/// A scene view that keeps the lights turning with its camera.
+final class LitSceneView: SCNView {
+    /// Held here, since a view only keeps a weak reference to its delegate.
+    var lights: LightsFollowCamera?
+}
+
 /// Builds a view that lets the reader turn the mesh with the mouse.
 @MainActor
 func sceneView(for scene: SCNScene) -> SCNView {
-    let view = SCNView()
+    let view = LitSceneView()
     view.scene = scene
     view.allowsCameraControl = true
-    view.autoenablesDefaultLighting = true
     view.antialiasingMode = .multisampling4X
     view.backgroundColor = .clear
 
     view.pointOfView = previewCamera(for: scene)
+    view.lights = LightsFollowCamera(lightLikePyVista(scene))
+    view.delegate = view.lights
     return view
 }
 

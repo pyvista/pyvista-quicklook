@@ -37,8 +37,13 @@ def written(mesh_or_path, tmp_path, name='out.ply', **kwargs):
 
 
 def coloured(mesh):
-    """Return whether a PLY read back carries vertex colours."""
-    return any(name.lower() in {'rgb', 'red'} for name in mesh.array_names)
+    """Return whether a PLY read back is coloured by scalars, in more than one colour."""
+    return 'RGB' in mesh.array_names and len(np.unique(mesh['RGB'], axis=0)) > 1
+
+
+def plain(mesh):
+    """Return whether a PLY read back is drawn all in the theme's colour."""
+    return 'RGB' in mesh.array_names and bool((mesh['RGB'] == pv.global_theme.color.int_rgb).all())
 
 
 def test_a_surface_survives_with_its_faces(tmp_path):
@@ -103,19 +108,19 @@ def test_cell_scalars_are_split_rather_than_averaged(tmp_path):
     assert out.n_points == mesh.n_cells * 3
 
 
-def test_a_dataset_without_scalars_gets_no_colour(tmp_path):
-    """A file that asks for no colour is drawn plain, as pyvista plot draws it."""
+def test_a_dataset_without_scalars_is_drawn_in_the_theme_colour(tmp_path):
+    """A file that asks for no colour is drawn in the theme's colour, as pyvista plot draws it."""
     mesh = pv.Sphere(theta_resolution=8, phi_resolution=8)
     assert mesh.active_scalars_name is None
-    assert not coloured(written(mesh, tmp_path))
+    assert plain(written(mesh, tmp_path))
 
 
 def test_filter_arrays_do_not_become_the_colour(tmp_path):
     """Arrays that tube() and glyph() add are not mistaken for the file's own."""
-    assert not coloured(written(bare_polyline(), tmp_path, name='line.ply'))
+    assert plain(written(bare_polyline(), tmp_path, name='line.ply'))
 
     cloud = pv.PolyData(np.random.default_rng(0).random((100, 3)))
-    assert not coloured(written(cloud, tmp_path, name='cloud.ply'))
+    assert plain(written(cloud, tmp_path, name='cloud.ply'))
 
 
 def test_a_line_keeps_its_own_scalars(tmp_path):
@@ -129,17 +134,39 @@ def test_normals_are_not_mistaken_for_scalars(tmp_path):
     """A mesh carrying only normals is drawn plain."""
     mesh = pv.Sphere(theta_resolution=8, phi_resolution=8).compute_normals()
     mesh.set_active_scalars(None)
-    assert not coloured(written(mesh, tmp_path))
+    assert plain(written(mesh, tmp_path))
 
 
-def test_vtk_bookkeeping_arrays_are_stepped_over(tmp_path):
-    """An active vtk array yields to a real one rather than breaking the export."""
+def ghosted(normals_name):
+    """Return a sphere whose active scalars are VTK's ghost array, ahead of normals and regions."""
     mesh = pv.Sphere(theta_resolution=8, phi_resolution=8).triangulate()
+    mesh.point_data.set_array(mesh.point_data.pop('Normals'), normals_name)
+    mesh.point_data.active_normals_name = normals_name
     mesh.cell_data['vtkGhostType'] = np.zeros(mesh.n_cells, np.uint8)
     mesh.cell_data['region'] = (np.arange(mesh.n_cells) % 3).astype(float)
     mesh.set_active_scalars('vtkGhostType')
-    out = written(mesh, tmp_path)
-    assert coloured(out)
+    return mesh
+
+
+@pytest.mark.parametrize('normals_name', ['Normals', 'n'])
+def test_vtk_bookkeeping_arrays_are_stepped_over(tmp_path, normals_name):
+    """An active vtk array yields to a real one, not to the normals, rather than breaking."""
+    assert coloured(written(ghosted(normals_name), tmp_path))
+
+
+@pytest.mark.parametrize('normals_name', ['Normals', 'n'])
+def test_a_selectively_read_file_steps_over_normals(tmp_path, normals_name):
+    """A .pv file read array by array is coloured by a real array, not by its normals."""
+    source = tmp_path / 'in.pv'
+    ghosted(normals_name).save(source)
+    assert coloured(written(str(source), tmp_path))
+
+
+def test_the_plain_colour_follows_the_theme(tmp_path, monkeypatch):
+    """A mesh without scalars takes the theme's colour, whatever the theme is."""
+    monkeypatch.setattr(pv.global_theme, 'color', 'red')
+    out = written(pv.Sphere(theta_resolution=8, phi_resolution=8), tmp_path)
+    assert (out['RGB'] == (255, 0, 0)).all()
 
 
 def test_the_result_is_centred(tmp_path):

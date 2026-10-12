@@ -705,6 +705,14 @@ def test_small_xml_files_are_read_whole(tmp_path):
             ('p', 'Cell'),
         ),
         ([{'name': 'vtkIds', 'association': 'Point', 'active': ['scalars']}], None),
+        (
+            [
+                {'name': 'vtkGhostType', 'association': 'Cell', 'active': ['scalars']},
+                {'name': 'n', 'association': 'Point', 'active': ['normals']},
+                {'name': 'region', 'association': 'Cell', 'active': []},
+            ],
+            ('region', 'Cell'),
+        ),
     ],
 )
 def test_the_colour_is_chosen_from_the_header_as_from_the_data(rows, expected):
