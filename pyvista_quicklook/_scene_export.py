@@ -312,9 +312,11 @@ def choose_scalars(dataset: pv.DataSet) -> pv.DataSet:
         return dataset
     if not name.startswith('vtk'):
         return dataset
+    normals = {'Normals', dataset.point_data.active_normals_name}
     for source in (dataset.point_data, dataset.cell_data):
         for candidate in source:
-            if not candidate.startswith('vtk'):
+            # Normals are unit length everywhere, so they would colour the mesh one shade.
+            if not candidate.startswith('vtk') and candidate not in normals:
                 dataset.set_active_scalars(candidate)
                 return dataset
     dataset.set_active_scalars(None)
