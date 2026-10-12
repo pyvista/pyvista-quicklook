@@ -119,10 +119,11 @@ _describing_guard = threading.Lock()
 
 
 def describe_later(target: str, preview: Path, config: dict[str, Any]) -> threading.Thread | None:
-    """Describe a file on a thread of its own, unless the panel is hidden or it already is."""
+    """Describe a file on a thread of its own, unless that is done, underway, or not wanted."""
     described = convert_mod.info_path(preview)
     with _describing_guard:
-        if not convert_mod.wants_info(config) or described in _describing:
+        wanted = convert_mod.wants_info(config) and not described.is_file()
+        if not wanted or described in _describing:
             return None
         _describing.add(described)
 

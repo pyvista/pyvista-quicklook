@@ -148,6 +148,8 @@ def test_a_file_is_described_once_at_a_time(tmp_path, monkeypatch):
     first.join(5)
     assert len(calls) == 1
     assert daemon.describe_later('/data/x.vtu', preview, {}) is not None
+    daemon.convert_mod.info_path(preview).write_text('{}')
+    assert daemon.describe_later('/data/x.vtu', preview, {}) is None
 
 
 def test_sweep_removes_only_stale_replies(tmp_path):
