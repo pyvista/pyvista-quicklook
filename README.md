@@ -128,7 +128,7 @@ the last suffix of a compressed dataset:
 
 A folder of DICOM slices is claimed the same way, through `public.folder`.
 
-3 more have a type and a preview of their own in macOS, which Quick Look keeps to;
+3 more have a type and a preview of their own in macOS, which Quick Look always uses;
 the app can open them instead (see [Native formats](#native-formats)):
 
 - `.obj` (`public.geometry-definition-format`)
@@ -162,12 +162,15 @@ pvql config set extensions.remove .dat
 
 macOS previews `.ply`, `.stl` and `.obj` itself, showing the shape but nothing about the
 data, and Quick Look uses that viewer for any 3D file before it consults extensions, so
-pressing space on one never shows this preview. The app does declare those types, so it
-can be chosen to open them: select a `.ply` in the Finder, press ⌘I, choose PyVista Quick
-Look under Open With, and click Change All. Double-clicking such a file then opens this
-preview, render and dataset panel alike, in a window of its own. Any claimed file can be
-opened the same way, except the compressed formats claimed through gzip and DICOM
-folders, since the app would otherwise offer to open every gzip archive and folder.
+pressing space on one never shows this preview. The app is offered for them under Open
+With instead: select a `.ply` in the Finder, press ⌘I, choose PyVista Quick Look under
+Open With, and click Change All. Double-clicking such a file then opens this preview,
+render and dataset panel alike, in a window of its own.
+
+The claimed formats open the same way. The app is their default opener unless another
+app that reads them, such as ParaView, says it is, and Open With chooses between them.
+The compressed formats claimed through gzip and DICOM folders are not opened by the app,
+since it would otherwise offer to open every gzip archive and folder.
 
 ## How it works
 

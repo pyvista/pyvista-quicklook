@@ -104,7 +104,7 @@ def section() -> str:
         '',
         (
             f'{len(NATIVE_TYPES)} more have a type and a preview of their own in macOS, which'
-            ' Quick Look keeps to;'
+            ' Quick Look always uses;'
         ),
         'the app can open them instead (see [Native formats](#native-formats)):',
         '',

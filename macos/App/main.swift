@@ -13,6 +13,8 @@ final class StatusController: NSObject, NSApplicationDelegate {
     let runButton = NSButton(title: "Run Diagnostics", target: nil, action: nil)
     /// Whether the app was asked to open files, each then shown in a window of its own.
     var openedFiles = false
+    /// Where the next file's window goes, so several are offset rather than stacked.
+    var nextWindowCorner = NSPoint.zero
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
@@ -37,6 +39,7 @@ final class StatusController: NSObject, NSApplicationDelegate {
             window.title = url.lastPathComponent
             window.setContentSize(NSSize(width: 1100, height: 720))
             window.center()
+            nextWindowCorner = window.cascadeTopLeft(from: nextWindowCorner)
             window.isReleasedWhenClosed = false
             window.makeKeyAndOrderFront(nil)
             controller.preparePreviewOfFile(at: url) { error in

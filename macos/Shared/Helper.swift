@@ -145,12 +145,17 @@ enum Helper {
         return (path as NSString).expandingTildeInPath
     }
 
-    /// Returns the folder the service watches: the extension's container, named in full by the app.
+    /// Returns the folder the service watches: the extension's container, found by the app
+    /// from the extension it embeds.
     static func exchangeDirectory() -> String {
-        if ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil {
+        guard ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] == nil,
+              let plugIns = Bundle.main.builtInPlugInsURL,
+              let embedded = try? FileManager.default.contentsOfDirectory(at: plugIns, includingPropertiesForKeys: nil),
+              let identifier = embedded.lazy.compactMap({ Bundle(url: $0)?.bundleIdentifier }).first
+        else {
             return NSTemporaryDirectory()
         }
-        let container = "\(realHome())/Library/Containers/org.pyvista.PyVistaQuickLook.QuickLook/Data/tmp/"
+        let container = "\(realHome())/Library/Containers/\(identifier)/Data/tmp/"
         try? FileManager.default.createDirectory(atPath: container, withIntermediateDirectories: true)
         return container
     }

@@ -909,12 +909,15 @@ def test_claimed_extensions_follows_config():
 
 
 def test_types_lists_claimed_extensions(capsys, monkeypatch):
-    """`pvql types` prints one line per claimed extension."""
+    """`pvql types` prints one line per claimed extension, and marks macOS's own apart."""
     monkeypatch.setattr(cli.config_mod, 'load', lambda: dict(cli.config_mod.DEFAULTS))
     assert cli.cmd_types(argparse.Namespace(all=False)) == 0
-    out = capsys.readouterr().out
-    assert '.vtu' in out
-    assert 'extensions claimed' in out
+    lines = capsys.readouterr().out.splitlines()
+    assert any(line.startswith('✓ .vtu ') for line in lines)
+    [stl] = [line for line in lines if ' .stl ' in f' {line}']
+    assert stl.startswith('→ .stl ')
+    assert 'not previewed' in stl
+    assert any('extensions claimed' in line for line in lines)
 
 
 def test_plist_writes_both_files(tmp_path, monkeypatch):
