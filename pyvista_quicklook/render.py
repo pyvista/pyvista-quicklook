@@ -24,6 +24,11 @@ def cache_key(identity: tuple[str, int, int], config: dict[str, Any]) -> str:
     return cache.digest(identity, settings)
 
 
+def preview_path(identity: tuple[str, int, int], config: dict[str, Any]) -> Path:
+    """Return where a file's still image is cached."""
+    return config_mod.CACHE_DIR / f'{cache_key(identity, config)}.png'
+
+
 def build_command(executable: str, path: Path, out: Path, config: dict[str, Any]) -> list[str]:
     """Return the ``pyvista plot`` command used to render a preview."""
     width, height = config.get('window_size') or [1024, 1024]
@@ -67,5 +72,4 @@ def preview(
         command = build_command(executable, path, scratch, config)
         environment.run(config, command, task=f'Rendering {path.name}', cwd=path.parent)
 
-    out = config_mod.CACHE_DIR / f'{cache_key(identity, config)}.png'
-    return cache.fill(out, config, str(path), build)
+    return cache.fill(preview_path(identity, config), config, str(path), build)

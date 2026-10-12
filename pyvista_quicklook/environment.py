@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -16,6 +17,14 @@ ENVIRON = {'PYVISTA_OFF_SCREEN': 'true', 'MPLBACKEND': 'Agg'}
 
 class RenderError(Exception):
     """Raised when a preview cannot be produced."""
+
+
+class NotAMeshError(RenderError):
+    """Raised when the file holds no mesh, so it is shown as whatever else it is."""
+
+
+# The exporter's exit status for a file that holds no mesh, as ``_scene_export`` sets it.
+NOT_A_MESH_STATUS = 3
 
 
 def log(config: dict[str, Any], message: str) -> None:
@@ -40,15 +49,22 @@ def source_path(source: str | os.PathLike[str]) -> Path:
     return path
 
 
+def limit_suggestion(size_mb: float) -> int:
+    """Return a size limit, in megabytes, a little above a file's size."""
+    return max(512, math.ceil(size_mb / 512) * 512)
+
+
 def check_size(identity: tuple[str, int, int], config: dict[str, Any]) -> None:
-    """Refuse files above the configured size limit, explaining how to raise it."""
+    """Refuse files above the configured size limit, saying how to preview them anyway."""
     limit_mb = config.get('max_file_size_mb') or 0
-    size_mb = identity[2] / 1024 / 1024
+    # Megabytes as the Finder counts them.
+    size_mb = identity[2] / 1_000_000
     if limit_mb and size_mb > limit_mb:
         name = Path(identity[0]).name
         message = (
             f'{name} is {size_mb:.0f} MB, above the {limit_mb} MB preview limit.\n'
-            f'Raise "max_file_size_mb" in {config_mod.CONFIG_PATH} to preview it.'
+            f'To preview files this large without asking, run:\n\n'
+            f'    pvql config set max_file_size_mb {limit_suggestion(size_mb)}'
         )
         raise RenderError(message)
 
@@ -58,8 +74,8 @@ def interpreter(config: dict[str, Any]) -> str:
     found = config_mod.find_python(config)
     if found is None:
         message = (
-            'No PyVista environment is configured.\n'
-            f'Set "python" to its interpreter in {config_mod.CONFIG_PATH}.'
+            'No PyVista environment is configured. Name its interpreter with:\n\n'
+            '    pvql config set python /path/to/bin/python'
         )
         raise RenderError(message)
     return found
@@ -95,7 +111,12 @@ def run(
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or '').strip()
         message = f'{task} failed.\n\n{tail(detail)}'
+        if completed.returncode == NOT_A_MESH_STATUS:
+            raise NotAMeshError(message)
         raise RenderError(message)
+    if completed.stderr.strip():
+        # What a successful run reported, such as a fast path it fell back from.
+        log(config, f'{task}: {tail(completed.stderr.strip())}')
     return completed
 
 

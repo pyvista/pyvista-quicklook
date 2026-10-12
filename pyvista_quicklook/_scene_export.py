@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from typing import Any
 
 import numpy as np
 import pyvista as pv
@@ -59,6 +60,134 @@ def read(source: str) -> object:
     if dataset is None and failure is not None:
         raise failure
     return dataset
+
+
+# Above this size an XML file is read with only the array it is coloured by; a ``.pv`` file
+# always is, since its other arrays can be measured one at a time.
+SELECTIVE_BYTES = 256 * 1024 * 1024
+
+
+def colour_choice(rows: list[dict[str, Any]]) -> tuple[str, str] | None:
+    """Return the array the header says a dataset is coloured by, as ``choose_scalars`` picks."""
+    active = next((row for row in rows if 'scalars' in row['active']), None)
+    if active is None:
+        return None
+    if not active['name'].startswith('vtk'):
+        return active['name'], active['association']
+    for association in ('Point', 'Cell'):
+        for row in rows:
+            if row['association'] == association and not row['name'].startswith('vtk'):
+                return row['name'], association
+    return None
+
+
+def read_selectively(source: str) -> tuple[object, dict[str, Any]] | None:
+    """Read a dataset with only the array it is coloured by, and its header for the rest.
+
+    Returns None when the format has no header to describe the rest, so it is read whole.
+    """
+    path = Path(source)
+    suffix = path.suffix.lower()
+    if suffix == '.pv':
+        header = _dataset_info.zstd_header(path)
+    elif suffix in _dataset_info.HEADERS and path.stat().st_size > SELECTIVE_BYTES:
+        header = _dataset_info.xml_header(path)
+    else:
+        return None
+    if not header:
+        return None
+    choice = colour_choice(header['rows'])
+    point = {choice[0]} if choice and choice[1] == 'Point' else set()
+    cell = {choice[0]} if choice and choice[1] == 'Cell' else set()
+    if suffix == '.pv':
+        import pyvista_zstd
+
+        # Measured before the mesh is read, so the two are never in memory together.
+        loaded = {(name, 'Point') for name in point} | {(name, 'Cell') for name in cell}
+        _dataset_info.zstd_ranges(path, header, skip=loaded)
+        with pyvista_zstd.Reader(path) as reader:
+            reader.selected_point_arrays = point
+            reader.selected_cell_arrays = cell
+            dataset = reader.read()
+    else:
+        # Text has no range in the header, so string arrays are read too for their preview.
+        for row in header['rows']:
+            if row['dtype'] == 'string':
+                {'Point': point, 'Cell': cell}.get(row['association'], set()).add(row['name'])
+        reader = pv.get_reader(str(path))
+        reader.disable_all_point_arrays()
+        reader.disable_all_cell_arrays()
+        for name in point:
+            reader.enable_point_array(name)
+        for name in cell:
+            reader.enable_cell_array(name)
+        dataset = reader.read()
+    if choice:
+        dataset.set_active_scalars(choice[0], preference=choice[1].lower())
+    return dataset, header
+
+
+# The exit status that tells the service the file holds no mesh, rather than that it failed.
+NOT_A_MESH_STATUS = 3
+
+
+class NotAMeshError(Exception):
+    """Raised when a file cannot be read as a mesh, or holds nothing to show."""
+
+
+def read_for_preview(source: str) -> tuple[object, dict[str, Any] | None]:
+    """Read a dataset as little as its format allows, with the header that describes the rest."""
+    if not os.path.isdir(source):
+        # Raises for a missing or unreadable file, which VTK would only log.
+        with Path(source).open('rb'):
+            pass
+    selective = None
+    try:
+        selective = read_selectively(source)
+    except Exception as error:  # noqa: BLE001
+        # Reported for the service's log; the file is then read whole.
+        sys.stderr.write(f'selective read skipped: {summary(error)}\n')
+    if selective is not None:
+        return selective
+    try:
+        dataset = read(source), None
+    except OSError, ImportError, MemoryError:
+        # The file, the environment, or the machine is at fault, not the format.
+        raise
+    except (Exception, SystemExit) as error:
+        if looks_like_text(source):
+            raise NotAMeshError(summary(error)) from error
+        raise
+    if point_count(dataset[0]) == 0:
+        raise empty(source)
+    return dataset
+
+
+def point_count(dataset: object) -> int:
+    """Return how many points a dataset or composite holds, counting a mystery as some."""
+    if isinstance(dataset, pv.MultiBlock):
+        return sum(block.n_points for block in dataset.recursive_iterator('blocks'))
+    return int(getattr(dataset, 'n_points', 1))
+
+
+def empty(source: str) -> Exception:
+    """Return the error for a file read as a mesh that holds nothing to show."""
+    message = 'the dataset has no surface to show'
+    # Text with nothing in it is shown as text; a binary file with nothing is a failure.
+    return NotAMeshError(message) if looks_like_text(source) else ValueError(message)
+
+
+def looks_like_text(source: str) -> bool:
+    """Return whether a file's opening reads as text, which is then worth showing as such."""
+    try:
+        with Path(source).open('rb') as handle:
+            head = handle.read(8192)
+    except OSError:
+        return False
+    if not head or b'\0' in head:
+        return False
+    controls = sum(byte < 32 and byte not in (9, 10, 13) for byte in head)
+    return controls * 100 < len(head)
 
 
 def skin_estimate(dimensions: tuple[int, int, int]) -> int:
@@ -226,10 +355,12 @@ def colours_for(surface: pv.PolyData) -> np.ndarray | None:
     return ramp()[(normalised * 255).round().astype(np.intp)]
 
 
-def write_info(dataset: object, source: str, destination: str) -> None:
+def write_info(
+    dataset: object, source: str, destination: str, header: dict[str, Any] | None = None
+) -> None:
     """Write what the info panel shows about a dataset; a failure leaves the panel out."""
     try:
-        info = _dataset_info.describe(dataset, source)
+        info = _dataset_info.describe(dataset, source, header)
     except Exception as error:  # noqa: BLE001
         sys.stderr.write(f'info skipped: {type(error).__name__}: {error}\n')
         return
@@ -244,9 +375,9 @@ def export(
     info: str | None = None,
 ) -> None:
     """Write a mesh file out as a PLY with vertex colours; a budget of zero is no cap."""
-    dataset = read(source)
+    dataset, header = read_for_preview(source)
     if info:
-        write_info(dataset, source, info)
+        write_info(dataset, source, info, header)
     if isinstance(dataset, pv.DataSet):
         dataset = slice_volume(choose_scalars(thin(dataset, max_points)))
     # Triangulating first would discard the vertex and line cells solidify needs.
@@ -256,8 +387,7 @@ def export(
     # tube() and glyph() add arrays of their own; colour only by what the file had.
     surface.set_active_scalars(wanted if wanted in surface.array_names else None)
     if surface.n_points == 0:
-        message = 'the dataset has no surface to show'
-        raise ValueError(message)
+        raise empty(source)
 
     # Merging coincident points first, since the surface filter leaves a volume's faces
     # unjoined at their edges. The budget counts a surface once, whatever its sides.
@@ -282,6 +412,12 @@ def export(
     surface.save(destination, texture='RGB' if 'RGB' in surface.point_data else None)
 
 
+def summary(error: BaseException) -> str:
+    """Return an error as one short line, named by its type."""
+    text = ' '.join(str(error).split())[:200]
+    return f'{type(error).__name__}: {text}' if text else type(error).__name__
+
+
 def main() -> int:
     """Run the converter from the command line."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -290,20 +426,26 @@ def main() -> int:
     parser.add_argument('--max-points', type=int, default=0)
     parser.add_argument('--max-glyphs', type=int, default=0)
     parser.add_argument('--info')
+    parser.add_argument('--header', help='describe from the header alone, reading no values')
     args = parser.parse_args()
-    if args.destination is None and args.info is None:
-        parser.error('give a destination, --info, or both')
+    if args.destination is None and args.info is None and args.header is None:
+        parser.error('give a destination, --info, --header, or a combination')
     try:
+        if args.header is not None:
+            Path(args.header).write_text(json.dumps(_dataset_info.header_info(args.source)))
         if args.destination is not None:
             export(args.source, args.destination, args.max_points, args.max_glyphs, args.info)
-        else:
-            write_info(read(args.source), args.source, args.info)
+        elif args.info is not None:
+            dataset, header = read_for_preview(args.source)
+            write_info(dataset, args.source, args.info, header)
     except Exception as error:
         # The reason is shown in the Quick Look panel, where a traceback would fill it.
         if os.environ.get('PVQL_TRACEBACK'):
             raise
-        summary = ' '.join(str(error).split())[:200] or type(error).__name__
-        sys.stderr.write(f'{type(error).__name__}: {summary}\n')
+        if isinstance(error, NotAMeshError):
+            sys.stderr.write(f'{error}\n')
+            return NOT_A_MESH_STATUS
+        sys.stderr.write(f'{summary(error)}\n')
         return 1
     return 0
 

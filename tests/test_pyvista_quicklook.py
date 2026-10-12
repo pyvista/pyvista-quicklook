@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,9 @@ import plistlib
 import re
 import subprocess
 import sys
+import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -160,6 +163,22 @@ def test_preview_rejects_files_above_the_limit(tmp_path):
         render.preview(sample, config, identity=(str(sample), 0, 5 * 1024 * 1024))
 
 
+@pytest.mark.parametrize(
+    ('size', 'refused'), [(2_048_000_000, False), (2_048_000_001, True), (2_510_000_000, True)]
+)
+def test_the_limit_counts_megabytes_as_the_finder_does(size, refused):
+    """Sizes are decimal megabytes, so the message agrees with Get Info."""
+    identity = ('/data/big.pv', 0, size)
+    if not refused:
+        environment.check_size(identity, {'max_file_size_mb': 2048})
+        return
+    with pytest.raises(environment.RenderError) as raised:
+        environment.check_size(identity, {'max_file_size_mb': 2048})
+    if size == 2_510_000_000:
+        assert str(raised.value).startswith('big.pv is 2510 MB, above the 2048 MB preview limit.')
+        assert str(raised.value).endswith('pvql config set max_file_size_mb 2560')
+
+
 def test_preview_reports_a_missing_file(tmp_path):
     """A path that does not exist is reported plainly."""
     with pytest.raises(environment.RenderError, match='No such file'):
@@ -246,21 +265,466 @@ def test_handle_reports_unreachable_files_without_a_copy(tmp_path, monkeypatch):
     reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
     assert reply['ok'] is False
     assert 'Privacy & Security' in reply['error']
-    # Marked so the panel shows the whole message rather than the file's details.
-    assert reply['actionable'] is True
+    # The extension copies a file only when asked, then requests it again with the copy.
+    assert reply['needs_copy'] is True
 
 
-def test_handle_refuses_a_large_file_before_touching_it(tmp_path, monkeypatch):
-    """The size limit is applied to the request itself, before any read or copy."""
+def test_handle_previews_the_copy_of_an_unreadable_file(tmp_path, monkeypatch):
+    """A request that brings a copy of a file in an unreadable folder previews the copy."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    built = []
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'info_panel': 'hidden'})
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: False)
+    monkeypatch.setattr(
+        daemon, 'produce', lambda target, config, identity: built.append(target) or png
+    )
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/private/mesh.vtu', 'copy': '/staged/mesh.vtu'}))
+    daemon.handle(request)
+    assert json.loads((tmp_path / 'token.pvqlrep').read_text())['ok'] is True
+    assert built == ['/staged/mesh.vtu']
+
+
+def test_handle_refuses_a_large_file_before_converting_it(tmp_path, monkeypatch):
+    """Above the limit a file is not converted, only its header read, and the reply says so."""
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_file_size_mb': 1})
-    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: pytest.fail('read attempted'))
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'produce', lambda *args: pytest.fail('converted'))
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': 'X'})
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/data/huge.vtu', 'mtime': 1, 'size': 5_000_000_000}))
+    daemon.handle(request)
+    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert reply['ok'] is False
+    assert 'pvql config set max_file_size_mb 5120' in reply['error']
+    assert reply['too_large'] is True
+    assert 'not_a_mesh' not in reply
+    assert reply['info'] == {'type': 'X'}
+
+
+def test_handle_refuses_an_unreachable_large_file_without_reading_it(tmp_path, monkeypatch):
+    """A large file the service cannot reach is refused without a description."""
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_file_size_mb': 1})
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: False)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda *args: pytest.fail('read attempted'))
     request = tmp_path / 'token.pvqlreq'
     request.write_text(json.dumps({'path': '/private/huge.vtu', 'mtime': 1, 'size': 5 * 2**30}))
     daemon.handle(request)
     reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert reply['too_large'] is True
+    assert 'info' not in reply
+
+
+def test_handle_previews_a_large_file_when_forced(tmp_path, monkeypatch):
+    """A forced request skips the size limit."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    monkeypatch.setattr(
+        daemon.config_mod, 'load', lambda: {'max_file_size_mb': 1, 'info_panel': 'hidden'}
+    )
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+
+    def produce(target, config, identity):
+        environment.check_size(identity, config)
+        return png
+
+    monkeypatch.setattr(daemon, 'produce', produce)
+    request = tmp_path / 'token.pvqlreq'
+    body = {'path': '/data/huge.vtu', 'mtime': 1, 'size': 5 * 2**30, 'force': True}
+    request.write_text(json.dumps(body))
+    daemon.handle(request)
+    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert reply['ok'] is True
+
+
+def test_handle_sends_the_header_ahead_of_a_slow_preview(tmp_path, monkeypatch):
+    """A large file's header arrives first, and the preview after it."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    early = tmp_path / f'token{daemon.EARLY_SUFFIX}'
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: None)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': 'Early'})
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: {'type': 'Final'})
+
+    def slow(target, config, identity):
+        deadline = time.monotonic() + 10
+        while not early.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return png
+
+    monkeypatch.setattr(daemon, 'produce', slow)
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(
+        json.dumps({'path': '/data/big.vtu', 'mtime': 1, 'size': daemon.EARLY_BYTES})
+    )
+    daemon.handle(request)
+    assert json.loads(early.read_text()) == {'ok': True, 'info': {'type': 'Early'}}
+    assert json.loads((tmp_path / 'token.pvqlrep').read_text())['info'] == {'type': 'Final'}
+
+
+def converting_together(tmp_path, monkeypatch, sizes, budget_mb):
+    """Request files of the given sizes at once and return how many converted together."""
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_conversion_memory_mb': budget_mb})
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: None)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: None)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
+    png = tmp_path / 'built.png'
+    png.write_bytes(b'png')
+    running, peak = [], []
+    together = threading.Barrier(len(sizes), timeout=1)
+
+    def build(target, config, identity):
+        running.append(target)
+        peak.append(len(running))
+        # Waits for the others to start too, which they do only if memory allows.
+        with contextlib.suppress(threading.BrokenBarrierError):
+            together.wait()
+        running.remove(target)
+        return png
+
+    monkeypatch.setattr(daemon, 'produce', build)
+    threads = []
+    for index, size in enumerate(sizes):
+        request = tmp_path / f'r{index}.pvqlreq'
+        request.write_text(json.dumps({'path': f'/data/{index}.vtu', 'mtime': 1, 'size': size}))
+        threads.append(threading.Thread(target=daemon.handle, args=(request,), daemon=True))
+        threads[-1].start()
+    for thread in threads:
+        thread.join(10)
+    for index in range(len(sizes)):
+        assert json.loads((tmp_path / f'r{index}.pvqlrep').read_text())['ok'] is True
+    return max(peak)
+
+
+def test_small_files_convert_side_by_side(tmp_path, monkeypatch):
+    """Files whose conversions fit the memory budget together all start at once."""
+    assert converting_together(tmp_path, monkeypatch, [1_000_000] * 3, budget_mb=1000) == 3
+
+
+def test_a_file_too_big_for_the_budget_converts_alone(tmp_path, monkeypatch):
+    """A conversion that would exceed the budget waits, then runs even if it alone exceeds it."""
+    assert converting_together(tmp_path, monkeypatch, [1_000_000, 500_000_000], 1000) == 1
+
+
+def test_a_small_file_converts_beside_a_big_one(tmp_path, monkeypatch):
+    """A big conversion leaves room for a small one when the budget allows both."""
+    sizes = [1_000_000_000, 1_000_000]
+    assert converting_together(tmp_path, monkeypatch, sizes, budget_mb=7000) == 2
+
+
+def test_two_requests_for_one_file_build_it_once(tmp_path, monkeypatch):
+    """Quick Look's second request for a file waits for the first build and reuses it."""
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: None)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
+    png = tmp_path / 'built.png'
+    builds, running, peak = [], [], []
+    monkeypatch.setattr(
+        daemon, 'cached_preview', lambda identity, config: png if png.exists() else None
+    )
+
+    def build(target, config, identity):
+        running.append(target)
+        peak.append(len(running))
+        if not png.exists():
+            builds.append(target)
+            time.sleep(0.2)
+            png.write_bytes(b'png')
+        running.remove(target)
+        return png
+
+    monkeypatch.setattr(daemon, 'produce', build)
+    threads = []
+    for token in ('small', 'large'):
+        request = tmp_path / f'{token}.pvqlreq'
+        request.write_text(json.dumps({'path': '/data/a.vtu', 'mtime': 1, 'size': 10}))
+        threads.append(threading.Thread(target=daemon.handle, args=(request,)))
+        threads[-1].start()
+    for thread in threads:
+        thread.join(10)
+    assert builds == ['/data/a.vtu']
+    assert max(peak) == 1
+    for token in ('small', 'large'):
+        assert json.loads((tmp_path / f'{token}.pvqlrep').read_text())['ok'] is True
+    assert daemon._previewing == {}
+
+
+def test_scratch_files_are_named_per_thread():
+    """Two builds in one process never write the same scratch file."""
+    tags = []
+    worker = threading.Thread(target=lambda: tags.append(cache.scratch_tag()))
+    worker.start()
+    worker.join(5)
+    assert tags[0] != cache.scratch_tag()
+
+
+def test_a_big_conversion_waits_its_turn_rather_than_forever():
+    """Waiters start in order, so a conversion too big to share is not passed over."""
+    budget = daemon.MemoryBudget()
+    order = []
+    release = threading.Event()
+    started = threading.Event()
+
+    def run(name, amount, wait=False):
+        with budget.reserve(amount, 10):
+            order.append(name)
+            started.set()
+            if wait:
+                release.wait(5)
+
+    first = threading.Thread(target=run, args=('small', 1, True), daemon=True)
+    first.start()
+    assert started.wait(5)
+    big = threading.Thread(target=run, args=('big', 100), daemon=True)
+    big.start()
+    time.sleep(0.1)
+    later = threading.Thread(target=run, args=('later', 1), daemon=True)
+    later.start()
+    time.sleep(0.1)
+    assert order == ['small']
+    release.set()
+    for thread in (first, big, later):
+        thread.join(5)
+    assert order == ['small', 'big', 'later']
+
+
+def test_a_handler_that_dies_still_replies(tmp_path, monkeypatch):
+    """An error outside the handler's own guard is reported, not lost with the thread."""
+    monkeypatch.setattr(daemon, 'handle', lambda request: 1 / 0)
+    request = tmp_path / 'token.pvqltaken'
+    request.write_text('{}')
+    daemon.answer(request)
+    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
     assert reply['ok'] is False
-    assert 'preview limit' in reply['error']
-    assert reply['actionable'] is True
+    assert reply['error'].startswith('ZeroDivisionError')
+    assert not request.exists()
+
+
+def test_a_handler_that_replied_before_dying_keeps_its_reply(tmp_path, monkeypatch):
+    """A reply already written is not replaced by the error that followed it."""
+
+    def reply_then_die(request):
+        request.with_suffix(daemon.REPLY_SUFFIX).write_text('{"ok": true}')
+        raise ZeroDivisionError
+
+    monkeypatch.setattr(daemon, 'handle', reply_then_die)
+    request = tmp_path / 'token.pvqltaken'
+    request.write_text('{}')
+    daemon.answer(request)
+    assert json.loads((tmp_path / 'token.pvqlrep').read_text()) == {'ok': True}
+
+
+@pytest.mark.parametrize('reachable', [True, False])
+def test_a_large_file_previewed_once_is_not_refused_again(tmp_path, monkeypatch, reachable):
+    """Once Preview Anyway has built a file, it is served again, even from a private folder."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_file_size_mb': 1})
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: reachable)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: png)
+    monkeypatch.setattr(daemon, 'produce', lambda *args: pytest.fail('built again'))
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda *args: pytest.fail('header read'))
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: {'type': 'X'})
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/data/huge.vtu', 'mtime': 1, 'size': 5 * 10**9}))
+    daemon.handle(request)
+    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert reply['ok'] is True
+    assert Path(reply['png']).read_bytes() == b'png'
+
+
+def test_the_memory_budget_and_estimates(tmp_path):
+    """The budget is half the memory unless set, 0 lifts it, and a folder converts alone."""
+    assert daemon.memory_budget({}) == daemon.physical_memory() // 2
+    assert daemon.memory_budget({'max_conversion_memory_mb': 0}) == sys.maxsize
+    assert daemon.memory_budget({'max_conversion_memory_mb': 512}) == 512_000_000
+    assert daemon.conversion_memory('/data/a.vtu', ('/data/a.vtu', 1, 10)) == (
+        daemon.BASE_MEMORY + 10 * daemon.MEMORY_PER_FILE_BYTE
+    )
+    assert daemon.conversion_memory(str(tmp_path), (str(tmp_path), 1, 10)) == sys.maxsize
+    assert daemon.conversion_memory('/data/a.vtu', None) == sys.maxsize
+
+
+def test_a_forced_preview_also_sends_its_header_first(tmp_path, monkeypatch):
+    """Previewing a file above the limit anyway still shows its header while it converts."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    early = tmp_path / f'token{daemon.EARLY_SUFFIX}'
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_file_size_mb': 1})
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: None)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': 'Early'})
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
+
+    def slow(target, config, identity):
+        environment.check_size(identity, config)
+        deadline = time.monotonic() + 10
+        while not early.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return png
+
+    monkeypatch.setattr(daemon, 'produce', slow)
+    request = tmp_path / 'token.pvqlreq'
+    body = {'path': '/data/huge.vtu', 'mtime': 1, 'size': 5_000_000_000, 'force': True}
+    request.write_text(json.dumps(body))
+    daemon.handle(request)
+    assert json.loads(early.read_text())['info'] == {'type': 'Early'}
+    assert json.loads((tmp_path / 'token.pvqlrep').read_text())['ok'] is True
+
+
+def test_a_second_request_gets_its_header_while_the_first_converts(tmp_path, monkeypatch):
+    """Quick Look asks twice for one file; the second waits for the mesh, not for the header."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    # Too little memory for two at once, so the second conversion waits for the first.
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_conversion_memory_mb': 1})
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: None)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': 'Early'})
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
+    release = threading.Event()
+    converting, peak = [], []
+
+    def slow(target, config, identity):
+        converting.append(identity)
+        peak.append(len(converting))
+        release.wait(10)
+        converting.pop()
+        return png
+
+    monkeypatch.setattr(daemon, 'produce', slow)
+    body = json.dumps({'path': '/data/big.vtu', 'mtime': 1, 'size': daemon.EARLY_BYTES})
+    threads = []
+    for token in ('first', 'second'):
+        request = tmp_path / f'{token}.pvqlreq'
+        request.write_text(body)
+        threads.append(threading.Thread(target=daemon.handle, args=(request,)))
+        threads[-1].start()
+    second_early = tmp_path / f'second{daemon.EARLY_SUFFIX}'
+    deadline = time.monotonic() + 10
+    while not second_early.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert second_early.exists()
+    assert not (tmp_path / 'first.pvqlrep').exists()
+    release.set()
+    for thread in threads:
+        thread.join(10)
+    for token in ('first', 'second'):
+        assert json.loads((tmp_path / f'{token}.pvqlrep').read_text())['ok'] is True
+    assert max(peak) == 1, 'two previews were built at once'
+
+
+def test_no_header_is_sent_after_the_preview(tmp_path, monkeypatch):
+    """A header that comes back after the preview was sent is dropped."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    sent = threading.Event()
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: None)
+    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    # A description in hand, so the only thread started is the one sending the header.
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: {'type': 'X'})
+    threads = []
+    monkeypatch.setattr(
+        daemon.threading,
+        'Thread',
+        lambda target, args: threads.append((target, args)) or SimpleNamespace(start=sent.set),
+    )
+
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(
+        json.dumps({'path': '/data/big.vtu', 'mtime': 1, 'size': daemon.EARLY_BYTES})
+    )
+    daemon.handle(request)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': 'Late'})
+    [(target, args)] = threads
+    target(*args)
+    assert sent.is_set()
+    assert not (tmp_path / f'token{daemon.EARLY_SUFFIX}').exists()
+
+
+def test_small_or_cached_files_get_no_early_header(tmp_path, monkeypatch):
+    """Only a large file that is not yet cached is worth a header first."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda *args: pytest.fail('header read'))
+    for size, is_cached in ((daemon.EARLY_BYTES - 1, False), (daemon.EARLY_BYTES, True)):
+        monkeypatch.setattr(
+            daemon, 'cached_preview', lambda identity, config, value=is_cached: value and png
+        )
+        request = tmp_path / 'token.pvqlreq'
+        request.write_text(json.dumps({'path': '/data/big.vtu', 'mtime': 1, 'size': size}))
+        daemon.handle(request)
+        assert json.loads((tmp_path / 'token.pvqlrep').read_text())['ok'] is True
+
+
+def test_cached_looks_where_each_kind_of_preview_is_kept(tmp_path, monkeypatch):
+    """A preview counts as cached once its file is there, whether or not it is described."""
+    monkeypatch.setattr(config, 'CACHE_DIR', tmp_path)
+    identity = ('/data/a.vtu', 1, 2)
+    scene, image = {'interactive': True}, {'interactive': False}
+    assert daemon.cached_preview(identity, scene) is None
+    built = convert.scene_path(identity, scene)
+    built.write_bytes(b'x')
+    assert daemon.cached_preview(identity, scene) == built
+    assert daemon.cached_preview(identity, {**scene, 'cache': False}) is None
+    assert daemon.cached_preview(None, scene) is None
+    assert daemon.cached_preview(identity, image) is None
+    still = render.preview_path(identity, image)
+    still.write_bytes(b'x')
+    assert daemon.cached_preview(identity, image) == still
+
+
+def test_a_cached_preview_does_not_wait_for_another_conversion(tmp_path, monkeypatch):
+    """Only previews still to be built queue for the conversion lock."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: png)
+    monkeypatch.setattr(daemon, 'produce', lambda *args: pytest.fail('built again'))
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/data/a.vtu', 'mtime': 1, 'size': 10}))
+    with daemon.CONVERTING.reserve(1, 1):
+        worker = threading.Thread(target=daemon.handle, args=(request,))
+        worker.start()
+        worker.join(5)
+        assert not worker.is_alive()
+    assert json.loads((tmp_path / 'token.pvqlrep').read_text())['ok'] is True
+
+
+def test_describing_a_still_image_holds_the_conversion_lock(tmp_path, monkeypatch):
+    """A still image's description, read after the reply, still counts toward the budget."""
+    png = tmp_path / 'still.png'
+    png.write_bytes(b'png')
+    held = []
+    described = threading.Event()
+
+    def describe(*args, read=True):
+        if read:
+            held.append(daemon.CONVERTING.running)
+            described.set()
+
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'interactive': False})
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/data/a.vtu', 'mtime': 1, 'size': 10}))
+    daemon.handle(request)
+    assert described.wait(5)
+    assert held == [1]
 
 
 @pytest.fixture
@@ -839,3 +1303,41 @@ def test_stale_scratch_files_are_discarded(monkeypatch, tmp_path):
     os.utime(old, (stamp, stamp))
     assert cache.discard_scratch(600) == 1
     assert sorted(p.name for p in tmp_path.iterdir()) == ['b.1.2.tmp.ply', 'kept.json']
+
+
+def test_background_work_waits_behind_the_reader(tmp_path):
+    """A preview the reader asked for starts before background work that asked earlier."""
+    budget = daemon.MemoryBudget()
+    order = []
+
+    def wait(name, background):
+        with budget.reserve(1, 1, background=background):
+            order.append(name)
+
+    with budget.reserve(1, 1):
+        later = threading.Thread(target=wait, args=('description', True))
+        later.start()
+        while not budget.waiting:
+            time.sleep(0.01)
+        sooner = threading.Thread(target=wait, args=('preview', False))
+        sooner.start()
+        while len(budget.waiting) < 2:
+            time.sleep(0.01)
+    later.join(5)
+    sooner.join(5)
+    assert order == ['preview', 'description']
+
+
+def test_the_sweep_leaves_a_copy_a_request_still_reads(tmp_path):
+    """A staged copy older than the cutoff stays while its request is being handled."""
+    folder = tmp_path / 'abc.staging'
+    folder.mkdir()
+    (folder / 'mesh.vtu').write_bytes(b'x')
+    stamp = time.time() - daemon.STALE_SECONDS - 10
+    os.utime(folder, (stamp, stamp))
+    with daemon.staged_in_use(str(folder / 'mesh.vtu')):
+        daemon.sweep(tmp_path)
+        assert folder.exists()
+    with daemon.staged_in_use(None):
+        daemon.sweep(tmp_path)
+    assert not folder.exists()

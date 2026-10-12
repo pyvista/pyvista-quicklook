@@ -11,6 +11,7 @@ import pyvista_zstd
 
 from pyvista_quicklook import _dataset_info as info_mod
 from pyvista_quicklook import _scene_export as export_mod
+from pyvista_quicklook import convert
 
 X = info_mod.TIMES
 
@@ -532,6 +533,229 @@ def mixed_arrays():
     return grid
 
 
+@pytest.mark.parametrize(
+    'name',
+    ['grid.pv', 'grid.vti', 'grid_ascii.vti', 'grid.vtu', 'grid.vtp', 'grid.vts', 'grid.vtr'],
+)
+def test_a_header_agrees_with_reading_the_file(tmp_path, name):
+    """What a header alone says matches the full description, ranges included."""
+    mesh = mixed_arrays()
+    suffix = name.split('.')[-1]
+    if suffix == 'vtu':
+        mesh = mesh.cast_to_unstructured_grid()
+    elif suffix == 'vtp':
+        mesh = mesh.extract_surface(
+            algorithm='dataset_surface', pass_pointid=False, pass_cellid=False
+        )
+    elif suffix == 'vts':
+        mesh = mesh.cast_to_structured_grid()
+    elif suffix == 'vtr':
+        mesh = mesh.cast_to_rectilinear_grid()
+    save = {'binary': False} if 'ascii' in name else {}
+    head, full = header_and_full(mesh, tmp_path, name.replace('_ascii', ''), **save)
+    assert head['type'] == full['type']
+    shared = {'Points', 'Cells', 'Dimensions', 'Spacing'}
+    assert [f for f in head['facts'] if f[0] in shared] == [
+        f for f in full['facts'] if f[0] in shared
+    ]
+    assert head['array_count'] == full['array_count']
+    heads, fulls = rows_by_name(head), rows_by_name(full)
+    assert set(heads) == set(fulls)
+    for key, row in heads.items():
+        for field in ('dtype', 'components', 'active'):
+            assert row[field] == fulls[key][field], (key, field)
+        if row['range']:
+            assert row['range'] == fulls[key]['range'], key
+    assert head['file'] == full['file']
+
+
+def test_an_xml_header_gives_ranges_and_says_when_one_is_a_magnitude(tmp_path):
+    """VTK XML records ranges, of the values for one component and of the magnitude for more."""
+    head, _ = header_and_full(mixed_arrays(), tmp_path, 'grid.vti')
+    rows = rows_by_name(head)
+    assert rows[('height', 'Point')]['range'] == '[0.0, 119.0]'
+    assert rows[('part', 'Cell')]['range'] == '[0, 6]'
+    assert rows[('flow', 'Point')]['range'] == f'{info_mod.VECTOR_NORM} 5.0'
+
+
+def test_a_pv_header_reads_each_array_alone_for_its_range(tmp_path):
+    """A ``.pv`` file's ranges are read array by array, and match the full description."""
+    path = tmp_path / 'grid.pv'
+    pyvista_zstd.write(mixed_arrays(), path)
+    header = info_mod.zstd_header(path)
+    assert all(row['extent'] is None for row in header['rows'])
+    info_mod.zstd_ranges(path, header, skip={('height', 'Point')})
+    extents = {row['name']: row['extent'] for row in header['rows']}
+    assert extents['height'] is None
+    assert extents['part'][:2] == (0, 6)
+    assert extents['flow'] == (5.0, 5.0, 'f', info_mod.VECTOR_NORM)
+    assert extents['labels'] is None
+
+
+def test_a_pv_header_carries_the_user_dict(tmp_path):
+    """A ``.pv`` user dict is read from its own frame, without the rest of the file."""
+    mesh = pv.Sphere()
+    # Stored as PyVista keeps a user dict, which some pyvista-zstd releases cannot write.
+    mesh.field_data[info_mod.USER_DICT_KEY] = np.array([json.dumps({'name': 'sphere'})])
+    path = tmp_path / 'tagged.pv'
+    pyvista_zstd.write(mesh, path)
+    assert pv.read(path).user_dict == {'name': 'sphere'}
+    info = info_mod.header_info(str(path))
+    assert info['user_dict'] == ['"name": "sphere"']
+    assert info['array_count'] == 1
+
+
+def test_polydata_headers_count_every_kind_of_cell(tmp_path):
+    """Vertices, lines, strips, and polygons all count as cells in a PolyData header."""
+    mesh = pv.Sphere() + pv.Line() + pv.PolyData(np.zeros((1, 3)))
+    head, full = header_and_full(mesh, tmp_path, 'mixed.vtp')
+    assert dict(head['facts'])['Cells'] == dict(full['facts'])['Cells']
+
+
+def test_files_without_a_header_reader_get_only_their_file_facts(tmp_path):
+    """Other formats, composites, and unreadable files give only the file's own facts."""
+    path = tmp_path / 'mesh.vtk'
+    pv.Sphere().save(path)
+    info = info_mod.header_info(str(path))
+    assert info == {'type': '', 'file': info_mod.file_facts(path)}
+    blocks = tmp_path / 'blocks.vtm'
+    pv.MultiBlock([pv.Sphere()]).save(blocks)
+    assert info_mod.header_info(str(blocks))['type'] == ''
+    broken = tmp_path / 'broken.pv'
+    broken.write_text('nope')
+    assert info_mod.header_info(str(broken))['type'] == ''
+
+
+def test_a_header_fills_in_the_arrays_a_selective_read_left_out(tmp_path):
+    """Rows come in header order, those read in full replacing the header's."""
+    path = tmp_path / 'grid.pv'
+    pyvista_zstd.write(mixed_arrays(), path)
+    header = info_mod.zstd_ranges(path, info_mod.zstd_header(path))
+    with pyvista_zstd.Reader(path) as reader:
+        reader.selected_point_arrays = {'height'}
+        reader.selected_cell_arrays = set()
+        partial = reader.read()
+    merged = info_mod.describe(partial, str(path), header)
+    full = info_mod.describe(pv.read(path), str(path))
+    assert merged['arrays'] == full['arrays']
+    assert merged['array_count'] == full['array_count']
+    assert merged['facts'] == full['facts']
+
+
+def test_selective_reads_load_only_the_colour(tmp_path, monkeypatch):
+    """The exporter reads only the array it colours by, yet describes every array."""
+    mesh = mixed_arrays().cast_to_unstructured_grid()
+    for name in ('grid.pv', 'grid.vtu'):
+        path = tmp_path / name
+        if name.endswith('.pv'):
+            pyvista_zstd.write(mesh, path)
+        else:
+            mesh.save(path)
+            monkeypatch.setattr(export_mod, 'SELECTIVE_BYTES', 0)
+        dataset, header = export_mod.read_for_preview(str(path))
+        assert set(dataset.array_names) <= {'height', 'labels', 'step'}
+        assert dataset.active_scalars_name == 'height'
+        described = info_mod.describe(dataset, str(path), header)
+        full = info_mod.describe(pv.read(path), str(path))
+        assert described['array_count'] == full['array_count']
+        assert described['arrays'] == full['arrays']
+
+
+def test_xml_tags_past_the_header_window_mean_a_whole_read(tmp_path, monkeypatch):
+    """Cell arrays written after inline point data are never left out of a selective read."""
+    mesh = pv.ImageData(dimensions=(20, 20, 20)).cast_to_unstructured_grid()
+    mesh.point_data['big'] = np.random.default_rng(0).random((mesh.n_points, 3))
+    mesh.cell_data['cellval'] = np.arange(mesh.n_cells, dtype=np.float64)
+    mesh.set_active_scalars('cellval', preference='cell')
+    path = tmp_path / 'inline.vtu'
+    mesh.save(path)
+    assert b'<AppendedData' not in path.read_bytes()
+    assert info_mod.xml_header(path)['type'] == 'UnstructuredGrid'
+    monkeypatch.setattr(info_mod, 'XML_TAGS_HEAD', 4096)
+    monkeypatch.setattr(export_mod, 'SELECTIVE_BYTES', 0)
+    assert info_mod.xml_header(path) == {}
+    dataset, header = export_mod.read_for_preview(str(path))
+    assert header is None
+    whole = pv.read(path)
+    assert dataset.active_scalars_name == whole.active_scalars_name
+    assert sorted(dataset.array_names) == sorted(whole.array_names)
+
+
+def test_small_xml_files_are_read_whole(tmp_path):
+    """An XML file below the selective size is read with every array, ranges exact."""
+    path = tmp_path / 'grid.vtu'
+    mixed_arrays().cast_to_unstructured_grid().save(path)
+    dataset, header = export_mod.read_for_preview(str(path))
+    assert header is None
+    assert 'part' in dataset.array_names
+
+
+@pytest.mark.parametrize(
+    ('rows', 'expected'),
+    [
+        ([], None),
+        ([{'name': 'a', 'association': 'Point', 'active': []}], None),
+        ([{'name': 't', 'association': 'Cell', 'active': ['scalars']}], ('t', 'Cell')),
+        (
+            [
+                {'name': 'vtkOriginalPointIds', 'association': 'Point', 'active': ['scalars']},
+                {'name': 'vtkGhostType', 'association': 'Point', 'active': []},
+                {'name': 'p', 'association': 'Cell', 'active': []},
+            ],
+            ('p', 'Cell'),
+        ),
+        ([{'name': 'vtkIds', 'association': 'Point', 'active': ['scalars']}], None),
+    ],
+)
+def test_the_colour_is_chosen_from_the_header_as_from_the_data(rows, expected):
+    """The header's active scalars colour the preview, stepping over VTK's own arrays."""
+    assert export_mod.colour_choice(rows) == expected
+
+
+def test_the_header_mode_reads_no_values(tmp_path, monkeypatch, capsys):
+    """``--header`` writes what the header says without reading the dataset."""
+    path = tmp_path / 'grid.pv'
+    pyvista_zstd.write(mixed_arrays(), path)
+    out = tmp_path / 'head.json'
+    monkeypatch.setattr(export_mod, 'read', lambda source: pytest.fail('read'))
+    monkeypatch.setattr(export_mod.sys, 'argv', ['x', str(path), '--header', str(out)])
+    assert export_mod.main() == 0
+    assert json.loads(out.read_text())['type'] == 'ImageData'
+
+
+def test_composites_and_unknown_formats_are_read_whole(tmp_path):
+    """A file whose header cannot stand in for its arrays is read in full."""
+    path = tmp_path / 'blocks.pv'
+    pyvista_zstd.write(pv.MultiBlock([pv.Sphere()]), path)
+    dataset, header = export_mod.read_for_preview(str(path))
+    assert header is None
+    assert isinstance(dataset, pv.MultiBlock)
+
+
+def test_an_xml_file_coloured_by_cells_keeps_that_array(tmp_path, monkeypatch):
+    """When the cells carry the colour, the selective read keeps that cell array."""
+    grid = mixed_arrays().cast_to_unstructured_grid()
+    grid.point_data.active_scalars_name = None
+    grid.set_active_scalars('part', preference='cell')
+    path = tmp_path / 'cells.vtu'
+    grid.save(path)
+    monkeypatch.setattr(export_mod, 'SELECTIVE_BYTES', 0)
+    dataset, header = export_mod.read_for_preview(str(path))
+    # The colour, and the text arrays the header cannot preview.
+    assert sorted(dataset.cell_data.keys()) == ['labels', 'part']
+    assert dataset.point_data.keys() == []
+    assert dataset.active_scalars_name == 'part'
+    assert {row['name'] for row in header['rows']} >= {'height', 'flow', 'labels'}
+
+
+def test_a_structured_pv_header_gives_counts_without_image_facts(tmp_path):
+    """A structured grid's header has its counts, and no spacing or origin to give."""
+    head, full = header_and_full(mixed_arrays().cast_to_structured_grid(), tmp_path, 'grid.pv')
+    labels = [label for label, _ in head['facts']]
+    assert labels == ['Points', 'Cells']
+    assert head['type'] == full['type'] == 'StructuredGrid'
+
+
 def test_the_exporter_needs_something_to_write(monkeypatch, tmp_path):
     """Run with neither a scene, a description, nor a header, the exporter says what it needs."""
     monkeypatch.setattr(export_mod.sys, 'argv', ['x', str(tmp_path / 'a.vtp')])
@@ -545,6 +769,11 @@ def test_the_block_count_includes_blocks_left_off_the_list():
     info = info_mod.describe(blocks, 'x')
     assert info['block_count'] == info_mod.MAX_BLOCKS + 4
     assert len(info['blocks']) == info_mod.MAX_BLOCKS + 1
+
+
+def test_the_service_knows_which_formats_have_a_header():
+    """The service, which cannot import PyVista, lists the formats with a header reader."""
+    assert set(convert.HEADER_SUFFIXES) == set(info_mod.HEADERS)
 
 
 def test_an_empty_composite_has_only_its_block_count():
@@ -576,6 +805,23 @@ def test_values_extent_skips_what_has_no_order():
     assert info_mod.values_extent(np.array([[3.0, 4.0], [0.0, 1.0]]))[:2] == (1.0, 5.0)
 
 
+def test_appended_xml_names_its_encoding(tmp_path):
+    """Appended data is described by its own encoding, and its header gives the arrays."""
+    from pyvista import _vtk
+
+    mesh = mixed_arrays().cast_to_unstructured_grid()
+    path = tmp_path / 'appended.vtu'
+    writer = _vtk.vtkXMLUnstructuredGridWriter()
+    writer.SetFileName(str(path))
+    writer.SetInputData(mesh)
+    writer.SetDataModeToAppended()
+    writer.EncodeAppendedDataOff()
+    writer.Write()
+    assert dict(info_mod.xml_facts(path))['Encoding'] == 'appended raw'
+    head = info_mod.xml_header(path)
+    assert {row['name'] for row in head['rows']} >= {'height', 'part', 'labels'}
+
+
 def test_ply_comments_are_shown_only_when_there_are_some(tmp_path):
     """A PLY header gives its first comment, and none when it has none or never ends."""
     plain = tmp_path / 'plain.ply'
@@ -599,6 +845,40 @@ def test_cell_types_of_something_without_cells_are_none():
     assert info_mod.cell_types(pv.PolyData()) is None
 
 
+def test_a_pv_array_without_a_frame_is_left_without_a_range(tmp_path, monkeypatch):
+    """An array the metadata lists but the file does not hold gets no range or user dict."""
+    mesh = mixed_arrays()
+    mesh.field_data[info_mod.USER_DICT_KEY] = np.array([json.dumps({'a': 1})])
+    path = tmp_path / 'grid.pv'
+    pyvista_zstd.write(mesh, path)
+    monkeypatch.setattr(info_mod, 'zstd_frame', lambda *args: 'no such frame')
+    header = info_mod.zstd_ranges(path, info_mod.zstd_header(path))
+    assert 'user_dict' not in header
+    assert all(row['extent'] is None and row['range'] == '' for row in header['rows'])
+
+
+def test_an_xml_header_without_its_grid_tag_counts_nothing(tmp_path):
+    """A header naming a type it then never opens has no counts and no arrays."""
+    path = tmp_path / 'empty.vtu'
+    path.write_text('<VTKFile type="UnstructuredGrid"></VTKFile>')
+    head = info_mod.xml_header(path)
+    assert head['facts'] == [['Points', '0'], ['Cells', '0']]
+    assert head['rows'] == []
+
+
+def test_a_selective_read_without_a_colour_reads_no_arrays(tmp_path):
+    """With no active scalars nothing is read for colour, and the header lists every array."""
+    mesh = pv.Sphere()
+    mesh.point_data.clear()
+    mesh.point_data['a'] = np.arange(mesh.n_points)
+    mesh.point_data.active_scalars_name = None
+    path = tmp_path / 'plain.pv'
+    pyvista_zstd.write(mesh, path)
+    dataset, header = export_mod.read_for_preview(str(path))
+    assert dataset.array_names == []
+    assert info_mod.describe(dataset, str(path), header)['arrays'][0]['name'] == 'a'
+
+
 def test_xml_without_its_root_tag_has_no_facts(tmp_path):
     """A file named as VTK XML that does not open with a VTKFile tag reports nothing."""
     path = tmp_path / 'notes.vtu'
@@ -606,16 +886,24 @@ def test_xml_without_its_root_tag_has_no_facts(tmp_path):
     assert info_mod.xml_facts(path) == []
 
 
-def test_appended_xml_names_its_encoding(tmp_path):
-    """Appended data is described by its own encoding."""
-    from pyvista import _vtk
+def test_an_empty_dataset_has_no_bounds_or_cell_types():
+    """A dataset with no points or cells lists neither bounds nor cell types."""
+    rows = facts(info_mod.describe(pv.PolyData(), 'x'))
+    assert 'Bounds' not in rows
+    assert 'Cell type' not in rows
+    assert 'Cell types' not in rows
 
-    mesh = mixed_arrays().cast_to_unstructured_grid()
-    path = tmp_path / 'appended.vtu'
-    writer = _vtk.vtkXMLUnstructuredGridWriter()
-    writer.SetFileName(str(path))
-    writer.SetInputData(mesh)
-    writer.SetDataModeToAppended()
-    writer.EncodeAppendedDataOff()
-    writer.Write()
-    assert dict(info_mod.xml_facts(path))['Encoding'] == 'appended raw'
+
+def test_a_header_that_cannot_be_read_says_why(tmp_path, capsys, monkeypatch):
+    """A header reader that fails is reported, and only the file's own facts are shown."""
+    path = tmp_path / 'grid.vtu'
+    pv.Sphere().cast_to_unstructured_grid().save(path)
+
+    def broken(path):
+        message = 'NumberOfPoints'
+        raise KeyError(message)
+
+    monkeypatch.setitem(info_mod.HEADERS, '.vtu', broken)
+    info = info_mod.header_info(str(path))
+    assert info['type'] == ''
+    assert 'header skipped: KeyError' in capsys.readouterr().err

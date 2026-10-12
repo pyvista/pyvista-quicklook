@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
-import threading
+from typing import TYPE_CHECKING
 from typing import Any
 
 from . import cache
 from . import config as config_mod
 from . import environment
 
+if TYPE_CHECKING:
+    import os
+
 EXPORTER = Path(__file__).with_name('_scene_export.py')
 DESCRIBER = Path(__file__).with_name('_dataset_info.py')
+# Reading a header takes well under a second, so a slow one is not worth waiting for.
+HEADER_SECONDS = 20
 
 
 def converter_version(exporter: Path = EXPORTER, describer: Path = DESCRIBER) -> str:
@@ -77,9 +81,7 @@ def describe(
     if not described.is_file():
         if not read:
             return None
-        scratch = described.with_name(
-            f'{described.stem}.{os.getpid()}.{threading.get_ident()}.tmp.json'
-        )
+        scratch = described.with_name(f'{described.stem}.{cache.scratch_tag()}.tmp.json')
         try:
             command = [environment.interpreter(config), str(EXPORTER), str(path), '--info']
             described.parent.mkdir(parents=True, exist_ok=True)
@@ -106,6 +108,40 @@ def describe(
     return info or None
 
 
+# Formats whose header describes the dataset, as ``_dataset_info.HEADERS`` reads them.
+HEADER_SUFFIXES = frozenset({'.pv', '.vtu', '.vtp', '.vti', '.vtr', '.vts'})
+
+
+def header(source: str | os.PathLike[str], config: dict[str, Any]) -> dict[str, Any] | None:
+    """Return what a file's header alone says for the info panel, reading none of its values."""
+    if not wants_info(config) or Path(source).suffix.lower() not in HEADER_SUFFIXES:
+        return None
+    scratch = config_mod.CACHE_DIR / f'header.{cache.scratch_tag()}.tmp.json'
+    try:
+        scratch.parent.mkdir(parents=True, exist_ok=True)
+        command = [
+            environment.interpreter(config),
+            str(EXPORTER),
+            str(source),
+            '--header',
+            str(scratch),
+        ]
+        environment.run(
+            config,
+            command,
+            task='Reading the header',
+            cwd=Path(source).parent,
+            timeout=HEADER_SECONDS,
+        )
+        info = json.loads(scratch.read_text())
+    except environment.RenderError, OSError, ValueError:
+        return None
+    finally:
+        scratch.unlink(missing_ok=True)
+    # A header that names no dataset type has nothing for the panel to show.
+    return info if isinstance(info, dict) and info.get('type') else None
+
+
 def scene_path(identity: tuple[str, int, int], config: dict[str, Any]) -> Path:
     """Return where a file's scene is cached."""
     return config_mod.CACHE_DIR / f'{SCENE_VERSION}-{scene_key(identity, config)}.ply'
@@ -124,7 +160,7 @@ def scene(
 
     out = scene_path(identity, config)
     # The export describes the file in the same read, kept aside until the scene is in.
-    pending = info_path(identity).with_name(f'{out.stem}.{os.getpid()}.tmp.json')
+    pending = info_path(identity).with_name(f'{out.stem}.{cache.scratch_tag()}.tmp.json')
 
     def build(scratch: Path) -> None:
         command = [

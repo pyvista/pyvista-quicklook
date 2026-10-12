@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import threading
 import time
 from typing import TYPE_CHECKING
 from typing import Any
@@ -36,6 +37,11 @@ def digest(identity: tuple[str, int, int], settings: list[str]) -> str:
     return hashlib.sha256('\0'.join(parts).encode()).hexdigest()
 
 
+def scratch_tag() -> str:
+    """Return a tag naming this thread's scratch files, so concurrent builds never share one."""
+    return f'{os.getpid()}.{threading.get_ident()}'
+
+
 def fill(out: Path, config: dict[str, Any], label: str, build: Callable[[Path], None]) -> Path:
     """Return ``out``, calling ``build(scratch)`` to make it unless it is already cached.
 
@@ -47,7 +53,7 @@ def fill(out: Path, config: dict[str, Any], label: str, build: Callable[[Path], 
         return out
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    scratch = out.with_name(f'{out.stem}.{os.getpid()}.tmp{out.suffix}')
+    scratch = out.with_name(f'{out.stem}.{scratch_tag()}.tmp{out.suffix}')
     log(config, f'miss {label}')
     started = time.monotonic()
     try:

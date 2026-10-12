@@ -8,10 +8,12 @@ import os
 from pathlib import Path
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from pyvista_quicklook import daemon
+from pyvista_quicklook import environment
 from pyvista_quicklook.environment import RenderError
 
 
@@ -47,6 +49,36 @@ def test_readable_gives_up_on_a_file_that_blocks(tmp_path):
         assert daemon.readable(str(fifo), seconds=0.1) is False
     finally:
         faulthandler.cancel_dump_traceback_later()
+        # Lets the abandoned read finish, so its thread does not outlive the test.
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+
+
+def test_readable_works_off_the_main_thread(tmp_path):
+    """Requests are answered on their own threads, so the guard cannot rely on signals."""
+    sample = tmp_path / 'mesh.vtu'
+    sample.write_bytes(b'x')
+    answers = []
+    worker = threading.Thread(target=lambda: answers.append(daemon.readable(str(sample))))
+    worker.start()
+    worker.join(10)
+    assert answers == [True]
+
+
+def test_handle_marks_a_file_that_holds_no_mesh(tmp_path, monkeypatch):
+    """Only a file the exporter cannot read as a mesh is marked for showing as something else."""
+
+    def unreadable(target, config, identity=None):
+        message = 'Converting notes.dat failed.'
+        raise environment.NotAMeshError(message)
+
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'produce', unreadable)
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': str(tmp_path / 'notes.dat')}))
+    daemon.handle(request)
+    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert reply == {'ok': False, 'error': 'Converting notes.dat failed.', 'not_a_mesh': True}
 
 
 def test_handle_reports_an_unexpected_exception(tmp_path, monkeypatch):
@@ -133,6 +165,62 @@ def test_sweep_ignores_a_reply_that_vanishes(tmp_path, monkeypatch):
     daemon.sweep(tmp_path)
 
 
+def test_serve_answers_each_request_on_its_own_thread(tmp_path, monkeypatch):
+    """A request picked up while another is still being answered is not left waiting for it."""
+    drop = tmp_path / 'container'
+    drop.mkdir()
+    monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
+    monkeypatch.setattr(daemon.cache, 'discard_other_versions', lambda version: 0)
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': False})
+    release, second = threading.Event(), threading.Event()
+    released, finished = [], threading.Event()
+
+    def handle(request):
+        if request.stem == 'a':
+            (drop / 'b.pvqlreq').write_text('{}')
+            released.append(release.wait(5))
+            finished.set()
+        else:
+            second.set()
+            release.set()
+
+    def sleep(seconds):
+        if second.wait(seconds):
+            raise StopLoopError
+
+    monkeypatch.setattr(daemon, 'handle', handle)
+    monkeypatch.setattr(daemon.time, 'sleep', sleep)
+    (drop / 'a.pvqlreq').write_text('{}')
+    with pytest.raises(StopLoopError):
+        daemon.serve()
+    release.set()
+    assert second.is_set()
+    finished.wait(5)
+    assert released == [True], 'the second request waited for the first'
+
+
+def test_serve_leaves_a_request_another_service_took(tmp_path, monkeypatch):
+    """A request that is gone before it can be taken is skipped, not answered twice."""
+    drop = tmp_path / 'container'
+    drop.mkdir()
+    monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
+    monkeypatch.setattr(daemon.cache, 'discard_other_versions', lambda version: 0)
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': False})
+    monkeypatch.setattr(daemon, 'handle', lambda request: pytest.fail('handled'))
+
+    def gone(self, target):
+        raise FileNotFoundError(self)
+
+    def stop(seconds):
+        raise StopLoopError
+
+    monkeypatch.setattr(Path, 'rename', gone)
+    monkeypatch.setattr(daemon.time, 'sleep', stop)
+    (drop / 'a.pvqlreq').write_text('{}')
+    with pytest.raises(StopLoopError):
+        daemon.serve()
+
+
 class StopLoopError(Exception):
     """Raised to end the service loop in a test."""
 
@@ -149,6 +237,11 @@ def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
         daemon, 'handle', lambda request: handled.append(request.name) or request.unlink()
     )
     monkeypatch.setattr(daemon, 'sweep', swept.append)
+    monkeypatch.setattr(
+        daemon.threading,
+        'Thread',
+        lambda target, args, daemon: SimpleNamespace(start=lambda: target(*args)),
+    )
     # Started at 0, then polls at 30 (not due), 100 (due), and 130 (not due again).
     clock = iter([0.0, 30.0, 100.0, 100.0, 130.0])
     monkeypatch.setattr(daemon.time, 'monotonic', lambda: next(clock))
@@ -165,7 +258,8 @@ def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
     (drop / 'a.pvqlreq').write_text('{}')
     with pytest.raises(StopLoopError):
         daemon.serve()
-    assert handled == ['a.pvqlreq', 'b.pvqlreq']
+    assert handled == ['a.pvqltaken', 'b.pvqltaken']
+    assert list(drop.iterdir()) == []
     assert swept == [drop]
     assert warmed == [{'warm_on_start': True}]
 
@@ -231,6 +325,21 @@ def test_request_preview_times_out_without_a_service(tmp_path, drop):
         daemon.request_preview(str(source), timeout=0)
 
 
+def test_sweep_removes_staged_copies_left_behind(tmp_path):
+    """A staging folder older than the cutoff goes, with whatever copy it holds."""
+    old = tmp_path / 'abc.staging'
+    old.mkdir()
+    (old / 'mesh.vtu').write_bytes(b'x')
+    stamp = time.time() - daemon.STALE_SECONDS - 10
+    os.utime(old / 'mesh.vtu', (stamp, stamp))
+    os.utime(old, (stamp, stamp))
+    fresh = tmp_path / 'def.staging'
+    fresh.mkdir()
+    daemon.sweep(tmp_path)
+    assert not old.exists()
+    assert fresh.exists()
+
+
 def test_a_copy_is_described_in_the_time_left(tmp_path, monkeypatch):
     """A staged copy goes once the reply is read, so it is described before, within the wait."""
     png = tmp_path / 'cached.png'
@@ -252,7 +361,7 @@ def test_a_copy_is_described_in_the_time_left(tmp_path, monkeypatch):
     [cached, read] = reads
     assert cached == ('/staged/mesh.vtu', False, None)
     assert read[:2] == ('/staged/mesh.vtu', True)
-    assert 1 < read[2] <= daemon.REPLY_SECONDS - daemon.REPLY_MARGIN_SECONDS
+    assert 1 < read[2] <= daemon.reply_seconds({}) - daemon.REPLY_MARGIN_SECONDS
 
 
 def test_a_copy_is_not_described_once_the_wait_is_over(tmp_path, monkeypatch):
@@ -268,7 +377,7 @@ def test_a_copy_is_not_described_once_the_wait_is_over(tmp_path, monkeypatch):
     )
     request = tmp_path / 'token.pvqlreq'
     request.write_text(json.dumps({'path': '/private/mesh.vtu', 'copy': '/staged/mesh.vtu'}))
-    stamp = time.time() - daemon.REPLY_SECONDS
+    stamp = time.time() - daemon.reply_seconds({})
     os.utime(request, (stamp, stamp))
     daemon.handle(request)
     assert 'info' not in json.loads((tmp_path / 'token.pvqlrep').read_text())

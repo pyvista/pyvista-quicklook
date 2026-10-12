@@ -9,9 +9,10 @@ import os
 from pathlib import Path
 import queue
 import shutil
-import signal
+import sys
 import threading
 import time
+from typing import TYPE_CHECKING
 from typing import Any
 import uuid
 
@@ -26,13 +27,20 @@ from .plist import APP_BUNDLE_ID
 from .plist import EXT_BUNDLE_ID
 from .plist import LEGACY_EXT_BUNDLE_ID
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 LABEL = 'org.pyvista.pvqld'
 LEGACY_LABEL = 'io.github.user27182.pvqld'
 REQUEST_SUFFIX = '.pvqlreq'
 REPLY_SUFFIX = '.pvqlrep'
+# A request the service has picked up, so the next poll does not pick it up again.
+TAKEN_SUFFIX = '.pvqltaken'
+# What the header says, sent while a large file is still being converted.
+EARLY_SUFFIX = '.pvqlpre'
+EARLY_BYTES = 32 * 1024 * 1024
 STALE_SECONDS = 600
-# How long the extension waits for a reply, and how much of that is kept in hand.
-REPLY_SECONDS = 90
+# How much of the extension's wait for a reply is kept in hand.
 REPLY_MARGIN_SECONDS = 5
 
 UNREADABLE_MESSAGE = """The render service could not read
@@ -54,9 +62,14 @@ def legacy_drop_dir() -> Path:
     return Path.home() / 'Library' / 'Containers' / LEGACY_EXT_BUNDLE_ID / 'Data' / 'tmp'
 
 
+def reply_seconds(config: dict[str, Any]) -> float:
+    """Return how long the extension waits for a reply: the conversion's limit, and some."""
+    return float(config.get('timeout') or config_mod.DEFAULTS['timeout']) + 30
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     """Write JSON to a path, renaming it into place so readers never see a partial file."""
-    scratch = path.with_suffix(f'.{os.getpid()}.tmp')
+    scratch = path.with_suffix(f'.{cache.scratch_tag()}.tmp')
     scratch.write_text(json.dumps(payload))
     scratch.replace(path)
 
@@ -81,30 +94,146 @@ def readable(path: str, seconds: float = 2.0) -> bool:
     """Return whether a file can be opened before the guard expires.
 
     Reading a file in a folder macOS protects can block rather than fail, so the
-    attempt is abandoned once the timer fires. A folder counts as readable when it
-    can be listed, since a DICOM series is previewed as a whole.
+    attempt is abandoned once the guard expires, leaving the blocked read to a thread
+    of its own. A folder counts as readable when it can be listed, since a DICOM
+    series is previewed as a whole.
+    """
+    answer: list[bool] = []
+
+    def attempt() -> None:
+        try:
+            # A DICOM series is a folder, and opening one raises rather than reading.
+            if os.path.isdir(path):
+                os.listdir(path)
+            else:
+                with open(path, 'rb') as handle:
+                    handle.read(1)
+        except OSError:
+            answer.append(False)
+        else:
+            answer.append(True)
+
+    probe = threading.Thread(target=attempt, daemon=True)
+    probe.start()
+    probe.join(seconds)
+    return bool(answer and answer[0])
+
+
+def cached_preview(identity: tuple[str, int, int] | None, config: dict[str, Any]) -> Path | None:
+    """Return the cached preview a request asks for, or None when it must be built."""
+    if identity is None or not config.get('cache', True):
+        return None
+    if config.get('interactive', True):
+        preview = convert_mod.scene_path(identity, config)
+    else:
+        preview = render_mod.preview_path(identity, config)
+    return preview if preview.is_file() else None
+
+
+def send_early(
+    request: Path, target: str, config: dict[str, Any], done: threading.Event, lock: threading.Lock
+) -> None:
+    """Send what the header says, unless the preview itself has already been sent."""
+    info = convert_mod.header(target, config)
+    with lock:
+        if info and not done.is_set():
+            write_json(request.with_suffix(EARLY_SUFFIX), {'ok': True, 'info': info})
+
+
+# A conversion's peak memory, estimated as the interpreter plus a multiple of the file size.
+BASE_MEMORY = 200_000_000
+MEMORY_PER_FILE_BYTE = 6
+
+
+class MemoryBudget:
+    """Lets conversions run together while their estimated memory fits, and any one alone.
+
+    Waiting conversions start in the order they asked, so a large one is never held off
+    by a stream of small ones; background work waits behind any the reader asked for.
     """
 
-    def expire(signum: int, frame: object) -> None:
-        raise TimeoutError
+    def __init__(self) -> None:
+        """Start with nothing running or waiting."""
+        self.condition = threading.Condition()
+        self.used = 0
+        self.running = 0
+        self.waiting: list[tuple[bool, int]] = []
+        self.tickets = 0
 
-    # SIGALRM is delivered to the main thread, which is where serve() runs this.
-    previous = signal.signal(signal.SIGALRM, expire)
-    signal.setitimer(signal.ITIMER_REAL, seconds)
+    @contextlib.contextmanager
+    def reserve(self, amount: int, limit: int, *, background: bool = False) -> Iterator[None]:
+        """Wait until ``amount`` fits under ``limit`` beside what runs, or nothing runs."""
+        with self.condition:
+            self.tickets += 1
+            ticket = (background, self.tickets)
+            self.waiting.append(ticket)
+            try:
+                self.condition.wait_for(
+                    lambda: (
+                        min(self.waiting) == ticket
+                        and (self.running == 0 or self.used + amount <= limit)
+                    )
+                )
+            finally:
+                self.waiting.remove(ticket)
+            self.used += amount
+            self.running += 1
+            self.condition.notify_all()
+        try:
+            yield
+        finally:
+            with self.condition:
+                self.used -= amount
+                self.running -= 1
+                self.condition.notify_all()
+
+
+CONVERTING = MemoryBudget()
+
+# Files being previewed, each with a lock and how many requests hold or await it.
+_previewing: dict[tuple[Any, ...], list[Any]] = {}
+_previewing_guard = threading.Lock()
+
+
+@contextlib.contextmanager
+def one_at_a_time(identity: tuple[str, int, int] | None, config: dict[str, Any]) -> Iterator[None]:
+    """Hold back a request for a preview that another request is already building."""
+    if identity is None:
+        yield
+        return
+    key = (*identity, config.get('interactive', True))
+    with _previewing_guard:
+        entry = _previewing.setdefault(key, [threading.Lock(), 0])
+        entry[1] += 1
     try:
-        # A DICOM series is a folder, and opening one raises rather than reading.
-        if os.path.isdir(path):
-            os.listdir(path)
-        else:
-            with open(path, 'rb') as handle:
-                handle.read(1)
-    except OSError, TimeoutError:
-        return False
-    else:
-        return True
+        with entry[0]:
+            yield
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
+        with _previewing_guard:
+            entry[1] -= 1
+            if not entry[1]:
+                del _previewing[key]
+
+
+def physical_memory() -> int:
+    """Return the Mac's memory in bytes."""
+    return os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+
+
+def memory_budget(config: dict[str, Any]) -> int:
+    """Return the memory conversions may use together, in bytes."""
+    limit = config.get('max_conversion_memory_mb')
+    if limit is None:
+        return physical_memory() // 2
+    return limit * 1_000_000 if limit else sys.maxsize
+
+
+def conversion_memory(target: str, identity: tuple[str, int, int] | None) -> int:
+    """Return the memory a file's conversion is expected to need at its peak."""
+    # A folder's own size says nothing of the series inside, so it is converted alone.
+    if identity is None or os.path.isdir(target):
+        return sys.maxsize
+    return BASE_MEMORY + MEMORY_PER_FILE_BYTE * identity[2]
 
 
 def produce(
@@ -118,6 +247,17 @@ def produce(
     return render_mod.preview(target, config, identity=identity)
 
 
+def answer(request: Path) -> None:
+    """Handle one request on its own thread, replying with any failure rather than dying."""
+    reply = request.with_suffix(REPLY_SUFFIX)
+    try:
+        handle(request)
+    except BaseException as error:  # noqa: BLE001
+        if not reply.exists():
+            write_json(reply, {'ok': False, 'error': f'{type(error).__name__}: {error}'})
+        request.unlink(missing_ok=True)
+
+
 # Still images waiting to be described after their replies, and the files among them.
 _descriptions: queue.Queue[tuple[str, dict[str, Any], tuple[str, int, int]]] = queue.Queue()
 _describing: set[Path] = set()
@@ -129,7 +269,11 @@ def describe_queued() -> None:
     while True:
         target, config, identity = _descriptions.get()
         try:
-            convert_mod.describe(target, config, identity)
+            # Reading a file again takes as much memory as building its preview did, and
+            # waits behind any preview the reader asked for.
+            amount = conversion_memory(target, identity)
+            with CONVERTING.reserve(amount, memory_budget(config), background=True):
+                convert_mod.describe(target, config, identity)
         except Exception as error:  # noqa: BLE001
             environment.log(config, f'describing {target} failed: {error}')
         finally:
@@ -162,6 +306,26 @@ def describe_later(
     return True
 
 
+# Folders of copies the extension staged that a request still reads, kept from the sweep.
+_staged: set[Path] = set()
+_staged_guard = threading.Lock()
+
+
+@contextlib.contextmanager
+def staged_in_use(copy: str | None) -> Iterator[None]:
+    """Keep the folder of a staged copy from the sweep while its request is handled."""
+    folder = Path(copy).parent if copy else None
+    if folder is not None:
+        with _staged_guard:
+            _staged.add(folder)
+    try:
+        yield
+    finally:
+        if folder is not None:
+            with _staged_guard:
+                _staged.discard(folder)
+
+
 def handle(request: Path) -> None:
     """Render the file named by one request and write the reply beside it."""
     reply = request.with_suffix(REPLY_SUFFIX)
@@ -173,52 +337,91 @@ def handle(request: Path) -> None:
         request.unlink(missing_ok=True)
         write_json(reply, {'ok': False, 'error': f'Malformed preview request: {error}'})
         return
-
     request.unlink(missing_ok=True)
+    with staged_in_use(payload.get('copy')):
+        respond(request, source, payload, asked)
+
+
+def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -> None:
+    """Answer a request for ``source``, given what it asked and when."""
+    reply = request.with_suffix(REPLY_SUFFIX)
     identity = None
     if payload.get('mtime') is not None and payload.get('size') is not None:
         identity = (source, int(payload['mtime']), int(payload['size']))
 
     config = config_mod.load()
+    ready = cached_preview(identity, config)
+    if payload.get('force') is True or ready is not None:
+        # Asked for whatever its size, or previewed already, so no step of it applies the limit.
+        config = {**config, 'max_file_size_mb': 0}
     if identity is not None:
         try:
             environment.check_size(identity, config)
         except RenderError as error:
-            # The reader can raise the limit, so this is worth saying in full.
-            write_json(reply, {'ok': False, 'error': str(error), 'actionable': True})
+            # The reader can preview it anyway or raise the limit, so this is worth saying in full.
+            refusal = {'ok': False, 'error': str(error), 'too_large': True}
+            # Nothing is copied above the limit, so only a file the service can reach is described.
+            if folder_is_reachable(source) and (info := convert_mod.header(source, config)):
+                refusal['info'] = info
+            write_json(reply, refusal)
             return
 
-    # Prefer the original so datasets that reference neighbouring files still resolve.
-    target = source if folder_is_reachable(source) else payload.get('copy')
+    reachable = folder_is_reachable(source)
+    # Prefer the original so datasets that reference neighbouring files still resolve; a
+    # cached preview is served without reading the file at all.
+    target = source if reachable or ready is not None else payload.get('copy')
     if not target:
         message = UNREADABLE_MESSAGE.format(path=source)
-        write_json(reply, {'ok': False, 'error': message, 'actionable': True})
+        # The extension copies the file somewhere readable and asks again, when it can.
+        write_json(reply, {'ok': False, 'error': message, 'needs_copy': True})
         return
 
+    done, lock = threading.Event(), threading.Lock()
+    large = identity is not None and identity[2] >= EARLY_BYTES
+    if large and convert_mod.wants_info(config) and ready is None:
+        early = threading.Thread(target=send_early, args=(request, target, config, done, lock))
+        early.start()
+
+    def answer_with(message: dict[str, Any]) -> None:
+        """Send the final reply, after which no early one may follow."""
+        with lock:
+            done.set()
+            write_json(reply, message)
+
     try:
-        built = produce(target, config, identity)
+        # Quick Look asks for each file twice; the second request reuses the first's preview.
+        with one_at_a_time(identity, config):
+            ready = cached_preview(identity, config)
+            # A cached preview is only copied, so it never waits for memory.
+            budget = CONVERTING.reserve(conversion_memory(target, identity), memory_budget(config))
+            with contextlib.nullcontext() if ready is not None else budget:
+                built = ready or produce(target, config, identity)
+                # A scene is described as it is built; a still image in a read of its own.
+                info = convert_mod.describe(target, config, identity, read=False)
+                if info is None and target != source:
+                    # The copy is removed once the reply is read, so it is described now, in
+                    # the time the extension still waits; past that the reply goes without.
+                    left = reply_seconds(config) - REPLY_MARGIN_SECONDS - (time.time() - asked)
+                    if left > 1:
+                        info = convert_mod.describe(target, config, identity, timeout=left)
+        delivered = reply.with_suffix(built.suffix)
+        shutil.copyfile(built, delivered)
+    except environment.NotAMeshError as error:
+        # Only then does the extension show the file as text or as its icon instead.
+        answer_with({'ok': False, 'error': str(error), 'not_a_mesh': True})
+        return
     except RenderError as error:
-        write_json(reply, {'ok': False, 'error': str(error)})
+        answer_with({'ok': False, 'error': str(error)})
         return
     except Exception as error:  # noqa: BLE001
-        write_json(reply, {'ok': False, 'error': f'{type(error).__name__}: {error}'})
+        answer_with({'ok': False, 'error': f'{type(error).__name__}: {error}'})
         return
-    delivered = reply.with_suffix(built.suffix)
-    shutil.copyfile(built, delivered)
     kind = 'scene' if built.suffix == '.ply' else 'png'
-    answer: dict[str, Any] = {'ok': True, kind: str(delivered)}
-    # A scene is described as it is built; a still image is described in a read of its own.
-    info = convert_mod.describe(target, config, identity, read=False)
-    if info is None and target != source:
-        # The copy is removed once the reply is read, so it is described now, in the time
-        # the extension still waits; past that the reply goes without it.
-        left = REPLY_SECONDS - REPLY_MARGIN_SECONDS - (time.time() - asked)
-        if left > 1:
-            info = convert_mod.describe(target, config, identity, timeout=left)
+    preview: dict[str, Any] = {'ok': True, kind: str(delivered)}
     if info is not None:
-        answer['info'] = info
-    write_json(reply, answer)
-    if info is None and target == source:
+        preview['info'] = info
+    answer_with(preview)
+    if info is None and target == source and reachable:
         # The image went out first, and its description is ready the next time.
         describe_later(target, config, identity)
 
@@ -228,12 +431,22 @@ def sweep(directory: Path) -> None:
     cutoff = time.time() - STALE_SECONDS
     stale = [
         *directory.glob(f'*{REPLY_SUFFIX}'),
+        *directory.glob(f'*{EARLY_SUFFIX}'),
+        *directory.glob(f'*{TAKEN_SUFFIX}'),
         *directory.glob('*.png'),
         *directory.glob('*.ply'),
+        # Copies the extension staged and left, when Quick Look stopped it or it moved on.
+        *directory.glob('*.staging'),
     ]
+    with _staged_guard:
+        in_use = set(_staged)
     for entry in stale:
         try:
-            if entry.stat().st_mtime < cutoff:
+            if entry.stat().st_mtime >= cutoff or entry in in_use:
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
                 entry.unlink(missing_ok=True)
         except OSError:
             pass
@@ -266,7 +479,14 @@ def serve(poll: float = 0.05) -> int:
     last_sweep = time.monotonic()
     while True:
         for request in sorted(directory.glob(f'*{REQUEST_SUFFIX}')):
-            handle(request)
+            taken = request.with_suffix(TAKEN_SUFFIX)
+            try:
+                request.rename(taken)
+            except OSError:
+                continue
+            # Each request is answered on its own thread, so its header is sent at once even
+            # while another file's preview is being built.
+            threading.Thread(target=answer, args=(taken,), daemon=True).start()
         if time.monotonic() - last_sweep > 60:
             sweep(directory)
             last_sweep = time.monotonic()

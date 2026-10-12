@@ -144,11 +144,12 @@ PyVista can also read these, which are not claimed:
 
 Claims on the extensions macOS previews itself, such as STL and PLY, or that another kind
 of file owns, are ignored by macOS, which is why those are not claimed. To claim fewer,
-or to add one of the others, edit the config and run the install command again, which
-rebuilds the app with the new claims:
+or to add one of the others, change the claims and run the install command again, which
+rebuilds the app with them:
 
-```json
-{ "extensions": { "add": [".h5"], "remove": [".dat"] } }
+```bash
+pvql config set extensions.add .h5
+pvql config set extensions.remove .dat
 ```
 
 ## How it works
@@ -172,18 +173,47 @@ version of the converter, so an update rebuilds them rather than serving old one
 
 The service loads PyVista and VTK in the background when it starts, which is at login
 and whenever it is reinstalled, so the first preview does not wait for them. `pvql
-warmup` does the same on demand, and `"warm_on_start": false` turns the automatic pass
-off.
+warmup` does the same on demand, and `pvql config set warm_on_start false` turns the
+automatic pass off.
 
 Surfaces are sent whole up to `max_scene_points`. Above that, images and volumes are
 thinned on their lattice and other surfaces are decimated. Set it to `0` to never
 thin.
 
+### Large files
+
+A `.pv` file is read with only the array it is coloured by. Its other arrays are read
+one at a time for their ranges, so a file never needs its arrays and its mesh in memory
+at once. A VTK XML file above 256 MB is read the same way, its other ranges taken from
+the header. A vector's range is that of its magnitude, shown as `||v||`, in every
+format.
+
+For a file of 32 MB or more, the info panel appears as soon as the header is read, with
+a spinner where the render goes until the preview is ready.
+
+Previews are built side by side while their estimated memory, about six times each
+file's size, fits within half the Mac's memory; the rest wait their turn, and a file too
+big for that budget is built on its own. Moving on from a slow file does not cancel it,
+so it is ready when you come back, unless its conversion runs past `timeout`. To change
+the budget:
+
+```bash
+pvql config set max_conversion_memory_mb 16000
+```
+
+A file above `max_file_size_mb` is not converted or copied when it is selected. The panel
+shows what its header says, and a Preview Anyway button previews it once. To preview
+files that large without asking:
+
+```bash
+pvql config set max_file_size_mb 4096
+```
+
 A claimed file that turns out not to be a mesh is shown the way Quick Look would have
 shown it: as plain text when it reads as text, such as a `.dat` holding a table of
 numbers, and otherwise as its icon, name, size, and date, with a line saying why it
-holds no mesh. A problem with the installation itself, such as a render service that is
-not running, is reported in full instead.
+holds no mesh. Any other failure, such as a render service that is not running or a
+conversion that timed out, is reported in full instead.
 
 ### Compressed and multi-file datasets
 
@@ -205,7 +235,7 @@ ordinary folder shows its own details immediately, as the Finder would.
 
 ### Still images
 
-With `"interactive": false` in the config, every preview is a still image rendered by
+After `pvql config set interactive false`, every preview is a still image rendered by
 `pyvista plot --off-screen --screenshot` instead, which keeps the scalar bar and axes
 the interactive view leaves out.
 
@@ -237,7 +267,16 @@ Settings under Privacy & Security.
 
 ## Configuration
 
-`~/Library/Application Support/PyVistaQuickLook/config.json`
+Settings are changed with `pvql config`, which checks each value before storing it:
+
+```bash
+pvql config                              # list every setting and its value
+pvql config set max_file_size_mb 4096
+pvql config get max_file_size_mb
+pvql config unset max_file_size_mb       # back to the default
+```
+
+They are kept in `~/Library/Application Support/PyVistaQuickLook/config.json`.
 
 | Key | Default | Effect |
 | --- | --- | --- |
@@ -247,12 +286,14 @@ Settings under Privacy & Security.
 | `info_panel` | `automatic` | Where the dataset's details go: `side`, `below`, `compact`, `hidden`, or `automatic` to choose by the panel's size |
 | `max_scene_points` | `2000000` | Thin surfaces above this many points; `0` never does |
 | `max_glyph_points` | `20000` | Draw at most this many points of a point cloud; `0` draws all |
-| `max_file_size_mb` | `512` | Files above this size show a notice instead of a preview, and are never copied |
+| `max_file_size_mb` | `2048` | Files above this size show their header and a Preview Anyway button instead of a preview; `0` for no limit |
+| `max_conversion_memory_mb` | half the memory | Memory previews may use while built side by side; `0` for no limit |
 | `timeout` | `60` | Seconds before a conversion is abandoned |
 | `warm_on_start` | `true` | Load PyVista and VTK when the render service starts |
-| `window_size` | `[1024, 1024]` | Still image size in pixels |
-| `background` | `null` | Background colour passed to `pyvista plot` |
-| `extra_args` | `[]` | Extra arguments appended to `pyvista plot` |
+| `window_size` | `1024 1024` | Still image size in pixels |
+| `background` | none | Background colour passed to `pyvista plot` |
+| `extra_args` | none | Extra arguments appended to `pyvista plot` |
+| `extensions.add`, `extensions.remove` | none | Extensions to claim or stop claiming, on the next install |
 | `cache` | `true` | Reuse previously built previews |
 | `log` | `false` | Append activity to `pvql.log` beside the config file |
 
@@ -269,6 +310,7 @@ pvql types            # list claimed extensions
 pvql doctor           # check every part of the integration
 pvql finder           # say whether the Finder must restart to show previews
 pvql service          # manage the render service
+pvql config           # list settings; get, set, or unset one
 pvql config --init    # write a config file with discovered defaults
 pvql cache --clear    # delete cached previews
 pvql uninstall        # remove everything, asking first
@@ -287,8 +329,8 @@ Finder, the service, and a real preview.
   Finder has run since before 0.7.0 and still asks for the extension by its old
   identifier. Run `killall Finder` once no files are being copied or moved.
 - **Previews are stale.** `pvql cache --clear`.
-- **A preview fails.** Set `"log": true` in the config; activity is appended to
-  `pvql.log` beside it. The extension's own log is in
+- **A preview fails.** Run `pvql config set log true`; activity is then appended to
+  `pvql.log` beside the config file. The extension's own log is in
   `~/Library/Containers/org.pyvista.PyVistaQuickLook.QuickLook/Data/tmp/`.
 
 ## Development
