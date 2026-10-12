@@ -72,7 +72,7 @@ def colour_choice(rows: list[dict[str, Any]]) -> tuple[str, str] | None:
     active = next((row for row in rows if 'scalars' in row['active']), None)
     if active is None:
         return None
-    if not active['name'].startswith('vtk') and 'normals' not in active['active']:
+    if not active['name'].startswith('vtk'):
         return active['name'], active['association']
     for association in ('Point', 'Cell'):
         for row in rows:
@@ -307,14 +307,14 @@ def recentre(surface: pv.PolyData) -> pv.PolyData:
 
 
 def choose_scalars(dataset: pv.DataSet) -> pv.DataSet:
-    """Colour the dataset by a real array, stepping over VTK's bookkeeping arrays and normals."""
+    """Point the dataset away from VTK's bookkeeping arrays, colouring by a real one."""
     name = dataset.active_scalars_name
     if not name:
         # Nothing was active, so the file asks for no colour. Leave it that way.
         return dataset
-    normals = {dataset.point_data.active_normals_name, dataset.cell_data.active_normals_name}
-    if not name.startswith('vtk') and name not in normals:
+    if not name.startswith('vtk'):
         return dataset
+    normals = {dataset.point_data.active_normals_name, dataset.cell_data.active_normals_name}
     for source in (dataset.point_data, dataset.cell_data):
         for candidate in source:
             # Normals are unit length everywhere, so they would colour the mesh one shade.
