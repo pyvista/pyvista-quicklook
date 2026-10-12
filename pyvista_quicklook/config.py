@@ -24,6 +24,8 @@ DEFAULTS: dict[str, Any] = {
     'window_size': [1024, 1024],
     'timeout': 60,
     'max_file_size_mb': 2048,
+    # None leaves half the Mac's memory to previews being built at once.
+    'max_conversion_memory_mb': None,
     'background': None,
     'extra_args': [],
     'extensions': {'add': [], 'remove': []},
@@ -67,6 +69,7 @@ KINDS: dict[str, str] = {
     'window_size': 'pixels',
     'timeout': 'seconds',
     'max_file_size_mb': 'count',
+    'max_conversion_memory_mb': 'count',
     'background': 'text',
     'extra_args': 'words',
     'extensions.add': 'extensions',

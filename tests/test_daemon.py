@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,6 +48,19 @@ def test_readable_gives_up_on_a_file_that_blocks(tmp_path):
         assert daemon.readable(str(fifo), seconds=0.1) is False
     finally:
         faulthandler.cancel_dump_traceback_later()
+        # Lets the abandoned read finish, so its thread does not outlive the test.
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+
+
+def test_readable_works_off_the_main_thread(tmp_path):
+    """Requests are answered on their own threads, so the guard cannot rely on signals."""
+    sample = tmp_path / 'mesh.vtu'
+    sample.write_bytes(b'x')
+    answers = []
+    worker = threading.Thread(target=lambda: answers.append(daemon.readable(str(sample))))
+    worker.start()
+    worker.join(10)
+    assert answers == [True]
 
 
 def test_handle_reports_an_unexpected_exception(tmp_path, monkeypatch):
@@ -127,6 +141,62 @@ def test_sweep_ignores_a_reply_that_vanishes(tmp_path, monkeypatch):
     daemon.sweep(tmp_path)
 
 
+def test_serve_answers_each_request_on_its_own_thread(tmp_path, monkeypatch):
+    """A request picked up while another is still being answered is not left waiting for it."""
+    drop = tmp_path / 'container'
+    drop.mkdir()
+    monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
+    monkeypatch.setattr(daemon.cache, 'discard_other_scenes', lambda version: 0)
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': False})
+    release, second = threading.Event(), threading.Event()
+    released, finished = [], threading.Event()
+
+    def handle(request):
+        if request.stem == 'a':
+            (drop / 'b.pvqlreq').write_text('{}')
+            released.append(release.wait(5))
+            finished.set()
+        else:
+            second.set()
+            release.set()
+
+    def sleep(seconds):
+        if second.wait(seconds):
+            raise StopLoopError
+
+    monkeypatch.setattr(daemon, 'handle', handle)
+    monkeypatch.setattr(daemon.time, 'sleep', sleep)
+    (drop / 'a.pvqlreq').write_text('{}')
+    with pytest.raises(StopLoopError):
+        daemon.serve()
+    release.set()
+    assert second.is_set()
+    finished.wait(5)
+    assert released == [True], 'the second request waited for the first'
+
+
+def test_serve_leaves_a_request_another_service_took(tmp_path, monkeypatch):
+    """A request that is gone before it can be taken is skipped, not answered twice."""
+    drop = tmp_path / 'container'
+    drop.mkdir()
+    monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
+    monkeypatch.setattr(daemon.cache, 'discard_other_scenes', lambda version: 0)
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': False})
+    monkeypatch.setattr(daemon, 'handle', lambda request: pytest.fail('handled'))
+
+    def gone(self, target):
+        raise FileNotFoundError(self)
+
+    def stop(seconds):
+        raise StopLoopError
+
+    monkeypatch.setattr(Path, 'rename', gone)
+    monkeypatch.setattr(daemon.time, 'sleep', stop)
+    (drop / 'a.pvqlreq').write_text('{}')
+    with pytest.raises(StopLoopError):
+        daemon.serve()
+
+
 class StopLoopError(Exception):
     """Raised to end the service loop in a test."""
 
@@ -143,6 +213,11 @@ def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
         daemon, 'handle', lambda request: handled.append(request.name) or request.unlink()
     )
     monkeypatch.setattr(daemon, 'sweep', swept.append)
+    monkeypatch.setattr(
+        daemon.threading,
+        'Thread',
+        lambda target, args, daemon: SimpleNamespace(start=lambda: target(*args)),
+    )
     # Started at 0, then polls at 30 (not due), 100 (due), and 130 (not due again).
     clock = iter([0.0, 30.0, 100.0, 100.0, 130.0])
     monkeypatch.setattr(daemon.time, 'monotonic', lambda: next(clock))
@@ -159,7 +234,8 @@ def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
     (drop / 'a.pvqlreq').write_text('{}')
     with pytest.raises(StopLoopError):
         daemon.serve()
-    assert handled == ['a.pvqlreq', 'b.pvqlreq']
+    assert handled == ['a.pvqltaken', 'b.pvqltaken']
+    assert list(drop.iterdir()) == []
     assert swept == [drop]
     assert warmed == [{'warm_on_start': True}]
 

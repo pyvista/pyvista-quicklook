@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 from typing import Any
 
 from . import cache
 from . import config as config_mod
 from . import environment
+
+if TYPE_CHECKING:
+    import os
 
 EXPORTER = Path(__file__).with_name('_scene_export.py')
 DESCRIBER = Path(__file__).with_name('_dataset_info.py')
@@ -65,7 +68,7 @@ def describe(
     described = info_path(preview)
     # Named after the file's identity and the describer's version, so never stale.
     if not described.is_file():
-        scratch = described.with_name(f'{described.stem}.{os.getpid()}.tmp.json')
+        scratch = described.with_name(f'{described.stem}.{cache.scratch_tag()}.tmp.json')
         try:
             command = [
                 environment.interpreter(config),
@@ -95,7 +98,7 @@ def header(source: str | os.PathLike[str], config: dict[str, Any]) -> dict[str, 
     """Return what a file's header alone says for the info panel, reading none of its values."""
     if not wants_info(config) or Path(source).suffix.lower() not in HEADER_SUFFIXES:
         return None
-    scratch = config_mod.CACHE_DIR / f'header.{os.getpid()}.tmp.json'
+    scratch = config_mod.CACHE_DIR / f'header.{cache.scratch_tag()}.tmp.json'
     try:
         scratch.parent.mkdir(parents=True, exist_ok=True)
         command = [
@@ -139,7 +142,7 @@ def scene(
 
     out = scene_path(identity, config)
     # The export describes the file in the same read, kept aside until the scene is in.
-    pending = info_path(out).with_name(f'{out.stem}.{os.getpid()}.tmp.json')
+    pending = info_path(out).with_name(f'{out.stem}.{cache.scratch_tag()}.tmp.json')
 
     def build(scratch: Path) -> None:
         command = [

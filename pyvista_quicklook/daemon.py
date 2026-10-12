@@ -7,9 +7,10 @@ import json
 import os
 from pathlib import Path
 import shutil
-import signal
+import sys
 import threading
 import time
+from typing import TYPE_CHECKING
 from typing import Any
 import uuid
 
@@ -24,10 +25,15 @@ from .plist import APP_BUNDLE_ID
 from .plist import EXT_BUNDLE_ID
 from .plist import LEGACY_EXT_BUNDLE_ID
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 LABEL = 'org.pyvista.pvqld'
 LEGACY_LABEL = 'io.github.user27182.pvqld'
 REQUEST_SUFFIX = '.pvqlreq'
 REPLY_SUFFIX = '.pvqlrep'
+# A request the service has picked up, so the next poll does not pick it up again.
+TAKEN_SUFFIX = '.pvqltaken'
 # What the header says, sent while a large file is still being converted.
 EARLY_SUFFIX = '.pvqlpre'
 EARLY_BYTES = 32 * 1024 * 1024
@@ -54,7 +60,7 @@ def legacy_drop_dir() -> Path:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     """Write JSON to a path, renaming it into place so readers never see a partial file."""
-    scratch = path.with_suffix(f'.{os.getpid()}.tmp')
+    scratch = path.with_suffix(f'.{cache.scratch_tag()}.tmp')
     scratch.write_text(json.dumps(payload))
     scratch.replace(path)
 
@@ -79,30 +85,29 @@ def readable(path: str, seconds: float = 2.0) -> bool:
     """Return whether a file can be opened before the guard expires.
 
     Reading a file in a folder macOS protects can block rather than fail, so the
-    attempt is abandoned once the timer fires. A folder counts as readable when it
-    can be listed, since a DICOM series is previewed as a whole.
+    attempt is abandoned once the guard expires, leaving the blocked read to a thread
+    of its own. A folder counts as readable when it can be listed, since a DICOM
+    series is previewed as a whole.
     """
+    answer: list[bool] = []
 
-    def expire(signum: int, frame: object) -> None:
-        raise TimeoutError
-
-    # SIGALRM is delivered to the main thread, which is where serve() runs this.
-    previous = signal.signal(signal.SIGALRM, expire)
-    signal.setitimer(signal.ITIMER_REAL, seconds)
-    try:
-        # A DICOM series is a folder, and opening one raises rather than reading.
-        if os.path.isdir(path):
-            os.listdir(path)
+    def attempt() -> None:
+        try:
+            # A DICOM series is a folder, and opening one raises rather than reading.
+            if os.path.isdir(path):
+                os.listdir(path)
+            else:
+                with open(path, 'rb') as handle:
+                    handle.read(1)
+        except OSError:
+            answer.append(False)
         else:
-            with open(path, 'rb') as handle:
-                handle.read(1)
-    except OSError, TimeoutError:
-        return False
-    else:
-        return True
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
+            answer.append(True)
+
+    probe = threading.Thread(target=attempt, daemon=True)
+    probe.start()
+    probe.join(seconds)
+    return bool(answer and answer[0])
 
 
 def cached(identity: tuple[str, int, int] | None, config: dict[str, Any]) -> bool:
@@ -127,6 +132,102 @@ def send_early(
             write_json(request.with_suffix(EARLY_SUFFIX), {'ok': True, 'info': info})
 
 
+# A conversion's peak memory, estimated as the interpreter plus a multiple of the file size.
+BASE_MEMORY = 200_000_000
+MEMORY_PER_FILE_BYTE = 6
+
+
+class MemoryBudget:
+    """Lets conversions run together while their estimated memory fits, and any one alone.
+
+    Waiting conversions start in the order they asked, so a large one is never held off
+    by a stream of small ones.
+    """
+
+    def __init__(self) -> None:
+        """Start with nothing running or waiting."""
+        self.condition = threading.Condition()
+        self.used = 0
+        self.running = 0
+        self.waiting: list[int] = []
+        self.tickets = 0
+
+    @contextlib.contextmanager
+    def reserve(self, amount: int, limit: int) -> Iterator[None]:
+        """Wait until ``amount`` fits under ``limit`` beside what runs, or nothing runs."""
+        with self.condition:
+            self.tickets += 1
+            ticket = self.tickets
+            self.waiting.append(ticket)
+            try:
+                self.condition.wait_for(
+                    lambda: (
+                        self.waiting[0] == ticket
+                        and (self.running == 0 or self.used + amount <= limit)
+                    )
+                )
+            finally:
+                self.waiting.remove(ticket)
+            self.used += amount
+            self.running += 1
+            self.condition.notify_all()
+        try:
+            yield
+        finally:
+            with self.condition:
+                self.used -= amount
+                self.running -= 1
+                self.condition.notify_all()
+
+
+CONVERTING = MemoryBudget()
+
+# Files being previewed, each with a lock and how many requests hold or await it.
+_previewing: dict[tuple[Any, ...], list[Any]] = {}
+_previewing_guard = threading.Lock()
+
+
+@contextlib.contextmanager
+def one_at_a_time(identity: tuple[str, int, int] | None, config: dict[str, Any]) -> Iterator[None]:
+    """Hold back a request for a preview that another request is already building."""
+    if identity is None:
+        yield
+        return
+    key = (*identity, config.get('interactive', True))
+    with _previewing_guard:
+        entry = _previewing.setdefault(key, [threading.Lock(), 0])
+        entry[1] += 1
+    try:
+        with entry[0]:
+            yield
+    finally:
+        with _previewing_guard:
+            entry[1] -= 1
+            if not entry[1]:
+                del _previewing[key]
+
+
+def physical_memory() -> int:
+    """Return the Mac's memory in bytes."""
+    return os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+
+
+def memory_budget(config: dict[str, Any]) -> int:
+    """Return the memory conversions may use together, in bytes."""
+    limit = config.get('max_conversion_memory_mb')
+    if limit is None:
+        return physical_memory() // 2
+    return limit * 1_000_000 if limit else sys.maxsize
+
+
+def conversion_memory(target: str, identity: tuple[str, int, int] | None) -> int:
+    """Return the memory a file's conversion is expected to need at its peak."""
+    # A folder's own size says nothing of the series inside, so it is converted alone.
+    if identity is None or os.path.isdir(target):
+        return sys.maxsize
+    return BASE_MEMORY + MEMORY_PER_FILE_BYTE * identity[2]
+
+
 def produce(
     target: str | os.PathLike[str],
     config: dict[str, Any],
@@ -136,6 +237,17 @@ def produce(
     if config.get('interactive', True):
         return convert_mod.scene(target, config, identity=identity)
     return render_mod.preview(target, config, identity=identity)
+
+
+def answer(request: Path) -> None:
+    """Handle one request on its own thread, replying with any failure rather than dying."""
+    reply = request.with_suffix(REPLY_SUFFIX)
+    try:
+        handle(request)
+    except BaseException as error:  # noqa: BLE001
+        if not reply.exists():
+            write_json(reply, {'ok': False, 'error': f'{type(error).__name__}: {error}'})
+        request.unlink(missing_ok=True)
 
 
 def handle(request: Path) -> None:
@@ -191,8 +303,14 @@ def handle(request: Path) -> None:
             write_json(reply, message)
 
     try:
-        built = produce(target, config, identity)
-        info = convert_mod.describe(target, built, config)
+        # Quick Look asks for each file twice; the second request reuses the first's preview.
+        with one_at_a_time(identity, config):
+            # A cached preview is only copied, so it never waits for memory.
+            budget = CONVERTING.reserve(conversion_memory(target, identity), memory_budget(config))
+            with contextlib.nullcontext() if cached(identity, config) else budget:
+                built = produce(target, config, identity)
+                info = convert_mod.describe(target, built, config)
+
     except RenderError as error:
         answer_with({'ok': False, 'error': str(error)})
         return
@@ -214,6 +332,7 @@ def sweep(directory: Path) -> None:
     stale = [
         *directory.glob(f'*{REPLY_SUFFIX}'),
         *directory.glob(f'*{EARLY_SUFFIX}'),
+        *directory.glob(f'*{TAKEN_SUFFIX}'),
         *directory.glob('*.png'),
         *directory.glob('*.ply'),
     ]
@@ -251,7 +370,14 @@ def serve(poll: float = 0.05) -> int:
     last_sweep = time.monotonic()
     while True:
         for request in sorted(directory.glob(f'*{REQUEST_SUFFIX}')):
-            handle(request)
+            taken = request.with_suffix(TAKEN_SUFFIX)
+            try:
+                request.rename(taken)
+            except OSError:
+                continue
+            # Each request is answered on its own thread, so its header is sent at once even
+            # while another file's preview is being built.
+            threading.Thread(target=answer, args=(taken,), daemon=True).start()
         if time.monotonic() - last_sweep > 60:
             sweep(directory)
             last_sweep = time.monotonic()

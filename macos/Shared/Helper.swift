@@ -209,6 +209,12 @@ enum Helper {
         )
     }
 
+    /// Seconds to wait for the service: its own conversion timeout, and some to spare.
+    static func replyTimeout() -> TimeInterval {
+        let seconds = (configuration()?["timeout"] as? NSNumber)?.doubleValue ?? 60
+        return seconds + 30
+    }
+
     /// Asks the render service for a preview of a mesh file.
     ///
     /// `force` previews a file above the size limit. `early` is handed what the file's
@@ -216,7 +222,6 @@ enum Helper {
     static func requestPreview(
         _ url: URL,
         force: Bool = false,
-        timeout: TimeInterval = 90,
         early: (([String: Any]) -> Void)? = nil
     ) throws -> Reply {
         let directory = NSTemporaryDirectory() as NSString
@@ -261,7 +266,7 @@ enum Helper {
             throw Failure(message: "Could not reach the render service.\n\n\(error.localizedDescription)", isSetup: true)
         }
 
-        let deadline = Date().addingTimeInterval(timeout)
+        let deadline = Date().addingTimeInterval(replyTimeout())
         defer { try? manager.removeItem(atPath: earlyPath) }
         while Date() < deadline {
             if let data = manager.contents(atPath: earlyPath) {
@@ -305,6 +310,11 @@ enum Helper {
             )
         }
 
+        // A request the service took is still being worked on; one it never took means it is gone.
+        if !manager.fileExists(atPath: requestPath) {
+            pvqlLog("service is still working after \(Int(replyTimeout())) s")
+            throw Failure(message: "The render service is still converting \(url.lastPathComponent) after \(Int(replyTimeout())) seconds.\n\nIt is kept for the next time the file is selected.")
+        }
         try? manager.removeItem(atPath: requestPath)
         pvqlLog("service did not answer")
         throw Failure(message: serviceMissingMessage, isSetup: true)

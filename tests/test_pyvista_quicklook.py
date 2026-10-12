@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 from pathlib import Path
 import plistlib
@@ -346,6 +347,156 @@ def test_handle_sends_the_header_ahead_of_a_slow_preview(tmp_path, monkeypatch):
     assert json.loads((tmp_path / 'token.pvqlrep').read_text())['info'] == {'type': 'Final'}
 
 
+def converting_together(tmp_path, monkeypatch, sizes, budget_mb):
+    """Request files of the given sizes at once and return how many converted together."""
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_conversion_memory_mb': budget_mb})
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'cached', lambda identity, config: False)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: None)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args: None)
+    png = tmp_path / 'built.png'
+    png.write_bytes(b'png')
+    running, peak = [], []
+    together = threading.Barrier(len(sizes), timeout=1)
+
+    def build(target, config, identity):
+        running.append(target)
+        peak.append(len(running))
+        # Waits for the others to start too, which they do only if memory allows.
+        with contextlib.suppress(threading.BrokenBarrierError):
+            together.wait()
+        running.remove(target)
+        return png
+
+    monkeypatch.setattr(daemon, 'produce', build)
+    threads = []
+    for index, size in enumerate(sizes):
+        request = tmp_path / f'r{index}.pvqlreq'
+        request.write_text(json.dumps({'path': f'/data/{index}.vtu', 'mtime': 1, 'size': size}))
+        threads.append(threading.Thread(target=daemon.handle, args=(request,), daemon=True))
+        threads[-1].start()
+    for thread in threads:
+        thread.join(10)
+    for index in range(len(sizes)):
+        assert json.loads((tmp_path / f'r{index}.pvqlrep').read_text())['ok'] is True
+    return max(peak)
+
+
+def test_small_files_convert_side_by_side(tmp_path, monkeypatch):
+    """Files whose conversions fit the memory budget together all start at once."""
+    assert converting_together(tmp_path, monkeypatch, [1_000_000] * 3, budget_mb=1000) == 3
+
+
+def test_a_file_too_big_for_the_budget_converts_alone(tmp_path, monkeypatch):
+    """A conversion that would exceed the budget waits, then runs even if it alone exceeds it."""
+    assert converting_together(tmp_path, monkeypatch, [1_000_000, 500_000_000], 1000) == 1
+
+
+def test_a_small_file_converts_beside_a_big_one(tmp_path, monkeypatch):
+    """A big conversion leaves room for a small one when the budget allows both."""
+    sizes = [1_000_000_000, 1_000_000]
+    assert converting_together(tmp_path, monkeypatch, sizes, budget_mb=7000) == 2
+
+
+def test_two_requests_for_one_file_build_it_once(tmp_path, monkeypatch):
+    """Quick Look's second request for a file waits for the first build and reuses it."""
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: None)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args: None)
+    png = tmp_path / 'built.png'
+    builds, running, peak = [], [], []
+    monkeypatch.setattr(daemon, 'cached', lambda identity, config: png.exists())
+
+    def build(target, config, identity):
+        running.append(target)
+        peak.append(len(running))
+        if not png.exists():
+            builds.append(target)
+            time.sleep(0.2)
+            png.write_bytes(b'png')
+        running.remove(target)
+        return png
+
+    monkeypatch.setattr(daemon, 'produce', build)
+    threads = []
+    for token in ('small', 'large'):
+        request = tmp_path / f'{token}.pvqlreq'
+        request.write_text(json.dumps({'path': '/data/a.vtu', 'mtime': 1, 'size': 10}))
+        threads.append(threading.Thread(target=daemon.handle, args=(request,)))
+        threads[-1].start()
+    for thread in threads:
+        thread.join(10)
+    assert builds == ['/data/a.vtu']
+    assert max(peak) == 1
+    for token in ('small', 'large'):
+        assert json.loads((tmp_path / f'{token}.pvqlrep').read_text())['ok'] is True
+    assert daemon._previewing == {}
+
+
+def test_scratch_files_are_named_per_thread():
+    """Two builds in one process never write the same scratch file."""
+    tags = []
+    worker = threading.Thread(target=lambda: tags.append(cache.scratch_tag()))
+    worker.start()
+    worker.join(5)
+    assert tags[0] != cache.scratch_tag()
+
+
+def test_a_big_conversion_waits_its_turn_rather_than_forever():
+    """Waiters start in order, so a conversion too big to share is not passed over."""
+    budget = daemon.MemoryBudget()
+    order = []
+    release = threading.Event()
+    started = threading.Event()
+
+    def run(name, amount, wait=False):
+        with budget.reserve(amount, 10):
+            order.append(name)
+            started.set()
+            if wait:
+                release.wait(5)
+
+    first = threading.Thread(target=run, args=('small', 1, True), daemon=True)
+    first.start()
+    assert started.wait(5)
+    big = threading.Thread(target=run, args=('big', 100), daemon=True)
+    big.start()
+    time.sleep(0.1)
+    later = threading.Thread(target=run, args=('later', 1), daemon=True)
+    later.start()
+    time.sleep(0.1)
+    assert order == ['small']
+    release.set()
+    for thread in (first, big, later):
+        thread.join(5)
+    assert order == ['small', 'big', 'later']
+
+
+def test_a_handler_that_dies_still_replies(tmp_path, monkeypatch):
+    """An error outside the handler's own guard is reported, not lost with the thread."""
+    monkeypatch.setattr(daemon, 'handle', lambda request: 1 / 0)
+    request = tmp_path / 'token.pvqltaken'
+    request.write_text('{}')
+    daemon.answer(request)
+    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert reply['ok'] is False
+    assert reply['error'].startswith('ZeroDivisionError')
+    assert not request.exists()
+
+
+def test_the_memory_budget_and_estimates(tmp_path):
+    """The budget is half the memory unless set, 0 lifts it, and a folder converts alone."""
+    assert daemon.memory_budget({}) == daemon.physical_memory() // 2
+    assert daemon.memory_budget({'max_conversion_memory_mb': 0}) == sys.maxsize
+    assert daemon.memory_budget({'max_conversion_memory_mb': 512}) == 512_000_000
+    assert daemon.conversion_memory('/data/a.vtu', ('/data/a.vtu', 1, 10)) == (
+        daemon.BASE_MEMORY + 10 * daemon.MEMORY_PER_FILE_BYTE
+    )
+    assert daemon.conversion_memory(str(tmp_path), (str(tmp_path), 1, 10)) == sys.maxsize
+    assert daemon.conversion_memory('/data/a.vtu', None) == sys.maxsize
+
+
 def test_a_forced_preview_also_sends_its_header_first(tmp_path, monkeypatch):
     """Previewing a file above the limit anyway still shows its header while it converts."""
     png = tmp_path / 'cached.png'
@@ -371,6 +522,48 @@ def test_a_forced_preview_also_sends_its_header_first(tmp_path, monkeypatch):
     daemon.handle(request)
     assert json.loads(early.read_text())['info'] == {'type': 'Early'}
     assert json.loads((tmp_path / 'token.pvqlrep').read_text())['ok'] is True
+
+
+def test_a_second_request_gets_its_header_while_the_first_converts(tmp_path, monkeypatch):
+    """Quick Look asks twice for one file; the second waits for the mesh, not for the header."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    # Too little memory for two at once, so the second conversion waits for the first.
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_conversion_memory_mb': 1})
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'cached', lambda identity, config: False)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': 'Early'})
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args: None)
+    release = threading.Event()
+    converting, peak = [], []
+
+    def slow(target, config, identity):
+        converting.append(identity)
+        peak.append(len(converting))
+        release.wait(10)
+        converting.pop()
+        return png
+
+    monkeypatch.setattr(daemon, 'produce', slow)
+    body = json.dumps({'path': '/data/big.vtu', 'mtime': 1, 'size': daemon.EARLY_BYTES})
+    threads = []
+    for token in ('first', 'second'):
+        request = tmp_path / f'{token}.pvqlreq'
+        request.write_text(body)
+        threads.append(threading.Thread(target=daemon.handle, args=(request,)))
+        threads[-1].start()
+    second_early = tmp_path / f'second{daemon.EARLY_SUFFIX}'
+    deadline = time.monotonic() + 10
+    while not second_early.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert second_early.exists()
+    assert not (tmp_path / 'first.pvqlrep').exists()
+    release.set()
+    for thread in threads:
+        thread.join(10)
+    for token in ('first', 'second'):
+        assert json.loads((tmp_path / f'{token}.pvqlrep').read_text())['ok'] is True
+    assert max(peak) == 1, 'two previews were built at once'
 
 
 def test_no_header_is_sent_after_the_preview(tmp_path, monkeypatch):
@@ -438,6 +631,42 @@ def test_cached_looks_where_each_kind_of_preview_is_kept(tmp_path, monkeypatch):
     still.write_bytes(b'x')
     convert.info_path(still).write_text('{}')
     assert daemon.cached(identity, image)
+
+
+def test_a_cached_preview_does_not_wait_for_another_conversion(tmp_path, monkeypatch):
+    """Only previews still to be built queue for the conversion lock."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'cached', lambda identity, config: True)
+    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args: None)
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/data/a.vtu', 'mtime': 1, 'size': 10}))
+    with daemon.CONVERTING.reserve(1, 1):
+        worker = threading.Thread(target=daemon.handle, args=(request,))
+        worker.start()
+        worker.join(5)
+        assert not worker.is_alive()
+    assert json.loads((tmp_path / 'token.pvqlrep').read_text())['ok'] is True
+
+
+def test_describing_a_still_image_holds_the_conversion_lock(tmp_path, monkeypatch):
+    """A still image is described by a second full read, which counts toward the budget."""
+    png = tmp_path / 'still.png'
+    png.write_bytes(b'png')
+    held = []
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'interactive': False})
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(
+        daemon.convert_mod, 'describe', lambda *args: held.append(daemon.CONVERTING.running)
+    )
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/data/a.vtu', 'mtime': 1, 'size': 10}))
+    daemon.handle(request)
+    assert held == [1]
 
 
 @pytest.fixture
