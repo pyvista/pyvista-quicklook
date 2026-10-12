@@ -445,7 +445,8 @@ def composite_facts(multiblock: pv.MultiBlock) -> tuple[list[list[Any]], list[di
     found = leaves(multiblock)
     datasets = [block for _, block in found if block is not None]
     kinds, depth = block_kinds(multiblock)
-    facts = [['Blocks', count(len(multiblock))]]
+    # Counted as the block list counts them: every dataset or empty block, at any depth.
+    facts = [['Blocks', count(len(found))]]
     if depth > 1:
         facts.append(['Depth', str(depth)])
     facts += [
@@ -662,7 +663,7 @@ def zstd_metadata(path: Path) -> Any:
     import pyvista_zstd
 
     with pyvista_zstd.Reader(path) as reader:
-        # pyvista-zstd 0.5 keeps the per-array metadata behind a private accessor.
+        # pyvista-zstd keeps the per-array metadata behind a private accessor.
         return reader._root_ds_meta_from_core()
 
 
@@ -840,8 +841,11 @@ def header_info(source: str) -> dict[str, Any]:
     header: dict[str, Any] = {}
     reader = HEADERS.get(path.suffix.lower())
     if reader is not None and path.is_file():
-        with contextlib.suppress(Exception):
+        try:
             header = reader(path)
+        except Exception as error:  # noqa: BLE001
+            # Reported for the service's log; the panel then shows only the file's facts.
+            sys.stderr.write(f'header skipped: {type(error).__name__}: {error}\n')
     info: dict[str, Any] = {'type': header.get('type', '')}
     if header:
         rows = header['rows']

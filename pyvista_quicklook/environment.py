@@ -114,6 +114,9 @@ def run(
         if completed.returncode == NOT_A_MESH_STATUS:
             raise NotAMeshError(message)
         raise RenderError(message)
+    if completed.stderr.strip():
+        # What a successful run reported, such as a fast path it fell back from.
+        log(config, f'{task}: {tail(completed.stderr.strip())}')
     return completed
 
 

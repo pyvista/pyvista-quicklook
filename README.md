@@ -209,8 +209,9 @@ a spinner where the render goes until the preview is ready.
 
 Previews are built side by side while their estimated memory, about six times each
 file's size, fits within half the Mac's memory; the rest wait their turn, and a file too
-big for that budget is built on its own. Moving on from a slow file never cancels it, so
-it is ready when you come back. To change the budget:
+big for that budget is built on its own. Moving on from a slow file does not cancel it,
+so it is ready when you come back, unless its conversion runs past `timeout`. To change
+the budget:
 
 ```bash
 pvql config set max_conversion_memory_mb 16000

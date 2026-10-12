@@ -63,6 +63,8 @@ enum Helper {
         var needsCopy = false
         /// Whether the file holds no mesh, so it may be shown as whatever else it is.
         var isNotMesh = false
+        /// Whether the service took the request and is still working on it.
+        var isUnderway = false
     }
 
     /// What the render service returned: a scene to explore, or a rendered image.
@@ -242,12 +244,22 @@ enum Helper {
         } catch let failure as Failure where failure.needsCopy {
             let directory = exchangeDirectory() as NSString
             let stagingPath = directory.appendingPathComponent("\(UUID().uuidString).staging")
-            defer { try? FileManager.default.removeItem(atPath: stagingPath) }
             guard let copy = stage(url, in: stagingPath, force: force) else {
+                try? FileManager.default.removeItem(atPath: stagingPath)
                 throw failure
             }
             pvqlLog("staged a copy the service can read")
-            return try exchange(url, force: force, copy: copy, early: early)
+            do {
+                let reply = try exchange(url, force: force, copy: copy, early: early)
+                try? FileManager.default.removeItem(atPath: stagingPath)
+                return reply
+            } catch let underway as Failure where underway.isUnderway {
+                // The service still reads the copy, and removes it once it is stale.
+                throw underway
+            } catch {
+                try? FileManager.default.removeItem(atPath: stagingPath)
+                throw error
+            }
         }
     }
 
@@ -359,7 +371,10 @@ enum Helper {
         // A request the service took is still being worked on; one it never took means it is gone.
         if !manager.fileExists(atPath: requestPath) {
             pvqlLog("service is still working after \(Int(replyTimeout())) s")
-            throw Failure(message: "The render service is still converting \(url.lastPathComponent) after \(Int(replyTimeout())) seconds.\n\nIt is kept for the next time the file is selected.")
+            throw Failure(
+                message: "The render service is still working on \(url.lastPathComponent) after \(Int(replyTimeout())) seconds.\n\nSelect the file again later to see its preview.",
+                isUnderway: true
+            )
         }
         try? manager.removeItem(atPath: requestPath)
         pvqlLog("service did not answer")

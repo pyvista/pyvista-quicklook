@@ -7,7 +7,6 @@ imports only PyVista and its own dependencies.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import math
 import os
@@ -143,8 +142,11 @@ def read_for_preview(source: str) -> tuple[object, dict[str, Any] | None]:
         with Path(source).open('rb'):
             pass
     selective = None
-    with contextlib.suppress(Exception):
+    try:
         selective = read_selectively(source)
+    except Exception as error:  # noqa: BLE001
+        # Reported for the service's log; the file is then read whole.
+        sys.stderr.write(f'selective read skipped: {summary(error)}\n')
     if selective is not None:
         return selective
     try:

@@ -106,9 +106,7 @@ def test_handle_delivers_a_still_image(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon.config_mod, 'load', dict)
     monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
     monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
-    monkeypatch.setattr(
-        daemon.convert_mod, 'describe', lambda target, built, config: {'type': 'X'}
-    )
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: {'type': 'X'})
     request = tmp_path / 'token.pvqlreq'
     request.write_text(json.dumps({'path': str(tmp_path / 'mesh.vtu')}))
     daemon.handle(request)
@@ -118,20 +116,72 @@ def test_handle_delivers_a_still_image(tmp_path, monkeypatch):
     assert reply['info'] == {'type': 'X'}
 
 
-def test_handle_leaves_out_a_description_it_cannot_get(tmp_path, monkeypatch):
-    """A preview whose file cannot be described is delivered without info."""
+def test_a_still_image_is_sent_before_its_description(tmp_path, monkeypatch):
+    """An image whose description is not cached is sent at once and described afterwards."""
     png = tmp_path / 'cached.png'
     png.write_bytes(b'png')
+    described = threading.Event()
+
+    def describe(target, built, config, *, read=True):
+        if read:
+            described.set()
+
     monkeypatch.setattr(daemon.config_mod, 'load', dict)
     monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
     monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
-    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda target, built, config: None)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
     request = tmp_path / 'token.pvqlreq'
     request.write_text(json.dumps({'path': str(tmp_path / 'mesh.vtu')}))
     daemon.handle(request)
     reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
     assert reply['ok'] is True
     assert 'info' not in reply
+    assert described.wait(5)
+
+
+def test_a_copy_is_described_before_the_reply(tmp_path, monkeypatch):
+    """A staged copy goes once the reply is read, so it is described while it is there."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    reads = []
+
+    def describe(target, built, config, *, read=True):
+        reads.append((target, read))
+        return {'type': 'X'} if read else None
+
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: False)
+    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/private/mesh.vtu', 'copy': '/staged/mesh.vtu'}))
+    daemon.handle(request)
+    assert json.loads((tmp_path / 'token.pvqlrep').read_text())['info'] == {'type': 'X'}
+    assert reads == [('/staged/mesh.vtu', False), ('/staged/mesh.vtu', True)]
+
+
+def test_a_file_is_described_once_at_a_time(tmp_path, monkeypatch):
+    """A second request for a description already being written starts no second read."""
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def describe(*args, **kwargs):
+        calls.append(args)
+        started.set()
+        release.wait(5)
+
+    monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
+    preview = tmp_path / 'x.png'
+    first = daemon.describe_later('/data/x.vtu', preview, {})
+    assert started.wait(5)
+    assert daemon.describe_later('/data/x.vtu', preview, {}) is None
+    assert daemon.describe_later('/data/x.vtu', preview, {'info_panel': 'hidden'}) is None
+    release.set()
+    first.join(5)
+    assert len(calls) == 1
+    assert daemon.describe_later('/data/x.vtu', preview, {}) is not None
+    daemon.convert_mod.info_path(preview).write_text('{}')
+    assert daemon.describe_later('/data/x.vtu', preview, {}) is None
 
 
 def test_sweep_removes_only_stale_replies(tmp_path):
@@ -164,7 +214,7 @@ def test_serve_answers_each_request_on_its_own_thread(tmp_path, monkeypatch):
     drop = tmp_path / 'container'
     drop.mkdir()
     monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
-    monkeypatch.setattr(daemon.cache, 'discard_other_scenes', lambda version: 0)
+    monkeypatch.setattr(daemon.cache, 'discard_other_versions', lambda version: 0)
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': False})
     release, second = threading.Event(), threading.Event()
     released, finished = [], threading.Event()
@@ -198,7 +248,7 @@ def test_serve_leaves_a_request_another_service_took(tmp_path, monkeypatch):
     drop = tmp_path / 'container'
     drop.mkdir()
     monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
-    monkeypatch.setattr(daemon.cache, 'discard_other_scenes', lambda version: 0)
+    monkeypatch.setattr(daemon.cache, 'discard_other_versions', lambda version: 0)
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': False})
     monkeypatch.setattr(daemon, 'handle', lambda request: pytest.fail('handled'))
 
@@ -224,7 +274,7 @@ def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
     drop = tmp_path / 'container'
     handled, swept, warmed = [], [], []
     monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
-    monkeypatch.setattr(daemon.cache, 'discard_other_scenes', lambda version: 0)
+    monkeypatch.setattr(daemon.cache, 'discard_other_versions', lambda version: 0)
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': True})
     monkeypatch.setattr(daemon, 'warm_in_background', warmed.append)
     monkeypatch.setattr(

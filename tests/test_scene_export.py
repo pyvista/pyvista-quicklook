@@ -564,3 +564,24 @@ def test_every_default_extension_has_a_reader():
     """The installed environment can read every format that is claimed by default."""
     missing = {ext: why for ext in formats.default_extensions() if (why := missing_reader(ext))}
     assert missing == {}
+
+
+def test_a_failed_selective_read_falls_back_and_says_so(tmp_path, capsys, monkeypatch):
+    """A selective read that fails is reported, and the file is read whole instead."""
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+
+    def broken(path):
+        message = 'private API moved'
+        raise AttributeError(message)
+
+    monkeypatch.setattr(export_mod, 'read_selectively', broken)
+    dataset, header = export_mod.read_for_preview(str(source))
+    assert dataset.n_points == pv.Sphere().n_points
+    assert header is None
+    assert 'selective read skipped: AttributeError: private API moved' in capsys.readouterr().err
+
+
+def test_a_file_that_cannot_be_opened_does_not_look_like_text(tmp_path):
+    """Text is only claimed for a file whose opening can be read."""
+    assert not export_mod.looks_like_text(str(tmp_path / 'gone.dat'))

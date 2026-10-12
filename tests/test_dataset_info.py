@@ -275,7 +275,7 @@ def test_multiblock_lists_blocks_and_merges_arrays(tmp_path):
     nested = pv.MultiBlock({'sphere': sphere, 'inner': inner})
     info = described(nested, tmp_path, 'combo.vtm')
     rows = facts(info)
-    assert rows['Blocks'] == '2'
+    assert rows['Blocks'] == '3'
     assert rows['Depth'] == '2'
     assert rows['Block types'] == '1 MultiBlock\n3 PolyData'
     assert [block['name'] for block in info['blocks']] == ['sphere', 'inner/cube', 'inner/cone']
@@ -449,7 +449,7 @@ def test_multiblock_counts_every_block_kind(tmp_path):
     )
     info = info_mod.describe(outer, 'x')
     rows = facts(info)
-    assert rows['Blocks'] == '3'
+    assert rows['Blocks'] == str(info['block_count']) == '5'
     assert rows['Depth'] == '3'
     assert rows['Block types'] == '2 ImageData\n3 MultiBlock\n2 None\n1 PolyData'
     gap = next(block for block in info['blocks'] if block['name'] == 'inner/gap')
@@ -884,3 +884,26 @@ def test_xml_without_its_root_tag_has_no_facts(tmp_path):
     path = tmp_path / 'notes.vtu'
     path.write_text('not xml at all')
     assert info_mod.xml_facts(path) == []
+
+
+def test_an_empty_dataset_has_no_bounds_or_cell_types():
+    """A dataset with no points or cells lists neither bounds nor cell types."""
+    rows = facts(info_mod.describe(pv.PolyData(), 'x'))
+    assert 'Bounds' not in rows
+    assert 'Cell type' not in rows
+    assert 'Cell types' not in rows
+
+
+def test_a_header_that_cannot_be_read_says_why(tmp_path, capsys, monkeypatch):
+    """A header reader that fails is reported, and only the file's own facts are shown."""
+    path = tmp_path / 'grid.vtu'
+    pv.Sphere().cast_to_unstructured_grid().save(path)
+
+    def broken(path):
+        message = 'NumberOfPoints'
+        raise KeyError(message)
+
+    monkeypatch.setitem(info_mod.HEADERS, '.vtu', broken)
+    info = info_mod.header_info(str(path))
+    assert info['type'] == ''
+    assert 'header skipped: KeyError' in capsys.readouterr().err
