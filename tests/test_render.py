@@ -37,6 +37,15 @@ def render_tool():
             'AppKit',
             '-framework',
             'SceneKit',
+            # Blends colours as the panel does; build.sh embeds the same property list.
+            '-Xlinker',
+            '-sectcreate',
+            '-Xlinker',
+            '__TEXT',
+            '-Xlinker',
+            '__info_plist',
+            '-Xlinker',
+            str(ROOT / 'macos' / 'Tools' / 'RenderScene-Info.plist'),
         ],
         check=True,
         capture_output=True,
@@ -78,7 +87,7 @@ def test_a_surface_is_drawn(tmp_path):
 
 
 def test_a_plain_surface_is_drawn_in_the_theme_colour(tmp_path):
-    """A mesh without scalars is drawn light blue, as PyVista draws it, rather than grey."""
+    """A mesh without scalars is drawn in a blue hue, as PyVista's theme colour is."""
     pixels = rendered(pv.Sphere(theta_resolution=16, phi_resolution=16), tmp_path)
     lit = pixels.reshape(-1, 3).astype(int)
     lit = lit[lit.sum(axis=1) > 60]
@@ -91,13 +100,34 @@ def lit_percentiles(pixels):
     return np.percentile(lit[lit.sum(axis=1) > 30], [10, 50, 90], axis=0)
 
 
-@pytest.mark.parametrize('colour', ['plain', 'elevation'])
-def test_colours_match_what_pyvista_draws(tmp_path, colour):
+@pytest.fixture(scope='module')
+def warmed_up():
+    """Discard one off-screen render, since the first in a process can come out blank on macOS."""
+    plotter = pv.Plotter(off_screen=True)
+    plotter.screenshot()
+    plotter.close()
+
+
+def cell_coloured_cube():
+    """Return a cube whose triangles are coloured by cell, which shows where the light falls."""
+    cube = pv.Cube().triangulate().subdivide(3)
+    cube.cell_data['id'] = np.arange(cube.n_cells) % 7
+    cube.set_active_scalars('id')
+    return cube
+
+
+@pytest.mark.usefixtures('warmed_up')
+@pytest.mark.parametrize(
+    'mesh',
+    [
+        pv.Sphere(theta_resolution=64, phi_resolution=64),
+        pv.Sphere(theta_resolution=64, phi_resolution=64).elevation(),
+        cell_coloured_cube(),
+    ],
+    ids=['plain', 'elevation', 'cells'],
+)
+def test_colours_match_what_pyvista_draws(tmp_path, mesh):
     """The scene is lit and shaded as PyVista draws it, so its colours match a PyVista render."""
-    mesh = pv.Sphere(theta_resolution=64, phi_resolution=64)
-    if colour == 'elevation':
-        mesh = mesh.elevation()
-    pv.Plotter(off_screen=True).screenshot()  # the first off-screen render is blank on macOS
     plotter = pv.Plotter(off_screen=True, window_size=[192, 192])
     plotter.background_color = 'black'
     plotter.add_mesh(mesh, show_scalar_bar=False)
