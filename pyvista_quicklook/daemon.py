@@ -155,13 +155,19 @@ def handle(request: Path) -> None:
         identity = (source, int(payload['mtime']), int(payload['size']))
 
     config = config_mod.load()
-
+    if payload.get('force') is True:
+        # The reader asked for this file whatever its size, so no step of it applies the limit.
+        config = {**config, 'max_file_size_mb': 0}
     if identity is not None:
         try:
             environment.check_size(identity, config)
         except RenderError as error:
-            # The reader can raise the limit, so this is worth saying in full.
-            write_json(reply, {'ok': False, 'error': str(error), 'actionable': True})
+            # The reader can preview it anyway or raise the limit, so this is worth saying in full.
+            answer = {'ok': False, 'error': str(error), 'too_large': True}
+            # Nothing is copied above the limit, so only a file the service can reach is described.
+            if folder_is_reachable(source) and (info := convert_mod.header(source, config)):
+                answer['info'] = info
+            write_json(reply, answer)
             return
 
     # Prefer the original so datasets that reference neighbouring files still resolve.

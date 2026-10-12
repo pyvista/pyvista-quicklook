@@ -264,7 +264,7 @@ def cmd_cache(args: argparse.Namespace) -> int:
         return 0
     entries = cache_mod.entries()
     total = sum(entry.stat().st_size for entry in cache_mod.files())
-    print(f'{config_mod.CACHE_DIR}\n{len(entries)} previews, {total / 1024 / 1024:.1f} MB')
+    print(f'{config_mod.CACHE_DIR}\n{len(entries)} previews, {total / 1_000_000:.1f} MB')
     return 0
 
 

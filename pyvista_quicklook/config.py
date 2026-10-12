@@ -23,7 +23,7 @@ DEFAULTS: dict[str, Any] = {
     'max_glyph_points': 20000,
     'window_size': [1024, 1024],
     'timeout': 60,
-    'max_file_size_mb': 512,
+    'max_file_size_mb': 2048,
     'background': None,
     'extra_args': [],
     'extensions': {'add': [], 'remove': []},

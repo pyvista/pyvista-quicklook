@@ -11,6 +11,8 @@ enum Preview {
     case text(String)
     case details(URL)
     case message(String)
+    /// A file above the size limit, with what its header says.
+    case tooLarge(String, MeshInfo?)
 }
 
 /// How much of a text file is shown.
@@ -229,6 +231,24 @@ func messageView(_ text: String) -> NSView {
     return container
 }
 
+/// A button that runs a closure when pressed.
+final class ActionButton: NSButton {
+    private var onPress: (() -> Void)?
+
+    convenience init(title: String, onPress: @escaping () -> Void) {
+        self.init(frame: .zero)
+        self.title = title
+        bezelStyle = .rounded
+        self.onPress = onPress
+        target = self
+        action = #selector(pressed)
+    }
+
+    @objc private func pressed() {
+        onPress?()
+    }
+}
+
 /// Centres a column of views in an otherwise empty view.
 @MainActor
 func centred(_ views: [NSView]) -> NSView {
@@ -254,6 +274,49 @@ func progressView(_ text: String) -> NSView {
     spinner.style = .spinning
     spinner.startAnimation(nil)
     return centred([spinner, infoLabel(text, color: .secondaryLabelColor)])
+}
+
+/// Builds the stand-in for a render of a file above the size limit, with a way to preview it anyway.
+@MainActor
+func largeFileView(_ message: String, onPreview: @escaping () -> Void) -> NSView {
+    // The service indents a command it suggests, which is set apart as code.
+    let lines = message.components(separatedBy: "\n")
+    let prose = lines.filter { !$0.hasPrefix("    ") }.joined(separator: "\n")
+    let label = NSTextField(wrappingLabelWithString: prose.trimmingCharacters(in: .whitespacesAndNewlines))
+    label.font = NSFont.systemFont(ofSize: 12)
+    label.alignment = .center
+    label.isSelectable = true
+    label.preferredMaxLayoutWidth = 420
+    let commands = lines.filter { $0.hasPrefix("    ") }.map { codeBlock($0.trimmingCharacters(in: .whitespaces)) }
+    return centred([label] + commands + [ActionButton(title: "Preview Anyway", onPress: onPreview)])
+}
+
+/// A rounded, tinted panel behind a command, as a code block is shown.
+final class CodeBlockView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.quaternaryLabelColor.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
+    }
+}
+
+/// Builds a command set in a monospaced font on a tinted panel.
+@MainActor
+func codeBlock(_ text: String) -> NSView {
+    let label = NSTextField(labelWithString: text)
+    label.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    label.isSelectable = true
+    label.translatesAutoresizingMaskIntoConstraints = false
+    label.setContentHuggingPriority(.required, for: .horizontal)
+    let block = CodeBlockView()
+    block.setContentHuggingPriority(.required, for: .horizontal)
+    block.addSubview(label)
+    NSLayoutConstraint.activate([
+        label.topAnchor.constraint(equalTo: block.topAnchor, constant: 6),
+        label.bottomAnchor.constraint(equalTo: block.bottomAnchor, constant: -6),
+        label.leadingAnchor.constraint(equalTo: block.leadingAnchor, constant: 10),
+        label.trailingAnchor.constraint(equalTo: block.trailingAnchor, constant: -10),
+    ])
+    return block
 }
 
 /// Calls Quick Look's completion handler once, however many times the preview changes.
@@ -321,19 +384,33 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 return
             }
 
-            self.load(url, handler: handler)
+            self.load(url, force: false, handler: handler)
+        }
+    }
+
+    /// Returns what pressing "Preview Anyway" does: load the file past its size limit.
+    func previewAnyway(_ url: URL, _ info: MeshInfo?) -> () -> Void {
+        { [weak self] in
+            guard let self else {
+                return
+            }
+            self.show(withInfo(progressView("Reading \(url.lastPathComponent)\u{2026}"), info))
+            DispatchQueue.global(qos: .userInitiated).async {
+                self.load(url, force: true, handler: nil)
+            }
         }
     }
 
     /// Fetches a preview and shows it, showing what the header says first when that comes early.
     ///
-    /// `handler` is Quick Look's, called once the panel has something to show.
-    nonisolated func load(_ url: URL, handler: @escaping (Error?) -> Void) {
+    /// `handler` is Quick Look's, called once the panel has something to show; it is nil when a
+    /// file is loaded again from a panel already showing.
+    nonisolated func load(_ url: URL, force: Bool, handler: ((Error?) -> Void)?) {
         let completion = DispatchQueue.main.sync { Completion(handler) }
         let name = url.lastPathComponent
         let outcome: Preview
         do {
-            let reply = try Helper.requestPreview(url) { info in
+            let reply = try Helper.requestPreview(url, force: force) { info in
                 DispatchQueue.main.async {
                     self.show(withInfo(progressView("Reading \(name)\u{2026}"), MeshInfo(info)))
                     completion.finish(nil)
@@ -351,7 +428,9 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             let failure = error as? Helper.Failure
             let message = failure?.message ?? error.localizedDescription
             pvqlLog("no preview: \(message.prefix(120))")
-            if failure?.isSetup == true {
+            if failure?.isTooLarge == true {
+                outcome = .tooLarge(message, MeshInfo(failure?.info))
+            } else if failure?.isSetup == true {
                 outcome = .message("Could not preview \(name)\n\n\(message)")
             } else if !isOwnType(url) {
                 // macOS has a preview of its own for this type; let it show that, if it still can.
@@ -382,6 +461,9 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 imageView.image = NSImage(data: png)
                 self.show(withInfo(imageView, info))
                 pvqlLog("showing a rendered image in \(self.view.bounds.size)")
+            case let .tooLarge(message, info):
+                self.show(withInfo(largeFileView(message, onPreview: self.previewAnyway(url, info)), info))
+                pvqlLog("showing a size notice")
             case let .text(text):
                 self.show(textView(text))
                 pvqlLog("showing text, \(text.count) characters")

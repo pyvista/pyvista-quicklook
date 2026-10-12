@@ -191,6 +191,14 @@ format.
 For a file of 32 MB or more, the info panel appears as soon as the header is read, with
 a spinner where the render goes until the preview is ready.
 
+A file above `max_file_size_mb` is not converted or copied when it is selected. The panel
+shows what its header says, and a Preview Anyway button previews it once. To preview
+files that large without asking:
+
+```bash
+pvql config set max_file_size_mb 4096
+```
+
 A claimed file that turns out not to be a mesh is shown the way Quick Look would have
 shown it: as plain text when it reads as text, such as a `.dat` holding a table of
 numbers, and otherwise as its icon, name, size, and date, with a line saying why it
@@ -268,7 +276,7 @@ They are kept in `~/Library/Application Support/PyVistaQuickLook/config.json`.
 | `info_panel` | `automatic` | Where the dataset's details go: `side`, `below`, `compact`, `hidden`, or `automatic` to choose by the panel's size |
 | `max_scene_points` | `2000000` | Thin surfaces above this many points; `0` never does |
 | `max_glyph_points` | `20000` | Draw at most this many points of a point cloud; `0` draws all |
-| `max_file_size_mb` | `512` | Files above this size show a notice instead of a preview, and are never copied |
+| `max_file_size_mb` | `2048` | Files above this size show their header and a Preview Anyway button instead of a preview; `0` for no limit |
 | `timeout` | `60` | Seconds before a conversion is abandoned |
 | `warm_on_start` | `true` | Load PyVista and VTK when the render service starts |
 | `window_size` | `1024 1024` | Still image size in pixels |

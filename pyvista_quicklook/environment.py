@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -40,15 +41,22 @@ def source_path(source: str | os.PathLike[str]) -> Path:
     return path
 
 
+def limit_suggestion(size_mb: float) -> int:
+    """Return a size limit, in megabytes, a little above a file's size."""
+    return max(512, math.ceil(size_mb / 512) * 512)
+
+
 def check_size(identity: tuple[str, int, int], config: dict[str, Any]) -> None:
-    """Refuse files above the configured size limit, explaining how to raise it."""
+    """Refuse files above the configured size limit, saying how to preview them anyway."""
     limit_mb = config.get('max_file_size_mb') or 0
-    size_mb = identity[2] / 1024 / 1024
+    # Megabytes as the Finder counts them.
+    size_mb = identity[2] / 1_000_000
     if limit_mb and size_mb > limit_mb:
         name = Path(identity[0]).name
         message = (
             f'{name} is {size_mb:.0f} MB, above the {limit_mb} MB preview limit.\n'
-            f'Raise "max_file_size_mb" in {config_mod.CONFIG_PATH} to preview it.'
+            f'To preview files this large without asking, run:\n\n'
+            f'    pvql config set max_file_size_mb {limit_suggestion(size_mb)}'
         )
         raise RenderError(message)
 

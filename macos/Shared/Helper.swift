@@ -55,6 +55,10 @@ func realHome() -> String {
 enum Helper {
     struct Failure: Error {
         let message: String
+        /// Whether the file is above the size limit, so the reader may preview it anyway.
+        var isTooLarge = false
+        /// What the file's header says, sent with a refusal so the panel still has it.
+        var info: [String: Any]?
         /// Whether the installation is at fault rather than the file being previewed.
         var isSetup = false
     }
@@ -139,8 +143,8 @@ enum Helper {
 
     /// Files above this many bytes are not staged; the service refuses them at the same size.
     static func maximumFileBytes() -> Int {
-        let megabytes = (configuration()?["max_file_size_mb"] as? NSNumber)?.intValue ?? 512
-        return megabytes > 0 ? megabytes * 1024 * 1024 : Int.max
+        let megabytes = (configuration()?["max_file_size_mb"] as? NSNumber)?.intValue ?? 2048
+        return megabytes > 0 ? megabytes * 1_000_000 : Int.max
     }
 
     /// Runs `pvql` with the given arguments and returns its exit status and output.
@@ -207,10 +211,11 @@ enum Helper {
 
     /// Asks the render service for a preview of a mesh file.
     ///
-    /// `early` is handed what the file's header says when the service sends it ahead of a
-    /// slow preview.
+    /// `force` previews a file above the size limit. `early` is handed what the file's
+    /// header says when the service sends it ahead of a slow preview.
     static func requestPreview(
         _ url: URL,
+        force: Bool = false,
         timeout: TimeInterval = 90,
         early: (([String: Any]) -> Void)? = nil
     ) throws -> Reply {
@@ -225,6 +230,9 @@ enum Helper {
         defer { try? manager.removeItem(atPath: stagingPath) }
 
         var body: [String: Any] = ["path": url.path]
+        if force {
+            body["force"] = true
+        }
         if let attributes = try? manager.attributesOfItem(atPath: url.path) {
             let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
             body["size"] = size
@@ -235,7 +243,7 @@ enum Helper {
             // A directory is never staged: its own size says nothing about what it holds.
             var isFolder: ObjCBool = false
             manager.fileExists(atPath: url.path, isDirectory: &isFolder)
-            if !isFolder.boolValue, size > 0, size <= maximumFileBytes() {
+            if !isFolder.boolValue, size > 0, force || size <= maximumFileBytes() {
                 let staged = (stagingPath as NSString).appendingPathComponent(url.lastPathComponent)
                 try? manager.createDirectory(atPath: stagingPath, withIntermediateDirectories: true)
                 if (try? manager.copyItem(atPath: url.path, toPath: staged)) != nil {
@@ -291,6 +299,8 @@ enum Helper {
             // The service marks what the reader can act on, such as a folder it may not read.
             throw Failure(
                 message: reported ?? "The render service could not produce a preview.",
+                isTooLarge: json["too_large"] as? Bool == true,
+                info: json["info"] as? [String: Any],
                 isSetup: json["actionable"] as? Bool == true
             )
         }

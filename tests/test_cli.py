@@ -179,7 +179,7 @@ def test_config_lists_every_setting_and_marks_the_changed_ones(capsys, home):
     """Every setting is listed with its value, and a changed one with its default too."""
     cli.cmd_config(config_args())
     out = capsys.readouterr().out
-    assert 'max_file_size_mb    512\n' in out
+    assert 'max_file_size_mb    2048\n' in out
     assert 'pvql config set KEY VALUE' in out
     config.CONFIG_PATH.parent.mkdir(parents=True)
     config.CONFIG_PATH.write_text(json.dumps({'timeout': 5}))
@@ -246,7 +246,7 @@ def test_config_unset_restores_the_default_and_tidies_the_file(capsys, home):
     cli.cmd_config(config_args('set', 'max_file_size_mb', '4096'))
     cli.cmd_config(config_args('set', 'log', 'true'))
     assert cli.cmd_config(config_args('unset', 'max_file_size_mb')) == 0
-    assert 'max_file_size_mb = 512' in capsys.readouterr().out
+    assert 'max_file_size_mb = 2048' in capsys.readouterr().out
     assert json.loads(config.CONFIG_PATH.read_text()) == {'log': True}
     cli.cmd_config(config_args('set', 'log', 'false'))
     assert json.loads(config.CONFIG_PATH.read_text()) == {}

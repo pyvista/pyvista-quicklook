@@ -161,6 +161,22 @@ def test_preview_rejects_files_above_the_limit(tmp_path):
         render.preview(sample, config, identity=(str(sample), 0, 5 * 1024 * 1024))
 
 
+@pytest.mark.parametrize(
+    ('size', 'refused'), [(2_048_000_000, False), (2_048_000_001, True), (2_510_000_000, True)]
+)
+def test_the_limit_counts_megabytes_as_the_finder_does(size, refused):
+    """Sizes are decimal megabytes, so the message agrees with Get Info."""
+    identity = ('/data/big.pv', 0, size)
+    if not refused:
+        environment.check_size(identity, {'max_file_size_mb': 2048})
+        return
+    with pytest.raises(environment.RenderError) as raised:
+        environment.check_size(identity, {'max_file_size_mb': 2048})
+    if size == 2_510_000_000:
+        assert str(raised.value).startswith('big.pv is 2510 MB, above the 2048 MB preview limit.')
+        assert str(raised.value).endswith('pvql config set max_file_size_mb 2560')
+
+
 def test_preview_reports_a_missing_file(tmp_path):
     """A path that does not exist is reported plainly."""
     with pytest.raises(environment.RenderError, match='No such file'):
@@ -251,17 +267,56 @@ def test_handle_reports_unreachable_files_without_a_copy(tmp_path, monkeypatch):
     assert reply['actionable'] is True
 
 
-def test_handle_refuses_a_large_file_before_touching_it(tmp_path, monkeypatch):
-    """The size limit is applied to the request itself, before any read or copy."""
+def test_handle_refuses_a_large_file_before_converting_it(tmp_path, monkeypatch):
+    """Above the limit a file is not converted, only its header read, and the reply says so."""
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_file_size_mb': 1})
-    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: pytest.fail('read attempted'))
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'produce', lambda *args: pytest.fail('converted'))
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': 'X'})
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/data/huge.vtu', 'mtime': 1, 'size': 5_000_000_000}))
+    daemon.handle(request)
+    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert reply['ok'] is False
+    assert 'pvql config set max_file_size_mb 5120' in reply['error']
+    assert reply['too_large'] is True
+    assert 'not_a_mesh' not in reply
+    assert reply['info'] == {'type': 'X'}
+
+
+def test_handle_refuses_an_unreachable_large_file_without_reading_it(tmp_path, monkeypatch):
+    """A large file the service cannot reach is refused without a description."""
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_file_size_mb': 1})
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: False)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda *args: pytest.fail('read attempted'))
     request = tmp_path / 'token.pvqlreq'
     request.write_text(json.dumps({'path': '/private/huge.vtu', 'mtime': 1, 'size': 5 * 2**30}))
     daemon.handle(request)
     reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
-    assert reply['ok'] is False
-    assert 'preview limit' in reply['error']
-    assert reply['actionable'] is True
+    assert reply['too_large'] is True
+    assert 'info' not in reply
+
+
+def test_handle_previews_a_large_file_when_forced(tmp_path, monkeypatch):
+    """A forced request skips the size limit."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    monkeypatch.setattr(
+        daemon.config_mod, 'load', lambda: {'max_file_size_mb': 1, 'info_panel': 'hidden'}
+    )
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+
+    def produce(target, config, identity):
+        environment.check_size(identity, config)
+        return png
+
+    monkeypatch.setattr(daemon, 'produce', produce)
+    request = tmp_path / 'token.pvqlreq'
+    body = {'path': '/data/huge.vtu', 'mtime': 1, 'size': 5 * 2**30, 'force': True}
+    request.write_text(json.dumps(body))
+    daemon.handle(request)
+    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert reply['ok'] is True
 
 
 def test_handle_sends_the_header_ahead_of_a_slow_preview(tmp_path, monkeypatch):
@@ -289,6 +344,33 @@ def test_handle_sends_the_header_ahead_of_a_slow_preview(tmp_path, monkeypatch):
     daemon.handle(request)
     assert json.loads(early.read_text()) == {'ok': True, 'info': {'type': 'Early'}}
     assert json.loads((tmp_path / 'token.pvqlrep').read_text())['info'] == {'type': 'Final'}
+
+
+def test_a_forced_preview_also_sends_its_header_first(tmp_path, monkeypatch):
+    """Previewing a file above the limit anyway still shows its header while it converts."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    early = tmp_path / f'token{daemon.EARLY_SUFFIX}'
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_file_size_mb': 1})
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'cached', lambda identity, config: False)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': 'Early'})
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args: None)
+
+    def slow(target, config, identity):
+        environment.check_size(identity, config)
+        deadline = time.monotonic() + 10
+        while not early.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return png
+
+    monkeypatch.setattr(daemon, 'produce', slow)
+    request = tmp_path / 'token.pvqlreq'
+    body = {'path': '/data/huge.vtu', 'mtime': 1, 'size': 5_000_000_000, 'force': True}
+    request.write_text(json.dumps(body))
+    daemon.handle(request)
+    assert json.loads(early.read_text())['info'] == {'type': 'Early'}
+    assert json.loads((tmp_path / 'token.pvqlrep').read_text())['ok'] is True
 
 
 def test_no_header_is_sent_after_the_preview(tmp_path, monkeypatch):
