@@ -66,8 +66,11 @@ printf 'XPC!????' > "$APPEX/Contents/PkgInfo"
 echo "==> compiling $APP_NAME"
 compile "$APP/Contents/MacOS/$APP_NAME" -O \
   "$ROOT/macos/Shared/Helper.swift" \
+  "$ROOT/macos/Shared/Camera.swift" \
+  "$ROOT/macos/QuickLookExtension/InfoPanel.swift" \
+  "$ROOT/macos/QuickLookExtension/PreviewViewController.swift" \
   "$ROOT/macos/App/main.swift" \
-  -framework AppKit
+  -framework AppKit -framework QuickLookUI -framework SceneKit
 
 echo "==> compiling RenderScene"
 compile "$BUILD/RenderScene" -O -parse-as-library \

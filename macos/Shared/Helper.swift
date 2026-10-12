@@ -143,6 +143,16 @@ enum Helper {
         return (path as NSString).expandingTildeInPath
     }
 
+    /// Returns the folder the service watches: the extension's container, named in full by the app.
+    static func exchangeDirectory() -> String {
+        if ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil {
+            return NSTemporaryDirectory()
+        }
+        let container = "\(realHome())/Library/Containers/org.pyvista.PyVistaQuickLook.QuickLook/Data/tmp/"
+        try? FileManager.default.createDirectory(atPath: container, withIntermediateDirectories: true)
+        return container
+    }
+
     /// Files above this many bytes are not staged; the service refuses them at the same size.
     static func maximumFileBytes() -> Int {
         let megabytes = (configuration()?["max_file_size_mb"] as? NSNumber)?.intValue ?? 2048
@@ -230,7 +240,7 @@ enum Helper {
         do {
             return try exchange(url, force: force, copy: nil, early: early)
         } catch let failure as Failure where failure.needsCopy {
-            let directory = NSTemporaryDirectory() as NSString
+            let directory = exchangeDirectory() as NSString
             let stagingPath = directory.appendingPathComponent("\(UUID().uuidString).staging")
             defer { try? FileManager.default.removeItem(atPath: stagingPath) }
             guard let copy = stage(url, in: stagingPath, force: force) else {
@@ -270,7 +280,7 @@ enum Helper {
         copy: String?,
         early: (([String: Any]) -> Void)?
     ) throws -> Reply {
-        let directory = NSTemporaryDirectory() as NSString
+        let directory = exchangeDirectory() as NSString
         let token = UUID().uuidString
         let requestPath = directory.appendingPathComponent("\(token)\(requestSuffix)")
         let replyPath = directory.appendingPathComponent("\(token)\(replySuffix)")
