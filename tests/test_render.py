@@ -146,7 +146,7 @@ def test_colours_match_what_pyvista_draws(tmp_path, mesh):
 
 
 def highlight(pixels):
-    """Return the brightest tenth's offset from a lit sphere's centre, in radii, x right and y up."""
+    """Return the brightest tenth's offset from a sphere's centre, in radii, x right and y up."""
     brightness = pixels.astype(float).sum(axis=2)
     lit = brightness > 30
     rows, columns = np.nonzero(lit)
