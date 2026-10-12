@@ -78,8 +78,7 @@ def colour_choice(rows: list[dict[str, Any]]) -> tuple[str, str] | None:
         for row in rows:
             if row['association'] != association or row['name'].startswith('vtk'):
                 continue
-            # Normals are unit length everywhere, so they would colour the mesh one shade.
-            if row['name'] != 'Normals' and 'normals' not in row['active']:
+            if 'normals' not in row['active']:
                 return row['name'], association
     return None
 
@@ -315,11 +314,7 @@ def choose_scalars(dataset: pv.DataSet) -> pv.DataSet:
         return dataset
     if not name.startswith('vtk'):
         return dataset
-    normals = {
-        'Normals',
-        dataset.point_data.active_normals_name,
-        dataset.cell_data.active_normals_name,
-    }
+    normals = {dataset.point_data.active_normals_name, dataset.cell_data.active_normals_name}
     for source in (dataset.point_data, dataset.cell_data):
         for candidate in source:
             # Normals are unit length everywhere, so they would colour the mesh one shade.
@@ -416,7 +411,7 @@ def export(
     surface = recentre(to_point_scalars(surface))
     colours = colours_for(surface)
     if colours is None:
-        # Without usable scalars the scene would be drawn white; PyVista draws the theme's colour.
+        # PyVista draws a mesh without scalars in the theme's colour.
         colours = np.tile(
             np.array(pv.global_theme.color.int_rgb, dtype=np.uint8), (surface.n_points, 1)
         )

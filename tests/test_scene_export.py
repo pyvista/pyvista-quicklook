@@ -137,24 +137,28 @@ def test_normals_are_not_mistaken_for_scalars(tmp_path):
     assert plain(written(mesh, tmp_path))
 
 
-def test_vtk_bookkeeping_arrays_are_stepped_over(tmp_path):
-    """An active vtk array yields to a real one rather than breaking the export."""
+def ghosted(normals_name):
+    """Return a sphere whose active scalars are VTK's ghost array, ahead of normals and regions."""
     mesh = pv.Sphere(theta_resolution=8, phi_resolution=8).triangulate()
+    mesh.point_data.set_array(mesh.point_data.pop('Normals'), normals_name)
+    mesh.point_data.active_normals_name = normals_name
     mesh.cell_data['vtkGhostType'] = np.zeros(mesh.n_cells, np.uint8)
     mesh.cell_data['region'] = (np.arange(mesh.n_cells) % 3).astype(float)
     mesh.set_active_scalars('vtkGhostType')
-    out = written(mesh, tmp_path)
-    assert coloured(out)
+    return mesh
 
 
-def test_a_selectively_read_file_steps_over_normals(tmp_path):
+@pytest.mark.parametrize('normals_name', ['Normals', 'n'])
+def test_vtk_bookkeeping_arrays_are_stepped_over(tmp_path, normals_name):
+    """An active vtk array yields to a real one, not to the normals, rather than breaking."""
+    assert coloured(written(ghosted(normals_name), tmp_path))
+
+
+@pytest.mark.parametrize('normals_name', ['Normals', 'n'])
+def test_a_selectively_read_file_steps_over_normals(tmp_path, normals_name):
     """A .pv file read array by array is coloured by a real array, not by its normals."""
-    mesh = pv.Sphere(theta_resolution=8, phi_resolution=8).triangulate()
-    mesh.cell_data['vtkGhostType'] = np.zeros(mesh.n_cells, np.uint8)
-    mesh.cell_data['region'] = (np.arange(mesh.n_cells) % 3).astype(float)
-    mesh.set_active_scalars('vtkGhostType')
     source = tmp_path / 'in.pv'
-    mesh.save(source)
+    ghosted(normals_name).save(source)
     assert coloured(written(str(source), tmp_path))
 
 

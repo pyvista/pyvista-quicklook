@@ -18,11 +18,10 @@ TOOL = ROOT / 'build' / 'RenderScene'
 pytestmark = pytest.mark.skipif(sys.platform != 'darwin', reason='SceneKit is macOS only')
 
 
-SOURCES = [
-    ROOT / 'macos' / 'Shared' / 'Camera.swift',
-    ROOT / 'macos' / 'Tools' / 'RenderScene.swift',
-    ROOT / 'macos' / 'Tools' / 'RenderScene-Info.plist',
-]
+CAMERA = ROOT / 'macos' / 'Shared' / 'Camera.swift'
+TOOL_SOURCE = ROOT / 'macos' / 'Tools' / 'RenderScene.swift'
+TOOL_PLIST = ROOT / 'macos' / 'Tools' / 'RenderScene-Info.plist'
+SOURCES = (CAMERA, TOOL_SOURCE, TOOL_PLIST)
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -36,8 +35,8 @@ def render_tool():
             'swiftc',
             '-O',
             '-parse-as-library',
-            str(SOURCES[0]),
-            str(SOURCES[1]),
+            str(CAMERA),
+            str(TOOL_SOURCE),
             '-o',
             str(TOOL),
             '-framework',
@@ -52,7 +51,7 @@ def render_tool():
             '-Xlinker',
             '__info_plist',
             '-Xlinker',
-            str(SOURCES[2]),
+            str(TOOL_PLIST),
         ],
         check=True,
         capture_output=True,

@@ -708,7 +708,6 @@ def test_small_xml_files_are_read_whole(tmp_path):
         (
             [
                 {'name': 'vtkGhostType', 'association': 'Cell', 'active': ['scalars']},
-                {'name': 'Normals', 'association': 'Point', 'active': ['normals']},
                 {'name': 'n', 'association': 'Point', 'active': ['normals']},
                 {'name': 'region', 'association': 'Cell', 'active': []},
             ],

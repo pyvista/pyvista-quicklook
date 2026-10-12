@@ -179,6 +179,8 @@ for each claimed extension. When the Finder previews one of those files, the ext
 hands it to a background render service, which reads it with PyVista, extracts the
 surface, colours the vertices by the active scalars, and writes a PLY. The extension
 shows that PLY in a SceneKit view, which is what makes the preview turnable.
+A mesh without scalars is drawn in PyVista's theme colour, and the scene is lit by VTK's
+light kit, which turns with the camera, so its colours match PyVista's own renders.
 
 Point data is interpolated across each face. Cell data is drawn flat: the cells are
 split apart first, so each keeps its own colour. Lines are drawn as tubes and point
