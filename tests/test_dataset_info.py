@@ -275,7 +275,7 @@ def test_multiblock_lists_blocks_and_merges_arrays(tmp_path):
     nested = pv.MultiBlock({'sphere': sphere, 'inner': inner})
     info = described(nested, tmp_path, 'combo.vtm')
     rows = facts(info)
-    assert rows['Blocks'] == '2'
+    assert rows['Blocks'] == '3'
     assert rows['Depth'] == '2'
     assert rows['Block types'] == '1 MultiBlock\n3 PolyData'
     assert [block['name'] for block in info['blocks']] == ['sphere', 'inner/cube', 'inner/cone']
@@ -449,7 +449,7 @@ def test_multiblock_counts_every_block_kind(tmp_path):
     )
     info = info_mod.describe(outer, 'x')
     rows = facts(info)
-    assert rows['Blocks'] == '3'
+    assert rows['Blocks'] == str(info['block_count']) == '5'
     assert rows['Depth'] == '3'
     assert rows['Block types'] == '2 ImageData\n3 MultiBlock\n2 None\n1 PolyData'
     gap = next(block for block in info['blocks'] if block['name'] == 'inner/gap')

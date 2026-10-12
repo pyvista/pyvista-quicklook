@@ -250,6 +250,39 @@ def answer(request: Path) -> None:
         request.unlink(missing_ok=True)
 
 
+# Descriptions being written on threads of their own, so each file is read once at a time.
+_describing: set[Path] = set()
+_describing_guard = threading.Lock()
+
+
+def describe_later(
+    target: str,
+    preview: Path,
+    config: dict[str, Any],
+    identity: tuple[str, int, int] | None = None,
+) -> threading.Thread | None:
+    """Describe a file on a thread of its own, unless that is done, underway, or not wanted."""
+    described = convert_mod.info_path(preview)
+    with _describing_guard:
+        wanted = convert_mod.wants_info(config) and not described.is_file()
+        if not wanted or described in _describing:
+            return None
+        _describing.add(described)
+
+    def work() -> None:
+        try:
+            # Reading the file again takes as much memory as building its preview did.
+            with CONVERTING.reserve(conversion_memory(target, identity), memory_budget(config)):
+                convert_mod.describe(target, preview, config)
+        finally:
+            with _describing_guard:
+                _describing.discard(described)
+
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    return thread
+
+
 def handle(request: Path) -> None:
     """Render the file named by one request and write the reply beside it."""
     reply = request.with_suffix(REPLY_SUFFIX)
@@ -312,7 +345,11 @@ def handle(request: Path) -> None:
             budget = CONVERTING.reserve(conversion_memory(target, identity), memory_budget(config))
             with contextlib.nullcontext() if cached(identity, config) else budget:
                 built = produce(target, config, identity)
-                info = convert_mod.describe(target, built, config)
+                # A scene is described as it is built; a still image in a read of its own.
+                info = convert_mod.describe(target, built, config, read=False)
+                if info is None and target != source:
+                    # The copy is removed once the reply is read, so it is described first.
+                    info = convert_mod.describe(target, built, config)
     except environment.NotAMeshError as error:
         # Only then does the extension show the file as text or as its icon instead.
         answer_with({'ok': False, 'error': str(error), 'not_a_mesh': True})
@@ -327,6 +364,9 @@ def handle(request: Path) -> None:
     shutil.copyfile(built, delivered)
     kind = 'scene' if built.suffix == '.ply' else 'png'
     answer: dict[str, Any] = {'ok': True, kind: str(delivered)}
+    if info is None and target == source:
+        # The image is sent at once, and its description is ready the next time.
+        describe_later(target, built, config, identity)
     if info is not None:
         answer['info'] = info
     answer_with(answer)
@@ -376,7 +416,7 @@ def serve(poll: float = 0.05) -> int:
     """Answer preview requests until the process is stopped."""
     directory = drop_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    cache.discard_other_scenes(convert_mod.SCENE_VERSION)
+    cache.discard_other_versions(convert_mod.SCENE_VERSION)
     startup = config_mod.load()
     if startup.get('warm_on_start', True):
         warm_in_background(startup)
