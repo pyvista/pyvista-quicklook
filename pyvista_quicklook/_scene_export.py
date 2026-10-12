@@ -408,6 +408,11 @@ def export(
 
     surface = recentre(to_point_scalars(surface))
     colours = colours_for(surface)
+    if colours is None:
+        # Without scalars the scene would be drawn white; PyVista draws the theme's colour.
+        colours = np.tile(
+            np.array(pv.global_theme.color.int_rgb, dtype=np.uint8), (surface.n_points, 1)
+        )
     normals = np.array(surface.point_data['Normals']) if 'Normals' in surface.point_data else None
     surface.clear_data()
     if normals is not None and len(normals) == surface.n_points:
