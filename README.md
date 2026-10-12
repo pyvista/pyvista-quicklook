@@ -166,7 +166,8 @@ pressing space on one never shows this preview. The app does declare those types
 can be chosen to open them: select a `.ply` in the Finder, press ⌘I, choose PyVista Quick
 Look under Open With, and click Change All. Double-clicking such a file then opens this
 preview, render and dataset panel alike, in a window of its own. Any claimed file can be
-opened the same way.
+opened the same way, except the compressed formats claimed through gzip and DICOM
+folders, since the app would otherwise offer to open every gzip archive and folder.
 
 ## How it works
 

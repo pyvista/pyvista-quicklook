@@ -11,13 +11,13 @@ final class StatusController: NSObject, NSApplicationDelegate {
     )
     let textView = NSTextView()
     let runButton = NSButton(title: "Run Diagnostics", target: nil, action: nil)
-    /// Files the app was asked to open, each shown in a window.
-    var opened: [URL] = []
+    /// Whether the app was asked to open files, each then shown in a window of its own.
+    var openedFiles = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
         // Opened for a file, the app is just the panel; closing it quits.
-        guard opened.isEmpty else {
+        guard !openedFiles else {
             return
         }
         buildWindow()
@@ -30,7 +30,7 @@ final class StatusController: NSObject, NSApplicationDelegate {
 
     /// Shows each file opened with the app in a window of its own, previewed as Quick Look would.
     func application(_ application: NSApplication, open urls: [URL]) {
-        opened += urls
+        openedFiles = true
         for url in urls {
             let controller = PVQLPreviewViewController()
             let window = NSWindow(contentViewController: controller)

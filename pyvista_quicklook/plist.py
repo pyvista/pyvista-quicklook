@@ -59,8 +59,8 @@ def document_types(extensions: list[str]) -> list[dict[str, Any]]:
         {
             'CFBundleTypeName': 'Mesh',
             'CFBundleTypeRole': 'Viewer',
-            # Never the opener by rank alone, so another app's association is left as it is.
-            'LSHandlerRank': 'None',
+            # Offered under Open With, below any app that declares a type as its own default.
+            'LSHandlerRank': 'Alternate',
             'LSItemContentTypes': [uti_for(e) for e in extensions] + list(NATIVE_TYPES.values()),
         }
     ]
@@ -111,9 +111,7 @@ def extension_plist(extensions: list[str], helper: str | None = None) -> dict[st
             'NSExtensionPointIdentifier': 'com.apple.quicklook.preview',
             'NSExtensionPrincipalClass': EXT_PRINCIPAL_CLASS,
             'NSExtensionAttributes': {
-                'QLSupportedContentTypes': [uti_for(e) for e in extensions]
-                + list(NATIVE_TYPES.values())
-                + list(SYSTEM_TYPES),
+                'QLSupportedContentTypes': [uti_for(e) for e in extensions] + list(SYSTEM_TYPES),
                 'QLSupportsSearchableItems': False,
             },
         },

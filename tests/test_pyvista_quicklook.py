@@ -108,8 +108,8 @@ def test_system_types_are_supported_but_not_exported():
         assert uti not in exported
 
 
-def test_native_types_are_claimed_and_the_app_can_open_every_type():
-    """MacOS's own 3D types are supported by their type, and the app opens all it claims."""
+def test_the_app_can_open_its_own_types_and_the_native_ones():
+    """The app opens what it claims and macOS's own 3D types, which Quick Look keeps to."""
     app = plist.app_plist(['.vtu'])
     ext = plist.extension_plist(['.vtu'])
     supported = ext['NSExtension']['NSExtensionAttributes']['QLSupportedContentTypes']
@@ -117,10 +117,11 @@ def test_native_types_are_claimed_and_the_app_can_open_every_type():
     [documents] = app['CFBundleDocumentTypes']
     for ext_name, uti in formats.NATIVE_TYPES.items():
         assert uti.startswith('public.'), ext_name
-        assert uti in supported
+        # Quick Look never asks the extension for these, so it does not offer to preview them.
+        assert uti not in supported
         assert uti not in exported
-    # Listed under Open With, never made the default by rank alone.
-    assert documents['LSHandlerRank'] == 'None'
+    # Listed under Open With, below an app that declares a type as its default.
+    assert documents['LSHandlerRank'] == 'Alternate'
     assert set(documents['LSItemContentTypes']) == set(exported) | set(
         formats.NATIVE_TYPES.values()
     )

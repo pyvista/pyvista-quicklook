@@ -122,7 +122,7 @@ VIA_SYSTEM_TYPE: dict[str, str] = {
 }
 
 # Formats macOS has a type and a preview of its own for, which Quick Look keeps to; the
-# app declares them so it can open them, and the extension so a panel of its own can.
+# app declares them as documents so it can be chosen to open them.
 NATIVE_TYPES: dict[str, str] = {
     '.ply': 'public.polygon-file-format',
     '.stl': 'public.standard-tesselated-geometry-format',
