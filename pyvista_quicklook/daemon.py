@@ -156,7 +156,10 @@ def handle(request: Path) -> None:
     delivered = reply.with_suffix(built.suffix)
     shutil.copyfile(built, delivered)
     kind = 'scene' if built.suffix == '.ply' else 'png'
-    write_json(reply, {'ok': True, kind: str(delivered)})
+    answer: dict[str, Any] = {'ok': True, kind: str(delivered)}
+    if (info := convert_mod.describe(target, built, config)) is not None:
+        answer['info'] = info
+    write_json(reply, answer)
 
 
 def sweep(directory: Path) -> None:

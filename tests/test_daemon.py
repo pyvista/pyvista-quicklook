@@ -74,12 +74,32 @@ def test_handle_delivers_a_still_image(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon.config_mod, 'load', dict)
     monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
     monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(
+        daemon.convert_mod, 'describe', lambda target, built, config: {'type': 'X'}
+    )
     request = tmp_path / 'token.pvqlreq'
     request.write_text(json.dumps({'path': str(tmp_path / 'mesh.vtu')}))
     daemon.handle(request)
     reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
     assert reply['ok'] is True
     assert Path(reply['png']).read_bytes() == b'png'
+    assert reply['info'] == {'type': 'X'}
+
+
+def test_handle_leaves_out_a_description_it_cannot_get(tmp_path, monkeypatch):
+    """A preview whose file cannot be described is delivered without info."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda target, built, config: None)
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': str(tmp_path / 'mesh.vtu')}))
+    daemon.handle(request)
+    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert reply['ok'] is True
+    assert 'info' not in reply
 
 
 def test_sweep_removes_only_stale_replies(tmp_path):

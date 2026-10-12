@@ -16,6 +16,7 @@ DEFAULTS: dict[str, Any] = {
     'python': None,
     'pvql': None,
     'interactive': True,
+    'info_panel': 'automatic',
     'warm_on_start': True,
     'max_scene_points': 2000000,
     'max_glyph_points': 20000,

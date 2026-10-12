@@ -66,6 +66,30 @@ def test_handle_answers_with_a_scene_for_a_real_file(tmp_path, env, monkeypatch)
     reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
     assert reply['ok'] is True
     assert pv.read(reply['scene']).n_points > 0
+    assert reply['info']['type'] == 'PolyData'
+    assert reply['info']['array_count'] == 1
+
+
+def test_a_scene_cached_without_its_description_is_described(tmp_path, env):
+    """A scene built while the panel was hidden gets its description when the panel returns."""
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    hidden = {**env, 'info_panel': 'hidden'}
+    out = convert.scene(source, hidden)
+    assert not convert.info_path(out).exists()
+    assert convert.describe(source, out, hidden) is None
+    assert convert.describe(source, out, env)['type'] == 'PolyData'
+    assert convert.info_path(out).is_file()
+    assert not list(config.CACHE_DIR.glob('*.tmp*'))
+
+
+def test_a_description_that_fails_leaves_the_preview_alone(tmp_path, env):
+    """A file that cannot be described still has its preview, and nothing is cached for it."""
+    source = tmp_path / 'broken.vtp'
+    source.write_text('not a mesh')
+    preview = config.CACHE_DIR / 'key.png'
+    assert convert.describe(source, preview, env) is None
+    assert not list(config.CACHE_DIR.glob('*.json'))
 
 
 def test_warm_runs_the_warmer_and_leaves_a_stamp(env):
@@ -84,3 +108,24 @@ def test_still_images_come_from_the_pyvista_command(tmp_path, env):
     assert png.suffix == '.png'
     assert png.stat().st_size > 0
     assert daemon.produce(source, {**env, 'interactive': False}) == png
+    info = convert.describe(source, png, env)
+    assert info['type'] == 'PolyData'
+    assert convert.info_path(png).name == f'{convert.SCENE_VERSION}-{png.stem}.json'
+
+
+def test_a_scene_built_without_the_cache_keeps_its_description(tmp_path, env, monkeypatch):
+    """The description written with a scene is used, rather than reading the file again."""
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    settings = {**env, 'cache': False}
+    built = convert.scene(source, settings)
+    monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: pytest.fail('read again'))
+    assert convert.describe(source, built, settings)['type'] == 'PolyData'
+
+
+def test_a_description_that_writes_nothing_is_none(tmp_path, env, monkeypatch):
+    """An exporter that exits without writing a description leaves the panel out."""
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: None)
+    assert convert.describe(source, tmp_path / 'cache' / 'x.png', env) is None

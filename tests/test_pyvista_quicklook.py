@@ -489,8 +489,9 @@ def test_warm_builds_every_claimed_file_in_a_directory(capsys, monkeypatch, tmp_
 
 
 def test_cache_reports_its_size(capsys, monkeypatch, tmp_path):
-    """`pvql cache` reports the cache location and contents."""
+    """`pvql cache` counts previews, not the descriptions kept beside them."""
     (tmp_path / 'a.png').write_bytes(b'0123456789')
+    (tmp_path / 'v-a.json').write_bytes(b'{}')
     monkeypatch.setattr(cli.config_mod, 'CACHE_DIR', tmp_path)
     assert cli.cmd_cache(argparse.Namespace(clear=False)) == 0
     assert '1 previews' in capsys.readouterr().out
@@ -500,10 +501,11 @@ def test_cache_clear_removes_previews_but_not_the_stamp(capsys, monkeypatch, tmp
     """`pvql cache --clear` deletes the previews and leaves the warm-up stamp."""
     (tmp_path / 'a.png').write_bytes(b'x')
     (tmp_path / 'b.ply').write_bytes(b'x')
+    (tmp_path / 'b.json').write_bytes(b'{}')
     (tmp_path / '.warm').touch()
     monkeypatch.setattr(cli.config_mod, 'CACHE_DIR', tmp_path)
     assert cli.cmd_cache(argparse.Namespace(clear=True)) == 0
-    assert 'removed 2' in capsys.readouterr().out
+    assert 'removed 2 cached previews' in capsys.readouterr().out
     assert [p.name for p in tmp_path.iterdir()] == ['.warm']
 
 
@@ -604,15 +606,34 @@ def test_scene_version_follows_the_exporter(tmp_path):
 
 
 def test_scenes_of_other_versions_are_discarded(tmp_path, monkeypatch):
-    """Scenes an older exporter built are removed; current ones and images stay."""
+    """An older exporter's scenes and descriptions go; current ones and images stay."""
     monkeypatch.setattr(cache.config_mod, 'CACHE_DIR', tmp_path)
-    for name in ('old-1.ply', f'{convert.SCENE_VERSION}-2.ply', 'image.png'):
+    current = convert.SCENE_VERSION
+    names = ('old-1.ply', 'old-1.json', f'{current}-2.ply', f'{current}-2.json', 'image.png')
+    for name in names:
         (tmp_path / name).write_bytes(b'x')
-    assert cache.discard_other_scenes(convert.SCENE_VERSION) == 1
+    assert cache.discard_other_scenes(current) == 2
     assert sorted(p.name for p in tmp_path.iterdir()) == [
-        f'{convert.SCENE_VERSION}-2.ply',
+        f'{current}-2.json',
+        f'{current}-2.ply',
         'image.png',
     ]
+
+
+def test_descriptions_are_named_for_the_current_describer():
+    """A scene's description sits beside it, and an image's carries the describer's version."""
+    scene = Path(f'/c/{convert.SCENE_VERSION}-abc.ply')
+    assert convert.info_path(scene) == Path(f'/c/{convert.SCENE_VERSION}-abc.json')
+    assert convert.info_path(Path('/c/def.png')) == Path(f'/c/{convert.SCENE_VERSION}-def.json')
+
+
+def test_hidden_panel_skips_describing(tmp_path):
+    """No description is asked of the exporter when the panel is hidden."""
+    assert (
+        convert.describe(tmp_path / 'x.vtp', tmp_path / 'x.png', {'info_panel': 'hidden'}) is None
+    )
+    assert convert.wants_info({})
+    assert not convert.wants_info({'info_panel': 'hidden'})
 
 
 def test_scene_reports_a_missing_file(tmp_path):
