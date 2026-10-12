@@ -598,6 +598,8 @@ final class MeshPreviewView: NSView {
         summary.lineBreakMode = .byWordWrapping
         summary.maximumNumberOfLines = 0
         super.init(frame: .zero)
+        // Placed by frame in layout(), even when it was pinned by constraints where shown before.
+        render.translatesAutoresizingMaskIntoConstraints = true
         divider.boxType = .separator
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
