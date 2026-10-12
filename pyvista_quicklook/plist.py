@@ -25,6 +25,11 @@ EXT_BUNDLE_ID = f'{APP_BUNDLE_ID}.QuickLook'
 LEGACY_EXT_BUNDLE_ID = f'{LEGACY_APP_BUNDLE_ID}.QuickLook'
 EXT_EXECUTABLE = 'PyVistaQuickLookExtension'
 EXT_PRINCIPAL_CLASS = 'PVQLPreviewViewController'
+THUMB_BUNDLE_ID = f'{APP_BUNDLE_ID}.Thumbnail'
+THUMB_EXECUTABLE = 'PyVistaQuickLookThumbnail'
+THUMB_PRINCIPAL_CLASS = 'PVQLThumbnailProvider'
+# Only these formats can carry a picture of themselves.
+THUMBNAIL_EXTENSIONS = ('.pv',)
 
 
 def bundle_version(version: str = __version__) -> str:
@@ -122,6 +127,35 @@ def extension_plist(extensions: list[str], helper: str | None = None) -> dict[st
     if helper:
         plist['PVQLHelperPath'] = helper
     return plist
+
+
+def thumbnail_plist(extensions: list[str]) -> dict[str, Any]:
+    """Return the Finder thumbnail extension's Info.plist contents."""
+    pictured = [uti_for(e) for e in extensions if e in THUMBNAIL_EXTENSIONS]
+    return {
+        'CFBundleName': APP_NAME,
+        'CFBundleDisplayName': f'{APP_NAME} Thumbnails',
+        'CFBundleIdentifier': THUMB_BUNDLE_ID,
+        'CFBundleExecutable': THUMB_EXECUTABLE,
+        'CFBundlePackageType': 'XPC!',
+        'CFBundleInfoDictionaryVersion': '6.0',
+        'CFBundleDevelopmentRegion': 'en',
+        'CFBundleSupportedPlatforms': ['MacOSX'],
+        'DTPlatformName': 'macosx',
+        'CFBundleShortVersionString': VERSION,
+        'CFBundleVersion': VERSION,
+        'LSMinimumSystemVersion': MIN_MACOS,
+        'NSExtension': {
+            'NSExtensionPointIdentifier': 'com.apple.quicklook.thumbnail',
+            'NSExtensionPrincipalClass': THUMB_PRINCIPAL_CLASS,
+            'NSExtensionAttributes': {
+                'QLSupportedContentTypes': [
+                    uti_for(e) for e in extensions if e in THUMBNAIL_EXTENSIONS
+                ],
+                'QLThumbnailMinimumDimension': 0,
+            },
+        },
+    }
 
 
 def write(plist: dict[str, Any], destination: str | Path) -> Path:

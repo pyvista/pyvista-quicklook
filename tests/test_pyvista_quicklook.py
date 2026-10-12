@@ -104,6 +104,21 @@ def test_scenes_blend_colours_as_vtk_does():
     assert plist.extension_plist(['.vtu'])['SCNDisableLinearSpaceRendering'] is True
 
 
+def test_thumbnail_plist_covers_only_types_that_carry_a_picture():
+    """The Finder asks the thumbnail extension only for claimed types that can embed one."""
+    thumb = plist.thumbnail_plist(['.pv', '.vtu'])
+    attributes = thumb['NSExtension']['NSExtensionAttributes']
+    assert attributes['QLSupportedContentTypes'] == [formats.uti_for('.pv')]
+    assert thumb['NSExtension']['NSExtensionPointIdentifier'] == 'com.apple.quicklook.thumbnail'
+    assert thumb['NSExtension']['NSExtensionPrincipalClass'] == plist.THUMB_PRINCIPAL_CLASS
+    assert (
+        plist.thumbnail_plist(['.vtu'])['NSExtension']['NSExtensionAttributes'][
+            'QLSupportedContentTypes'
+        ]
+        == []
+    )
+
+
 def test_system_types_are_supported_but_not_exported():
     """A type macOS declares is claimed by the extension and never exported by the app."""
     app = plist.app_plist(['.vtu'])
@@ -926,15 +941,19 @@ def test_types_lists_claimed_extensions(capsys, monkeypatch):
     assert any('extensions claimed' in line for line in lines)
 
 
-def test_plist_writes_both_files(tmp_path, monkeypatch):
-    """`pvql plist` writes an app and an extension property list."""
+def test_plist_writes_every_file(tmp_path, monkeypatch):
+    """`pvql plist` writes the app's and both extensions' property lists."""
     monkeypatch.setattr(cli.config_mod, 'load', lambda: dict(cli.config_mod.DEFAULTS))
     app = tmp_path / 'App.plist'
     ext = tmp_path / 'Ext.plist'
-    args = argparse.Namespace(app=str(app), extension=str(ext), helper='/bin/pvql')
+    thumb = tmp_path / 'Thumb.plist'
+    args = argparse.Namespace(
+        app=str(app), extension=str(ext), thumbnail=str(thumb), helper='/bin/pvql'
+    )
     assert cli.cmd_plist(args) == 0
     assert plistlib.loads(app.read_bytes())['PVQLHelperPath'] == '/bin/pvql'
     assert plistlib.loads(ext.read_bytes())['CFBundlePackageType'] == 'XPC!'
+    assert plistlib.loads(thumb.read_bytes())['CFBundleIdentifier'] == plist.THUMB_BUNDLE_ID
 
 
 def test_preview_reports_failures_on_stderr(capsys, monkeypatch):

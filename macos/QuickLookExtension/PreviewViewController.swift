@@ -283,9 +283,66 @@ func progressView(_ text: String) -> NSView {
     return centred([spinner, infoLabel(text, color: .secondaryLabelColor)])
 }
 
+/// Returns a view showing a picture scaled to fit, or nil when the bytes are not an image.
+@MainActor
+func pictureView(_ png: Data?) -> NSImageView? {
+    guard let png, let image = NSImage(data: png) else {
+        return nil
+    }
+    let imageView = NSImageView()
+    imageView.imageScaling = .scaleProportionallyUpOrDown
+    imageView.image = image
+    return imageView
+}
+
+/// Lays a small view over the bottom right corner of a larger one.
+@MainActor
+func overlaid(_ base: NSView, corner: NSView) -> NSView {
+    let container = NSView()
+    for part in [base, corner] {
+        part.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(part)
+    }
+    NSLayoutConstraint.activate([
+        base.topAnchor.constraint(equalTo: container.topAnchor),
+        base.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        base.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+        base.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        corner.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+        corner.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
+        corner.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 12),
+    ])
+    return container
+}
+
+/// Builds the stand-in for a render still being made: the file's own picture when it carries
+/// one, with a small spinner, or a spinner alone.
+@MainActor
+func placeholderView(_ name: String, _ thumbnail: Data?) -> NSView {
+    guard let picture = pictureView(thumbnail) else {
+        return progressView("Reading \(name)\u{2026}")
+    }
+    let spinner = NSProgressIndicator()
+    spinner.style = .spinning
+    spinner.controlSize = .small
+    spinner.startAnimation(nil)
+    return overlaid(picture, corner: spinner)
+}
+
+/// Builds the file's own picture with a note saying why it is all there is.
+@MainActor
+func pictureWithNote(_ picture: NSView, _ note: String) -> NSView {
+    let label = NSTextField(wrappingLabelWithString: note)
+    label.font = NSFont.systemFont(ofSize: 11)
+    label.textColor = .secondaryLabelColor
+    label.isSelectable = true
+    label.preferredMaxLayoutWidth = 360
+    return overlaid(picture, corner: label)
+}
+
 /// Builds the stand-in for a render of a file above the size limit, with a way to preview it anyway.
 @MainActor
-func largeFileView(_ message: String, onPreview: @escaping () -> Void) -> NSView {
+func largeFileView(_ message: String, thumbnail: Data? = nil, onPreview: @escaping () -> Void) -> NSView {
     // The service indents a command it suggests, which is set apart as code.
     let lines = message.components(separatedBy: "\n")
     let prose = lines.filter { !$0.hasPrefix("    ") }.joined(separator: "\n")
@@ -295,7 +352,14 @@ func largeFileView(_ message: String, onPreview: @escaping () -> Void) -> NSView
     label.isSelectable = true
     label.preferredMaxLayoutWidth = 420
     let commands = lines.filter { $0.hasPrefix("    ") }.map { codeBlock($0.trimmingCharacters(in: .whitespaces)) }
-    return centred([label] + commands + [ActionButton(title: "Preview Anyway", onPress: onPreview)])
+    var views: [NSView] = [label] + commands + [ActionButton(title: "Preview Anyway", onPress: onPreview)]
+    // The picture the file carries of itself is shown above, as it costs nothing to read.
+    if let picture = pictureView(thumbnail) {
+        picture.heightAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
+        picture.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        views.insert(picture, at: 0)
+    }
+    return centred(views)
 }
 
 /// A rounded, tinted panel behind a command, as a code block is shown.
@@ -396,12 +460,12 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
     }
 
     /// Returns what pressing "Preview Anyway" does: load the file past its size limit.
-    func previewAnyway(_ url: URL, _ info: MeshInfo?) -> () -> Void {
+    func previewAnyway(_ url: URL, _ info: MeshInfo?, _ thumbnail: Data?) -> () -> Void {
         { [weak self] in
             guard let self else {
                 return
             }
-            self.show(withInfo(progressView("Reading \(url.lastPathComponent)\u{2026}"), info))
+            self.show(withInfo(placeholderView(url.lastPathComponent, thumbnail), info))
             DispatchQueue.global(qos: .userInitiated).async {
                 self.load(url, force: true, handler: nil)
             }
@@ -415,11 +479,32 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
     nonisolated func load(_ url: URL, force: Bool, handler: ((Error?) -> Void)?) {
         let completion = DispatchQueue.main.sync { Completion(handler) }
         let name = url.lastPathComponent
+        // With still images asked for, a current picture the file carries of itself is the preview.
+        let interactive = (Helper.configuration()?["interactive"] as? Bool) ?? true
+        if !interactive, !force, let png = EmbeddedThumbnail.read(url, allowStale: false) {
+            DispatchQueue.main.async {
+                self.show(pictureView(png) ?? messageView("Could not preview \(name)"))
+                completion.finish(nil)
+                pvqlLog("showing the picture \(name) carries as its preview")
+            }
+            return
+        }
+        // A picture the file carries of itself is shown at once, before the service answers.
+        let thumbnail = EmbeddedThumbnail.read(url)
+        if thumbnail != nil {
+            pvqlLog("showing the picture \(name) carries")
+            DispatchQueue.main.async {
+                if completion.isPending {
+                    self.show(placeholderView(name, thumbnail))
+                    completion.finish(nil)
+                }
+            }
+        }
         let outcome: Preview
         do {
             let reply = try Helper.requestPreview(url, force: force) { info in
                 DispatchQueue.main.async {
-                    self.show(withInfo(progressView("Reading \(name)\u{2026}"), MeshInfo(info)))
+                    self.show(withInfo(placeholderView(name, thumbnail), MeshInfo(info)))
                     completion.finish(nil)
                 }
             }
@@ -440,6 +525,19 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             } else if failure?.isNotMesh != true {
                 // The file may well be a mesh, so say what went wrong rather than show it as text.
                 outcome = .message("Could not preview \(name)\n\n\(message)")
+                if let png = thumbnail {
+                    // The file's own picture is still worth showing, with why it is all there is.
+                    let note = "The interactive preview could not be made: \(briefly(message))"
+                    DispatchQueue.main.async {
+                        if let picture = pictureView(png) {
+                            self.show(pictureWithNote(picture, note))
+                        } else {
+                            self.show(messageView("Could not preview \(name)\n\n\(message)"))
+                        }
+                        completion.finish(nil)
+                    }
+                    return
+                }
             } else if !isOwnType(url) {
                 // macOS has a preview of its own for this type; let it show that, if it still can.
                 pvqlLog("declining, not a mesh: \(briefly(message))")
@@ -464,13 +562,11 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 self.show(withInfo(sceneView(for: scene), info))
                 pvqlLog("showing an interactive scene in \(self.view.bounds.size)")
             case let .image(png, info):
-                let imageView = NSImageView()
-                imageView.imageScaling = .scaleProportionallyUpOrDown
-                imageView.image = NSImage(data: png)
-                self.show(withInfo(imageView, info))
+                self.show(withInfo(pictureView(png) ?? NSImageView(), info))
                 pvqlLog("showing a rendered image in \(self.view.bounds.size)")
             case let .tooLarge(message, info):
-                self.show(withInfo(largeFileView(message, onPreview: self.previewAnyway(url, info)), info))
+                let notice = largeFileView(message, thumbnail: thumbnail, onPreview: self.previewAnyway(url, info, thumbnail))
+                self.show(withInfo(notice, info))
                 pvqlLog("showing a size notice")
             case let .text(text):
                 self.show(textView(text))

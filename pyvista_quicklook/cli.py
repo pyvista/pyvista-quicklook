@@ -207,6 +207,9 @@ def cmd_plist(args: argparse.Namespace) -> int:
     if args.extension:
         plist_mod.write(plist_mod.extension_plist(extensions, helper), args.extension)
         print(args.extension)
+    if args.thumbnail:
+        plist_mod.write(plist_mod.thumbnail_plist(extensions), args.thumbnail)
+        print(args.thumbnail)
     return 0
 
 
@@ -526,6 +529,7 @@ def build_parser() -> argparse.ArgumentParser:
     plist = sub.add_parser('plist', help='write Info.plist files for the app bundle')
     plist.add_argument('--app')
     plist.add_argument('--extension')
+    plist.add_argument('--thumbnail')
     plist.add_argument('--helper', help='absolute path to the pvql executable')
     plist.set_defaults(func=cmd_plist)
 
