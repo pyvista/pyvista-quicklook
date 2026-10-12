@@ -502,6 +502,43 @@ def test_a_handler_that_dies_still_replies(tmp_path, monkeypatch):
     assert not request.exists()
 
 
+def test_a_handler_that_replied_before_dying_keeps_its_reply(tmp_path, monkeypatch):
+    """A reply already written is not replaced by the error that followed it."""
+
+    def reply_then_die(request):
+        request.with_suffix(daemon.REPLY_SUFFIX).write_text('{"ok": true}')
+        raise ZeroDivisionError
+
+    monkeypatch.setattr(daemon, 'handle', reply_then_die)
+    request = tmp_path / 'token.pvqltaken'
+    request.write_text('{}')
+    daemon.answer(request)
+    assert json.loads((tmp_path / 'token.pvqlrep').read_text()) == {'ok': True}
+
+
+def test_a_large_file_previewed_once_is_not_refused_again(tmp_path, monkeypatch):
+    """Once Preview Anyway has built a file, selecting it again shows the preview."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    limits = []
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_file_size_mb': 1})
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'cached', lambda identity, config: True)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda *args: pytest.fail('header read'))
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: {'type': 'X'})
+
+    def produce(target, config, identity):
+        limits.append(config['max_file_size_mb'])
+        return png
+
+    monkeypatch.setattr(daemon, 'produce', produce)
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/data/huge.vtu', 'mtime': 1, 'size': 5 * 10**9}))
+    daemon.handle(request)
+    assert json.loads((tmp_path / 'token.pvqlrep').read_text())['ok'] is True
+    assert limits == [0]
+
+
 def test_the_memory_budget_and_estimates(tmp_path):
     """The budget is half the memory unless set, 0 lifts it, and a folder converts alone."""
     assert daemon.memory_budget({}) == daemon.physical_memory() // 2

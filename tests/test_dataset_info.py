@@ -884,3 +884,26 @@ def test_xml_without_its_root_tag_has_no_facts(tmp_path):
     path = tmp_path / 'notes.vtu'
     path.write_text('not xml at all')
     assert info_mod.xml_facts(path) == []
+
+
+def test_an_empty_dataset_has_no_bounds_or_cell_types():
+    """A dataset with no points or cells lists neither bounds nor cell types."""
+    rows = facts(info_mod.describe(pv.PolyData(), 'x'))
+    assert 'Bounds' not in rows
+    assert 'Cell type' not in rows
+    assert 'Cell types' not in rows
+
+
+def test_a_header_that_cannot_be_read_says_why(tmp_path, capsys, monkeypatch):
+    """A header reader that fails is reported, and only the file's own facts are shown."""
+    path = tmp_path / 'grid.vtu'
+    pv.Sphere().cast_to_unstructured_grid().save(path)
+
+    def broken(path):
+        message = 'NumberOfPoints'
+        raise KeyError(message)
+
+    monkeypatch.setitem(info_mod.HEADERS, '.vtu', broken)
+    info = info_mod.header_info(str(path))
+    assert info['type'] == ''
+    assert 'header skipped: KeyError' in capsys.readouterr().err

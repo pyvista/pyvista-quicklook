@@ -67,3 +67,12 @@ def test_warm_succeeds_without_a_writable_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(warmup.environment, 'interpreter', lambda cfg: sys.executable)
     monkeypatch.setattr(warmup.environment, 'run', lambda *a, **k: None)
     assert warmup.warm({}) >= 0
+
+
+def test_what_a_successful_run_reports_is_logged(tmp_path, monkeypatch):
+    """A run that succeeds but writes to stderr, as a fallback does, leaves that in the log."""
+    monkeypatch.setattr(config, 'APP_SUPPORT', tmp_path / 'support')
+    monkeypatch.setattr(config, 'LOG_PATH', tmp_path / 'support' / 'pvql.log')
+    command = [sys.executable, '-c', 'import sys; sys.stderr.write("header skipped: X\\n")']
+    environment.run({'log': True}, command, task='Reading the header')
+    assert config.LOG_PATH.read_text().rstrip().endswith('Reading the header: header skipped: X')

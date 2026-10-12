@@ -300,19 +300,19 @@ def handle(request: Path) -> None:
         identity = (source, int(payload['mtime']), int(payload['size']))
 
     config = config_mod.load()
-    if payload.get('force') is True:
-        # The reader asked for this file whatever its size, so no step of it applies the limit.
+    if payload.get('force') is True or cached(identity, config):
+        # Asked for whatever its size, or previewed already, so no step of it applies the limit.
         config = {**config, 'max_file_size_mb': 0}
     if identity is not None:
         try:
             environment.check_size(identity, config)
         except RenderError as error:
             # The reader can preview it anyway or raise the limit, so this is worth saying in full.
-            answer = {'ok': False, 'error': str(error), 'too_large': True}
+            refusal = {'ok': False, 'error': str(error), 'too_large': True}
             # Nothing is copied above the limit, so only a file the service can reach is described.
             if folder_is_reachable(source) and (info := convert_mod.header(source, config)):
-                answer['info'] = info
-            write_json(reply, answer)
+                refusal['info'] = info
+            write_json(reply, refusal)
             return
 
     # Prefer the original so datasets that reference neighbouring files still resolve.
@@ -321,8 +321,7 @@ def handle(request: Path) -> None:
     if not target:
         message = UNREADABLE_MESSAGE.format(path=source)
         # The extension copies the file somewhere readable and asks again, when it can.
-        answer = {'ok': False, 'error': message, 'needs_copy': True}
-        write_json(reply, answer)
+        write_json(reply, {'ok': False, 'error': message, 'needs_copy': True})
         return
 
     done, lock = threading.Event(), threading.Lock()
@@ -350,6 +349,8 @@ def handle(request: Path) -> None:
                 if info is None and target != source:
                     # The copy is removed once the reply is read, so it is described first.
                     info = convert_mod.describe(target, built, config)
+        delivered = reply.with_suffix(built.suffix)
+        shutil.copyfile(built, delivered)
     except environment.NotAMeshError as error:
         # Only then does the extension show the file as text or as its icon instead.
         answer_with({'ok': False, 'error': str(error), 'not_a_mesh': True})
@@ -360,16 +361,14 @@ def handle(request: Path) -> None:
     except Exception as error:  # noqa: BLE001
         answer_with({'ok': False, 'error': f'{type(error).__name__}: {error}'})
         return
-    delivered = reply.with_suffix(built.suffix)
-    shutil.copyfile(built, delivered)
     kind = 'scene' if built.suffix == '.ply' else 'png'
-    answer: dict[str, Any] = {'ok': True, kind: str(delivered)}
+    preview: dict[str, Any] = {'ok': True, kind: str(delivered)}
     if info is None and target == source:
         # The image is sent at once, and its description is ready the next time.
         describe_later(target, built, config, identity)
     if info is not None:
-        answer['info'] = info
-    answer_with(answer)
+        preview['info'] = info
+    answer_with(preview)
 
 
 def sweep(directory: Path) -> None:
@@ -381,18 +380,17 @@ def sweep(directory: Path) -> None:
         *directory.glob(f'*{TAKEN_SUFFIX}'),
         *directory.glob('*.png'),
         *directory.glob('*.ply'),
+        # Copies the extension staged and left, when Quick Look stopped it or it moved on.
+        *directory.glob('*.staging'),
     ]
     for entry in stale:
         try:
-            if entry.stat().st_mtime < cutoff:
+            if entry.stat().st_mtime >= cutoff:
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
                 entry.unlink(missing_ok=True)
-        except OSError:
-            pass
-    # Copies the extension staged and never cleaned up, when Quick Look stopped it first.
-    for folder in directory.glob('*.staging'):
-        try:
-            if folder.is_dir() and folder.stat().st_mtime < cutoff:
-                shutil.rmtree(folder, ignore_errors=True)
         except OSError:
             pass
 
