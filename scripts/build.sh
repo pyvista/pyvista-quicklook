@@ -79,6 +79,7 @@ echo "==> compiling $EXT_NAME"
 compile "$APPEX/Contents/MacOS/$EXT_NAME" -O -parse-as-library \
   "$ROOT/macos/Shared/Helper.swift" \
   "$ROOT/macos/Shared/Camera.swift" \
+  "$ROOT/macos/QuickLookExtension/InfoPanel.swift" \
   "$ROOT/macos/QuickLookExtension/PreviewViewController.swift" \
   -framework QuickLookUI \
   -Xlinker -e -Xlinker _NSExtensionMain

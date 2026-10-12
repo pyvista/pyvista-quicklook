@@ -244,6 +244,7 @@ Settings under Privacy & Security.
 | `python` | set at install | Interpreter of the PyVista environment |
 | `pvql` | discovered | Absolute path to the `pvql` helper |
 | `interactive` | `true` | Show a turnable surface; `false` renders a still image instead |
+| `info_panel` | `automatic` | Where the dataset's details go: `side`, `below`, `compact`, `hidden`, or `automatic` to choose by the panel's size |
 | `max_scene_points` | `2000000` | Thin surfaces above this many points; `0` never does |
 | `max_glyph_points` | `20000` | Draw at most this many points of a point cloud; `0` draws all |
 | `max_file_size_mb` | `512` | Files above this size show a notice instead of a preview, and are never copied |

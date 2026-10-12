@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import time
@@ -18,6 +19,8 @@ if TYPE_CHECKING:
 
 CACHE_VERSION = '1'
 SUFFIXES = ('*.png', '*.ply')
+# The info panel's description of a preview, kept beside it but not counted as one.
+SIDECARS = ('*.json',)
 
 
 def identity_of(path: Path) -> tuple[str, int, int]:
@@ -63,26 +66,41 @@ def fill(out: Path, config: dict[str, Any], label: str, build: Callable[[Path], 
 
 def entries() -> list[Path]:
     """Return every cached preview, both rendered images and interactive scenes."""
+    return files(SUFFIXES)
+
+
+def files(patterns: tuple[str, ...] = SUFFIXES + SIDECARS) -> list[Path]:
+    """Return the cached files matching the patterns, previews and descriptions by default."""
     if not config_mod.CACHE_DIR.is_dir():
         return []
-    return [e for pattern in SUFFIXES for e in config_mod.CACHE_DIR.glob(pattern)]
+    return [e for pattern in patterns for e in config_mod.CACHE_DIR.glob(pattern)]
 
 
-def discard_other_scenes(version: str) -> int:
-    """Delete scenes built by other versions of the exporter and return how many went."""
+def discard_other_versions(version: str) -> int:
+    """Delete scenes and descriptions from other exporter versions, returning how many."""
     removed = 0
-    if config_mod.CACHE_DIR.is_dir():
-        for entry in config_mod.CACHE_DIR.glob('*.ply'):
-            if not entry.name.startswith(f'{version}-'):
-                entry.unlink(missing_ok=True)
+    for entry in files(('*.ply', *SIDECARS)):
+        if not entry.name.startswith(f'{version}-'):
+            entry.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
+def discard_scratch(older_than: float) -> int:
+    """Delete scratch files a stopped build left behind, once older than ``older_than`` seconds."""
+    cutoff = time.time() - older_than
+    removed = 0
+    for entry in files(('*.tmp.*',)):
+        with contextlib.suppress(OSError):
+            if entry.stat().st_mtime < cutoff:
+                entry.unlink()
                 removed += 1
     return removed
 
 
 def clear() -> int:
-    """Delete every cached preview and return the number of files removed."""
-    removed = 0
-    for entry in entries():
+    """Delete every cached preview and its description, returning how many previews went."""
+    removed = len(entries())
+    for entry in files():
         entry.unlink(missing_ok=True)
-        removed += 1
     return removed

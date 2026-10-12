@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import sys
 
 import pytest
 import pyvista as pv
 
+from pyvista_quicklook import cache
 from pyvista_quicklook import config
 from pyvista_quicklook import convert
 from pyvista_quicklook import daemon
@@ -66,6 +68,42 @@ def test_handle_answers_with_a_scene_for_a_real_file(tmp_path, env, monkeypatch)
     reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
     assert reply['ok'] is True
     assert pv.read(reply['scene']).n_points > 0
+    assert reply['info']['type'] == 'PolyData'
+    assert reply['info']['array_count'] == 1
+
+
+def test_a_scene_cached_without_its_description_is_described(tmp_path, env):
+    """A scene built while the panel was hidden gets its description when the panel returns."""
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    hidden = {**env, 'info_panel': 'hidden'}
+    convert.scene(source, hidden)
+    identity = cache.identity_of(source.resolve())
+    assert not convert.info_path(identity).exists()
+    assert convert.describe(source, hidden) is None
+    assert convert.describe(source, env)['type'] == 'PolyData'
+    assert convert.info_path(identity).is_file()
+    assert not list(config.CACHE_DIR.glob('*.tmp*'))
+
+
+def test_only_a_cached_description_is_given_without_reading(tmp_path, env, monkeypatch):
+    """Asked not to read, describe returns what is cached and starts nothing."""
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: pytest.fail('read'))
+    assert convert.describe(source, env, read=False) is None
+    monkeypatch.undo()
+    assert convert.describe(source, env)['type'] == 'PolyData'
+    assert convert.describe(source, env, read=False)['type'] == 'PolyData'
+
+
+def test_a_missing_file_or_environment_is_not_remembered(tmp_path, env):
+    """Nothing is cached when the file is gone or no environment is set up, as both may change."""
+    assert convert.describe(tmp_path / 'gone.vtp', env) is None
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    assert convert.describe(source, {**env, 'python': '/no/such/python'}) is None
+    assert not list(config.CACHE_DIR.glob('*.json'))
 
 
 def test_warm_runs_the_warmer_and_leaves_a_stamp(env):
@@ -76,7 +114,7 @@ def test_warm_runs_the_warmer_and_leaves_a_stamp(env):
 
 
 @pytest.mark.skipif(sys.platform != 'darwin', reason='rendering needs a display server on Linux')
-def test_still_images_come_from_the_pyvista_command(tmp_path, env):
+def test_still_images_come_from_the_pyvista_command(tmp_path, env, monkeypatch):
     """The environment can render a still image, which is what non-interactive mode shows."""
     source = tmp_path / 'sphere.vtp'
     pv.Sphere().save(source)
@@ -84,3 +122,48 @@ def test_still_images_come_from_the_pyvista_command(tmp_path, env):
     assert png.suffix == '.png'
     assert png.stat().st_size > 0
     assert daemon.produce(source, {**env, 'interactive': False}) == png
+    assert convert.describe(source, env)['type'] == 'PolyData'
+    # The description belongs to the file, so other render settings do not read it again.
+    monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: pytest.fail('read again'))
+    assert convert.describe(source, {**env, 'window_size': [64, 64]})['type'] == 'PolyData'
+
+
+def test_a_scene_built_without_the_cache_keeps_its_description(tmp_path, env, monkeypatch):
+    """The description written with a scene is used, rather than reading the file again."""
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    settings = {**env, 'cache': False}
+    convert.scene(source, settings)
+    monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: pytest.fail('read again'))
+    assert convert.describe(source, settings)['type'] == 'PolyData'
+
+
+def test_a_file_the_describer_cannot_describe_is_not_read_again(tmp_path, env, monkeypatch):
+    """A describer that finishes without a description is remembered, so the file is read once."""
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: None)
+    assert convert.describe(source, env) is None
+    monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: pytest.fail('read again'))
+    assert convert.describe(source, env) is None
+    assert [json.loads(p.read_text()) for p in config.CACHE_DIR.glob('*.json')] == [{}]
+
+
+def test_a_failed_read_is_tried_again(tmp_path, env, monkeypatch):
+    """A read that failed or timed out may pass next time, so nothing is cached for it."""
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    reads = []
+
+    def fail(config, command, **kwargs):
+        reads.append(kwargs.get('timeout'))
+        # Output written before a failure is not trusted.
+        Path(command[-1]).write_text('{"type": "PolyData"}')
+        message = 'Describing timed out after 5 s.'
+        raise environment.RenderError(message)
+
+    monkeypatch.setattr(environment, 'run', fail)
+    assert convert.describe(source, env, timeout=5) is None
+    assert convert.describe(source, env) is None
+    assert reads == [5, None]
+    assert not list(config.CACHE_DIR.glob('*.json'))

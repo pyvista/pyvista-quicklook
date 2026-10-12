@@ -65,6 +65,12 @@ enum Helper {
         case image(Data)
     }
 
+    /// A preview and the service's description of the dataset, when it sent one.
+    struct Reply {
+        let payload: Payload
+        let info: [String: Any]?
+    }
+
     static let hardTimeout: TimeInterval = 120
     static let requestSuffix = ".pvqlreq"
     static let replySuffix = ".pvqlrep"
@@ -199,7 +205,7 @@ enum Helper {
     }
 
     /// Asks the render service for a preview of a mesh file.
-    static func requestPreview(_ url: URL, timeout: TimeInterval = 90) throws -> Payload {
+    static func requestPreview(_ url: URL, timeout: TimeInterval = 90) throws -> Reply {
         let directory = NSTemporaryDirectory() as NSString
         let token = UUID().uuidString
         let requestPath = directory.appendingPathComponent("\(token)\(requestSuffix)")
@@ -249,9 +255,10 @@ enum Helper {
                 throw Failure(message: "The render service sent a malformed reply.", isSetup: true)
             }
             if json["ok"] as? Bool == true {
+                let info = json["info"] as? [String: Any]
                 if let scene = json["scene"] as? String {
                     pvqlLog("received a scene at \(scene)")
-                    return .scene(URL(fileURLWithPath: scene))
+                    return Reply(payload: .scene(URL(fileURLWithPath: scene)), info: info)
                 }
                 if let png = json["png"] as? String {
                     defer { try? manager.removeItem(atPath: png) }
@@ -259,7 +266,7 @@ enum Helper {
                         throw Failure(message: "The render service produced an empty preview.")
                     }
                     pvqlLog("received \(bytes.count) bytes")
-                    return .image(bytes)
+                    return Reply(payload: .image(bytes), info: info)
                 }
             }
             let reported = json["error"] as? String

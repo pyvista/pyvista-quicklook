@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import plistlib
 import re
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -489,8 +491,9 @@ def test_warm_builds_every_claimed_file_in_a_directory(capsys, monkeypatch, tmp_
 
 
 def test_cache_reports_its_size(capsys, monkeypatch, tmp_path):
-    """`pvql cache` reports the cache location and contents."""
+    """`pvql cache` counts previews, not the descriptions kept beside them."""
     (tmp_path / 'a.png').write_bytes(b'0123456789')
+    (tmp_path / 'v-a.json').write_bytes(b'{}')
     monkeypatch.setattr(cli.config_mod, 'CACHE_DIR', tmp_path)
     assert cli.cmd_cache(argparse.Namespace(clear=False)) == 0
     assert '1 previews' in capsys.readouterr().out
@@ -500,10 +503,11 @@ def test_cache_clear_removes_previews_but_not_the_stamp(capsys, monkeypatch, tmp
     """`pvql cache --clear` deletes the previews and leaves the warm-up stamp."""
     (tmp_path / 'a.png').write_bytes(b'x')
     (tmp_path / 'b.ply').write_bytes(b'x')
+    (tmp_path / 'b.json').write_bytes(b'{}')
     (tmp_path / '.warm').touch()
     monkeypatch.setattr(cli.config_mod, 'CACHE_DIR', tmp_path)
     assert cli.cmd_cache(argparse.Namespace(clear=True)) == 0
-    assert 'removed 2' in capsys.readouterr().out
+    assert 'removed 2 cached previews' in capsys.readouterr().out
     assert [p.name for p in tmp_path.iterdir()] == ['.warm']
 
 
@@ -597,22 +601,32 @@ def test_scene_version_follows_the_exporter(tmp_path):
     """Any change to the exporter changes the version scenes are keyed and named by."""
     exporter = tmp_path / 'exporter.py'
     exporter.write_text('a')
-    before = convert.exporter_version(exporter)
+    before = convert.converter_version(exporter)
     exporter.write_text('b')
-    assert convert.exporter_version(exporter) != before
-    assert convert.exporter_version() == convert.SCENE_VERSION
+    assert convert.converter_version(exporter) != before
+    assert convert.converter_version() == convert.SCENE_VERSION
 
 
 def test_scenes_of_other_versions_are_discarded(tmp_path, monkeypatch):
-    """Scenes an older exporter built are removed; current ones and images stay."""
+    """An older exporter's scenes and descriptions go; current ones and images stay."""
     monkeypatch.setattr(cache.config_mod, 'CACHE_DIR', tmp_path)
-    for name in ('old-1.ply', f'{convert.SCENE_VERSION}-2.ply', 'image.png'):
+    current = convert.SCENE_VERSION
+    names = ('old-1.ply', 'old-1.json', f'{current}-2.ply', f'{current}-2.json', 'image.png')
+    for name in names:
         (tmp_path / name).write_bytes(b'x')
-    assert cache.discard_other_scenes(convert.SCENE_VERSION) == 1
+    assert cache.discard_other_versions(current) == 2
     assert sorted(p.name for p in tmp_path.iterdir()) == [
-        f'{convert.SCENE_VERSION}-2.ply',
+        f'{current}-2.json',
+        f'{current}-2.ply',
         'image.png',
     ]
+
+
+def test_hidden_panel_skips_describing(tmp_path):
+    """No description is asked of the exporter when the panel is hidden."""
+    assert convert.describe(tmp_path / 'x.vtp', {'info_panel': 'hidden'}) is None
+    assert convert.wants_info({})
+    assert not convert.wants_info({'info_panel': 'hidden'})
 
 
 def test_scene_reports_a_missing_file(tmp_path):
@@ -794,3 +808,34 @@ def test_resolve_pyvista_stays_inside_the_configured_environment(tmp_path):
     sibling.write_text('#!/bin/sh\n')
     sibling.chmod(0o755)
     assert config.resolve_pyvista({'python': str(interpreter)}) == str(sibling)
+
+
+def test_an_unreadable_description_is_none(tmp_path, monkeypatch):
+    """A cached description that is not JSON leaves the panel out."""
+    monkeypatch.setattr(convert.config_mod, 'CACHE_DIR', tmp_path)
+    identity = ('/data/x.vtp', 1, 2)
+    convert.info_path(identity).write_text('{not json')
+    assert convert.describe('/data/x.vtp', {}, identity, read=False) is None
+
+
+def test_descriptions_are_named_for_the_file_and_the_describer(monkeypatch, tmp_path):
+    """A description is named by the describer's version and the file alone, not its preview."""
+    monkeypatch.setattr(convert.config_mod, 'CACHE_DIR', tmp_path)
+    first = convert.info_path(('/d/a.vtu', 1, 2))
+    assert first.parent == tmp_path
+    assert first.name.startswith(f'{convert.SCENE_VERSION}-')
+    assert first.suffix == '.json'
+    assert convert.info_path(('/d/a.vtu', 1, 2)) == first
+    assert convert.info_path(('/d/a.vtu', 3, 2)) != first
+
+
+def test_stale_scratch_files_are_discarded(monkeypatch, tmp_path):
+    """Scratch left by a stopped build goes once it is old; a fresh one may still be in use."""
+    monkeypatch.setattr(cache.config_mod, 'CACHE_DIR', tmp_path)
+    old, fresh = tmp_path / 'a.1.2.tmp.json', tmp_path / 'b.1.2.tmp.ply'
+    for path in (old, fresh, tmp_path / 'kept.json'):
+        path.write_text('x')
+    stamp = time.time() - 700
+    os.utime(old, (stamp, stamp))
+    assert cache.discard_scratch(600) == 1
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['b.1.2.tmp.ply', 'kept.json']

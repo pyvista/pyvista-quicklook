@@ -74,12 +74,38 @@ def test_handle_delivers_a_still_image(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon.config_mod, 'load', dict)
     monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
     monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: {'type': 'X'})
     request = tmp_path / 'token.pvqlreq'
     request.write_text(json.dumps({'path': str(tmp_path / 'mesh.vtu')}))
     daemon.handle(request)
     reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
     assert reply['ok'] is True
     assert Path(reply['png']).read_bytes() == b'png'
+    assert reply['info'] == {'type': 'X'}
+
+
+def test_a_still_image_is_sent_before_its_description(tmp_path, monkeypatch):
+    """An image whose description is not cached is sent at once and described afterwards."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    reply = tmp_path / 'token.pvqlrep'
+    replied_first = []
+
+    def describe(target, config, identity=None, *, read=True, timeout=None):
+        if read:
+            replied_first.append(reply.exists())
+
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
+    monkeypatch.setattr(daemon.convert_mod, 'info_path', lambda identity: tmp_path / 'x.json')
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/data/mesh.vtu', 'mtime': 1, 'size': 2}))
+    daemon.handle(request)
+    daemon._descriptions.join()
+    assert 'info' not in json.loads(reply.read_text())
+    assert replied_first == [True]
 
 
 def test_sweep_removes_only_stale_replies(tmp_path):
@@ -116,7 +142,7 @@ def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
     drop = tmp_path / 'container'
     handled, swept, warmed = [], [], []
     monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
-    monkeypatch.setattr(daemon.cache, 'discard_other_scenes', lambda version: 0)
+    monkeypatch.setattr(daemon.cache, 'discard_other_versions', lambda version: 0)
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': True})
     monkeypatch.setattr(daemon, 'warm_in_background', warmed.append)
     monkeypatch.setattr(
@@ -203,3 +229,91 @@ def test_request_preview_times_out_without_a_service(tmp_path, drop):
     source.write_text('x')
     with pytest.raises(RenderError, match='did not answer'):
         daemon.request_preview(str(source), timeout=0)
+
+
+def test_a_copy_is_described_in_the_time_left(tmp_path, monkeypatch):
+    """A staged copy goes once the reply is read, so it is described before, within the wait."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    reads = []
+
+    def describe(target, config, identity=None, *, read=True, timeout=None):
+        reads.append((target, read, timeout))
+        return {'type': 'X'} if read else None
+
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: False)
+    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/private/mesh.vtu', 'copy': '/staged/mesh.vtu'}))
+    daemon.handle(request)
+    assert json.loads((tmp_path / 'token.pvqlrep').read_text())['info'] == {'type': 'X'}
+    [cached, read] = reads
+    assert cached == ('/staged/mesh.vtu', False, None)
+    assert read[:2] == ('/staged/mesh.vtu', True)
+    assert 1 < read[2] <= daemon.REPLY_SECONDS - daemon.REPLY_MARGIN_SECONDS
+
+
+def test_a_copy_is_not_described_once_the_wait_is_over(tmp_path, monkeypatch):
+    """A request that has waited out the extension's patience is answered without a panel."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    reads = []
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: False)
+    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(
+        daemon.convert_mod, 'describe', lambda *args, read=True, **kwargs: reads.append(read)
+    )
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/private/mesh.vtu', 'copy': '/staged/mesh.vtu'}))
+    stamp = time.time() - daemon.REPLY_SECONDS
+    os.utime(request, (stamp, stamp))
+    daemon.handle(request)
+    assert 'info' not in json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert reads == [False]
+
+
+def test_files_are_described_one_at_a_time(tmp_path, monkeypatch):
+    """Queued descriptions run one after another, each file once, and only when wanted."""
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def describe(target, config, identity=None, **kwargs):
+        calls.append(target)
+        started.set()
+        release.wait(5)
+
+    monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
+    monkeypatch.setattr(daemon.convert_mod, 'info_path', lambda identity: tmp_path / identity[0])
+    first, second = ('a.json', 1, 2), ('b.json', 1, 2)
+    assert daemon.describe_later('/data/a.vtu', {}, first)
+    assert started.wait(5)
+    assert not daemon.describe_later('/data/a.vtu', {}, first)
+    assert daemon.describe_later('/data/b.vtu', {}, second)
+    assert not daemon.describe_later('/data/c.vtu', {'info_panel': 'hidden'}, ('c.json', 1, 2))
+    assert not daemon.describe_later('/data/d.vtu', {}, None)
+    assert calls == ['/data/a.vtu']
+    release.set()
+    daemon._descriptions.join()
+    assert calls == ['/data/a.vtu', '/data/b.vtu']
+    (tmp_path / 'a.json').write_text('{}')
+    assert not daemon.describe_later('/data/a.vtu', {}, first)
+
+
+def test_a_description_that_raises_does_not_stop_the_others(tmp_path, monkeypatch):
+    """An unexpected error describing one file is logged, and the next is still described."""
+    calls = []
+
+    def describe(target, config, identity=None, **kwargs):
+        calls.append(target)
+        if target == '/data/a.vtu':
+            raise ZeroDivisionError
+
+    monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
+    monkeypatch.setattr(daemon.convert_mod, 'info_path', lambda identity: tmp_path / identity[0])
+    assert daemon.describe_later('/data/a.vtu', {}, ('a.json', 1, 2))
+    assert daemon.describe_later('/data/b.vtu', {}, ('b.json', 1, 2))
+    daemon._descriptions.join()
+    assert calls == ['/data/a.vtu', '/data/b.vtu']
