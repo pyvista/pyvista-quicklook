@@ -292,6 +292,11 @@ func pictureView(_ png: Data?) -> NSImageView? {
     let imageView = NSImageView()
     imageView.imageScaling = .scaleProportionallyUpOrDown
     imageView.image = image
+    // Without this the picture's own size wins over the panel's, and a small panel crops it.
+    for orientation in [NSLayoutConstraint.Orientation.horizontal, .vertical] {
+        imageView.setContentCompressionResistancePriority(.defaultLow, for: orientation)
+        imageView.setContentHuggingPriority(.defaultLow, for: orientation)
+    }
     return imageView
 }
 
