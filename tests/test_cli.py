@@ -392,13 +392,14 @@ def test_doctor_reports_a_failed_render(capsys, doctor):
 
 
 def test_doctor_counts_every_missing_piece(capsys, doctor):
-    """Without an environment, app, extension or service, each is reported."""
+    """Without an environment, app, extensions or service, each is reported."""
     doctor(healthy=False, preview=lambda *a, **k: pytest.fail('rendered'))
     assert cli.cmd_doctor(argparse.Namespace()) == 1
     out = capsys.readouterr().out
     assert '(using defaults)' in out
     assert 'still images unavailable' in out
-    assert '4 problem(s) found' in out
+    assert 'thumbnails not registered' in out
+    assert '5 problem(s) found' in out
 
 
 def test_uninstall_asks_first_on_a_terminal(capsys, commands, home, monkeypatch):

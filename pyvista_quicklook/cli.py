@@ -365,6 +365,13 @@ def cmd_doctor(_: argparse.Namespace) -> int:
         problems += 1
         print('✗ extension  not registered with pluginkit')
 
+    thumbnails = _run(['/usr/bin/pluginkit', '-m', '-i', plist_mod.THUMB_BUNDLE_ID])
+    if thumbnails:
+        print(f'✓ thumbnails registered ({thumbnails})')
+    else:
+        problems += 1
+        print('✗ thumbnails not registered with pluginkit')
+
     if finder_is_stale():
         problems += 1
         print('✗ finder     still asks for the old extension; run "killall Finder"')
@@ -462,12 +469,14 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         if input('Remove? [y/N] ').strip().lower() != 'y':
             return 1
 
-    subprocess.run(
-        ['/usr/bin/pkill', '-x', plist_mod.EXT_EXECUTABLE], capture_output=True, check=False
-    )
+    for executable in (plist_mod.EXT_EXECUTABLE, plist_mod.THUMB_EXECUTABLE):
+        subprocess.run(['/usr/bin/pkill', '-x', executable], capture_output=True, check=False)
     for app in installed_apps():
-        appex = app / 'Contents' / 'PlugIns' / f'{plist_mod.EXT_EXECUTABLE}.appex'
-        subprocess.run(['/usr/bin/pluginkit', '-r', str(appex)], capture_output=True, check=False)
+        for executable in (plist_mod.EXT_EXECUTABLE, plist_mod.THUMB_EXECUTABLE):
+            appex = app / 'Contents' / 'PlugIns' / f'{executable}.appex'
+            subprocess.run(
+                ['/usr/bin/pluginkit', '-r', str(appex)], capture_output=True, check=False
+            )
         subprocess.run([LSREGISTER, '-u', str(app)], capture_output=True, check=False)
     target = f'gui/{os.getuid()}/{daemon_mod.LABEL}'
     subprocess.run(['/bin/launchctl', 'bootout', target], capture_output=True, check=False)

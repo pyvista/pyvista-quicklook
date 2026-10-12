@@ -8,6 +8,8 @@ BUNDLE_NAME="PyVista Quick Look"
 LEGACY_BUNDLE_NAME="PyVistaQuickLook"
 EXT_NAME="PyVistaQuickLookExtension"
 EXT_ID="org.pyvista.PyVistaQuickLook.QuickLook"
+THUMB_NAME="PyVistaQuickLookThumbnail"
+THUMB_ID="org.pyvista.PyVistaQuickLook.Thumbnail"
 SUPPORT="$HOME/Library/Application Support/PyVistaQuickLook"
 VENV="$SUPPORT/venv"
 DEST="$HOME/Applications"
@@ -159,6 +161,8 @@ LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 "$LSREGISTER" -f -R -trusted "$APP"
 /usr/bin/pluginkit -a "$APP/Contents/PlugIns/$EXT_NAME.appex" 2>/dev/null || true
 /usr/bin/pluginkit -e use -i "$EXT_ID" 2>/dev/null || true
+/usr/bin/pluginkit -a "$APP/Contents/PlugIns/$THUMB_NAME.appex" 2>/dev/null || true
+/usr/bin/pluginkit -e use -i "$THUMB_ID" 2>/dev/null || true
 /usr/bin/qlmanage -r >/dev/null 2>&1 || true
 /usr/bin/qlmanage -r cache >/dev/null 2>&1 || true
 # Quick Look keeps the extension running between previews, and would go on using the
