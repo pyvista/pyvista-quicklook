@@ -713,6 +713,14 @@ def test_small_xml_files_are_read_whole(tmp_path):
             ],
             ('region', 'Cell'),
         ),
+        (
+            [
+                {'name': 'Normals', 'association': 'Point', 'active': ['scalars', 'normals']},
+                {'name': 'region', 'association': 'Cell', 'active': []},
+            ],
+            ('region', 'Cell'),
+        ),
+        ([{'name': 'Normals', 'association': 'Point', 'active': ['scalars', 'normals']}], None),
     ],
 )
 def test_the_colour_is_chosen_from_the_header_as_from_the_data(rows, expected):

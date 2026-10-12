@@ -162,6 +162,20 @@ def test_a_selectively_read_file_steps_over_normals(tmp_path, normals_name):
     assert coloured(written(str(source), tmp_path))
 
 
+@pytest.mark.parametrize('suffix', ['.vtk', '.pv'])
+@pytest.mark.parametrize('regions', [True, False], ids=['regions', 'normals-only'])
+def test_normals_made_the_active_scalars_are_stepped_over(tmp_path, suffix, regions):
+    """Normals that are also the active scalars yield to a real array, or to the plain colour."""
+    mesh = pv.Sphere(theta_resolution=8, phi_resolution=8).triangulate()
+    if regions:
+        mesh.cell_data['region'] = (np.arange(mesh.n_cells) % 3).astype(float)
+    mesh.set_active_scalars('Normals', preference='point')
+    source = tmp_path / f'in{suffix}'
+    mesh.save(source)
+    out = written(str(source), tmp_path)
+    assert coloured(out) if regions else plain(out)
+
+
 def test_the_plain_colour_follows_the_theme(tmp_path, monkeypatch):
     """A mesh without scalars takes the theme's colour, whatever the theme is."""
     monkeypatch.setattr(pv.global_theme, 'color', 'red')
