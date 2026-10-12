@@ -472,18 +472,39 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         }
     }
 
+    /// Returns what pressing "Interactive View" does: load the 3D view in place of the picture.
+    func loadScene(_ url: URL, _ png: Data) -> () -> Void {
+        { [weak self] in
+            guard let self else {
+                return
+            }
+            self.show(placeholderView(url.lastPathComponent, png))
+            DispatchQueue.global(qos: .userInitiated).async {
+                self.load(url, force: false, picture: false, handler: nil)
+            }
+        }
+    }
+
     /// Fetches a preview and shows it, showing what the header says first when that comes early.
     ///
     /// `handler` is Quick Look's, called once the panel has something to show; it is nil when a
-    /// file is loaded again from a panel already showing.
-    nonisolated func load(_ url: URL, force: Bool, handler: ((Error?) -> Void)?) {
+    /// file is loaded again from a panel already showing. `picture` false skips a picture the
+    /// file carries in favour of the service's preview.
+    nonisolated func load(_ url: URL, force: Bool, picture: Bool = true, handler: ((Error?) -> Void)?) {
         let completion = DispatchQueue.main.sync { Completion(handler) }
         let name = url.lastPathComponent
-        // With still images asked for, a current picture the file carries of itself is the preview.
-        let interactive = (Helper.configuration()?["interactive"] as? Bool) ?? true
-        if !interactive, !force, let png = EmbeddedThumbnail.read(url, allowStale: false) {
+        // A current picture the file carries of itself is the preview, without the service.
+        if !force, picture, let png = EmbeddedThumbnail.read(url, allowStale: false) {
+            let interactive = (Helper.configuration()?["interactive"] as? Bool) ?? true
             DispatchQueue.main.async {
-                self.show(pictureView(png) ?? messageView("Could not preview \(name)"))
+                guard let view = pictureView(png) else {
+                    self.show(messageView("Could not preview \(name)"))
+                    completion.finish(nil)
+                    return
+                }
+                // The 3D view is loaded only when asked for, and only when previews are interactive.
+                let button = ActionButton(title: "Interactive View", onPress: self.loadScene(url, png))
+                self.show(interactive ? overlaid(view, corner: button) : view)
                 completion.finish(nil)
                 pvqlLog("showing the picture \(name) carries as its preview")
             }
