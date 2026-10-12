@@ -170,15 +170,157 @@ def test_plist_writes_nothing_without_targets(capsys, monkeypatch):
     assert capsys.readouterr().out == ''
 
 
-def test_config_shows_the_stored_file(capsys, home):
-    """The configuration file is printed when it exists, and a hint when it does not."""
-    args = argparse.Namespace(init=False)
-    cli.cmd_config(args)
-    assert 'pvql config --init' in capsys.readouterr().out
+def config_args(action=None, key=None, *values):
+    """Return the arguments ``pvql config`` parses for an action."""
+    return argparse.Namespace(action=action, key=key, values=list(values), init=False)
+
+
+def test_config_lists_every_setting_and_marks_the_changed_ones(capsys, home):
+    """Every setting is listed with its value, and a changed one with its default too."""
+    cli.cmd_config(config_args())
+    out = capsys.readouterr().out
+    assert 'max_file_size_mb    512\n' in out
+    assert 'pvql config set KEY VALUE' in out
     config.CONFIG_PATH.parent.mkdir(parents=True)
     config.CONFIG_PATH.write_text(json.dumps({'timeout': 5}))
-    cli.cmd_config(args)
-    assert '"timeout": 5' in capsys.readouterr().out
+    cli.cmd_config(config_args())
+    assert 'timeout             5  (default 60)' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ('key', 'values', 'stored', 'shown'),
+    [
+        ('max_file_size_mb', ['4096'], 4096, '4096'),
+        ('max_file_size_mb', ['0'], 0, '0'),
+        ('timeout', ['90'], 90, '90'),
+        ('timeout', ['2.5'], 2.5, '2.5'),
+        ('interactive', ['no'], False, 'false'),
+        ('info_panel', ['side'], 'side', 'side'),
+        ('window_size', ['1280', '720'], [1280, 720], '1280 720'),
+        (
+            'extra_args',
+            ['--show-edges', '--opacity', '0.5'],
+            ['--show-edges', '--opacity', '0.5'],
+            '--show-edges --opacity 0.5',
+        ),
+        ('background', ['white'], 'white', 'white'),
+    ],
+)
+def test_config_set_stores_a_checked_value(capsys, home, key, values, stored, shown):
+    """A value is read for its setting, stored in the file, and read back by get."""
+    assert cli.cmd_config(config_args('set', key, *values)) == 0
+    assert capsys.readouterr().out == f'{key} = {shown}\n'
+    assert json.loads(config.CONFIG_PATH.read_text())[key] == stored
+    assert config.load()[key] == stored
+    cli.cmd_config(config_args('get', key))
+    assert capsys.readouterr().out == f'{shown}\n'
+
+
+@pytest.mark.parametrize(
+    ('key', 'values', 'complaint'),
+    [
+        ('max_file_size', ['4096'], 'Unknown setting'),
+        ('max_file_size_mb', ['big'], 'whole number'),
+        ('max_file_size_mb', ['-1'], 'whole number'),
+        ('timeout', ['0'], 'number of seconds'),
+        ('timeout', ['nan'], 'number of seconds'),
+        ('timeout', ['inf'], 'number of seconds'),
+        ('interactive', ['maybe'], 'true or false'),
+        ('info_panel', ['left'], 'automatic, side, below, compact, hidden'),
+        ('window_size', ['1280'], 'width and a height'),
+        ('python', ['/no/such/python'], 'not an executable'),
+        ('timeout', [], 'Give a value'),
+        ('timeout', ['1', '2'], 'takes one value'),
+        (None, [], 'Name a setting to set: python,'),
+    ],
+)
+def test_config_set_refuses_what_it_cannot_store(capsys, home, key, values, complaint):
+    """A bad key or value is explained, and the file is left as it was."""
+    assert cli.cmd_config(config_args('set', key, *values)) == 2
+    assert complaint in capsys.readouterr().err
+    assert not config.CONFIG_PATH.exists()
+
+
+def test_config_unset_restores_the_default_and_tidies_the_file(capsys, home):
+    """Unsetting removes the key, and setting a default stores nothing."""
+    cli.cmd_config(config_args('set', 'max_file_size_mb', '4096'))
+    cli.cmd_config(config_args('set', 'log', 'true'))
+    assert cli.cmd_config(config_args('unset', 'max_file_size_mb')) == 0
+    assert 'max_file_size_mb = 512' in capsys.readouterr().out
+    assert json.loads(config.CONFIG_PATH.read_text()) == {'log': True}
+    cli.cmd_config(config_args('set', 'log', 'false'))
+    assert json.loads(config.CONFIG_PATH.read_text()) == {}
+
+
+def test_config_set_keeps_settings_it_does_not_touch(home):
+    """Other keys in the file, including ones set by hand, survive a set."""
+    config.CONFIG_PATH.parent.mkdir(parents=True)
+    config.CONFIG_PATH.write_text(json.dumps({'python': '/x/python', 'timeout': 5}))
+    cli.cmd_config(config_args('set', 'info_panel', 'below'))
+    assert json.loads(config.CONFIG_PATH.read_text()) == {
+        'python': '/x/python',
+        'timeout': 5,
+        'info_panel': 'below',
+    }
+
+
+def test_config_set_changes_claimed_extensions(capsys, home):
+    """Extensions are added and removed by name, normalised, with a note to reinstall."""
+    assert cli.cmd_config(config_args('set', 'extensions.add', 'H5', '.Foo')) == 0
+    out = capsys.readouterr().out
+    assert out.startswith('extensions.add = .h5 .foo\n')
+    assert 'installer again' in out
+    assert json.loads(config.CONFIG_PATH.read_text()) == {'extensions': {'add': ['.h5', '.foo']}}
+    assert config.load()['extensions'] == {'add': ['.h5', '.foo'], 'remove': []}
+    cli.cmd_config(config_args('unset', 'extensions.add'))
+    assert json.loads(config.CONFIG_PATH.read_text()) == {}
+
+
+def test_config_set_refuses_a_broken_file(capsys, home):
+    """A file that is not JSON is never overwritten, so nothing in it is lost."""
+    config.CONFIG_PATH.parent.mkdir(parents=True)
+    config.CONFIG_PATH.write_text('{"timeout": 5,')
+    assert cli.cmd_config(config_args('set', 'timeout', '9')) == 2
+    assert 'not valid JSON' in capsys.readouterr().err
+    assert config.CONFIG_PATH.read_text() == '{"timeout": 5,'
+    config.CONFIG_PATH.write_text('[1]')
+    assert cli.cmd_config(config_args('set', 'timeout', '9')) == 2
+    assert 'JSON object' in capsys.readouterr().err
+
+
+def test_config_get_without_a_key_names_the_settings(capsys, home):
+    """Asking for no setting lists the ones there are, rather than an unknown "None"."""
+    assert cli.cmd_config(config_args('get')) == 2
+    err = capsys.readouterr().err
+    assert err.startswith('Name a setting to get: python,')
+    assert 'None' not in err
+
+
+def test_config_stores_an_interpreter_as_an_absolute_path(home, tmp_path, monkeypatch):
+    """A relative interpreter is stored absolute, without following a venv's link."""
+    venv = tmp_path / 'project' / '.venv' / 'bin'
+    venv.mkdir(parents=True)
+    (venv / 'python').symlink_to(sys.executable)
+    monkeypatch.chdir(tmp_path / 'project')
+    assert cli.cmd_config(config_args('set', 'python', '.venv/bin/python')) == 0
+    assert json.loads(config.CONFIG_PATH.read_text())['python'] == str(venv / 'python')
+
+
+def test_config_set_survives_unknown_nested_keys(home):
+    """A key added to a section by hand does not stop another from being set."""
+    config.CONFIG_PATH.parent.mkdir(parents=True)
+    config.CONFIG_PATH.write_text(json.dumps({'extensions': {'legacy': 1}}))
+    assert cli.cmd_config(config_args('set', 'extensions.add', '.h5')) == 0
+    assert json.loads(config.CONFIG_PATH.read_text()) == {
+        'extensions': {'legacy': 1, 'add': ['.h5']}
+    }
+
+
+def test_config_parses_from_the_command_line(home, capsys):
+    """The parser routes get, set, and unset with their key and values."""
+    assert cli.main(['config', 'set', 'window_size', '800', '600']) == 0
+    assert cli.main(['config', 'get', 'window_size']) == 0
+    assert capsys.readouterr().out.endswith('800 600\n')
 
 
 def test_run_and_succeeds_survive_a_missing_program(tmp_path):

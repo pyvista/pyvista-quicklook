@@ -144,11 +144,12 @@ PyVista can also read these, which are not claimed:
 
 Claims on the extensions macOS previews itself, such as STL and PLY, or that another kind
 of file owns, are ignored by macOS, which is why those are not claimed. To claim fewer,
-or to add one of the others, edit the config and run the install command again, which
-rebuilds the app with the new claims:
+or to add one of the others, change the claims and run the install command again, which
+rebuilds the app with them:
 
-```json
-{ "extensions": { "add": [".h5"], "remove": [".dat"] } }
+```bash
+pvql config set extensions.add .h5
+pvql config set extensions.remove .dat
 ```
 
 ## How it works
@@ -172,8 +173,8 @@ version of the converter, so an update rebuilds them rather than serving old one
 
 The service loads PyVista and VTK in the background when it starts, which is at login
 and whenever it is reinstalled, so the first preview does not wait for them. `pvql
-warmup` does the same on demand, and `"warm_on_start": false` turns the automatic pass
-off.
+warmup` does the same on demand, and `pvql config set warm_on_start false` turns the
+automatic pass off.
 
 Surfaces are sent whole up to `max_scene_points`. Above that, images and volumes are
 thinned on their lattice and other surfaces are decimated. Set it to `0` to never
@@ -205,7 +206,7 @@ ordinary folder shows its own details immediately, as the Finder would.
 
 ### Still images
 
-With `"interactive": false` in the config, every preview is a still image rendered by
+After `pvql config set interactive false`, every preview is a still image rendered by
 `pyvista plot --off-screen --screenshot` instead, which keeps the scalar bar and axes
 the interactive view leaves out.
 
@@ -237,7 +238,16 @@ Settings under Privacy & Security.
 
 ## Configuration
 
-`~/Library/Application Support/PyVistaQuickLook/config.json`
+Settings are changed with `pvql config`, which checks each value before storing it:
+
+```bash
+pvql config                              # list every setting and its value
+pvql config set max_file_size_mb 4096
+pvql config get max_file_size_mb
+pvql config unset max_file_size_mb       # back to the default
+```
+
+They are kept in `~/Library/Application Support/PyVistaQuickLook/config.json`.
 
 | Key | Default | Effect |
 | --- | --- | --- |
@@ -250,9 +260,10 @@ Settings under Privacy & Security.
 | `max_file_size_mb` | `512` | Files above this size show a notice instead of a preview, and are never copied |
 | `timeout` | `60` | Seconds before a conversion is abandoned |
 | `warm_on_start` | `true` | Load PyVista and VTK when the render service starts |
-| `window_size` | `[1024, 1024]` | Still image size in pixels |
-| `background` | `null` | Background colour passed to `pyvista plot` |
-| `extra_args` | `[]` | Extra arguments appended to `pyvista plot` |
+| `window_size` | `1024 1024` | Still image size in pixels |
+| `background` | none | Background colour passed to `pyvista plot` |
+| `extra_args` | none | Extra arguments appended to `pyvista plot` |
+| `extensions.add`, `extensions.remove` | none | Extensions to claim or stop claiming, on the next install |
 | `cache` | `true` | Reuse previously built previews |
 | `log` | `false` | Append activity to `pvql.log` beside the config file |
 
@@ -269,6 +280,7 @@ pvql types            # list claimed extensions
 pvql doctor           # check every part of the integration
 pvql finder           # say whether the Finder must restart to show previews
 pvql service          # manage the render service
+pvql config           # list settings; get, set, or unset one
 pvql config --init    # write a config file with discovered defaults
 pvql cache --clear    # delete cached previews
 pvql uninstall        # remove everything, asking first
@@ -287,8 +299,8 @@ Finder, the service, and a real preview.
   Finder has run since before 0.7.0 and still asks for the extension by its old
   identifier. Run `killall Finder` once no files are being copied or moved.
 - **Previews are stale.** `pvql cache --clear`.
-- **A preview fails.** Set `"log": true` in the config; activity is appended to
-  `pvql.log` beside it. The extension's own log is in
+- **A preview fails.** Run `pvql config set log true`; activity is then appended to
+  `pvql.log` beside the config file. The extension's own log is in
   `~/Library/Containers/org.pyvista.PyVistaQuickLook.QuickLook/Data/tmp/`.
 
 ## Development

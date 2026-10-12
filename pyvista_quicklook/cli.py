@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import Any
 
 from . import cache as cache_mod
 from . import config as config_mod
@@ -204,8 +205,41 @@ def cmd_plist(args: argparse.Namespace) -> int:
     return 0
 
 
+def shown(value: Any) -> str:
+    """Return a setting's value the way it is typed back to ``pvql config set``."""
+    if isinstance(value, list):
+        return ' '.join(str(v) for v in value) or '(none)'
+    if isinstance(value, bool):
+        return str(value).lower()
+    return '(none)' if value is None else str(value)
+
+
 def cmd_config(args: argparse.Namespace) -> int:
-    """Show the configuration, or write a fresh one with discovered defaults."""
+    """Show the settings, change one, or write a fresh file with discovered defaults."""
+    action = getattr(args, 'action', None)
+    try:
+        if action in ('get', 'set', 'unset') and args.key is None:
+            message = f'Name a setting to {action}: {", ".join(config_mod.KINDS)}.'
+            raise config_mod.SettingError(message)
+        if action == 'get':
+            print(shown(config_mod.current(args.key)))
+            return 0
+        if action in ('set', 'unset'):
+            key = config_mod.check_key(args.key)
+            if action == 'set' and not args.values:
+                message = f'Give a value for {key}, or use "pvql config unset {key}".'
+                raise config_mod.SettingError(message)
+            value = (
+                config_mod.parse(key, args.values) if action == 'set' else config_mod.default(key)
+            )
+            config_mod.put(key, value)
+            print(f'{key} = {shown(config_mod.current(key))}')
+            if key.startswith('extensions.'):
+                print('Run the installer again to claim the changed extensions.')
+            return 0
+    except config_mod.SettingError as error:
+        print(error, file=sys.stderr)
+        return 2
     if args.init:
         config = config_mod.load()
         config['python'] = args.python or config.get('python')
@@ -213,10 +247,13 @@ def cmd_config(args: argparse.Namespace) -> int:
         path = config_mod.save(config_mod.overrides(config))
         print(f'wrote {path}')
     print(config_mod.CONFIG_PATH)
-    if config_mod.CONFIG_PATH.is_file():
-        print(config_mod.CONFIG_PATH.read_text().rstrip())
-    else:
-        print('(not created yet; run "pvql config --init")')
+    for key in config_mod.KINDS:
+        value, default = config_mod.current(key), config_mod.default(key)
+        changed = '' if value == default or default is None else f'  (default {shown(default)})'
+        print(f'  {key:<19} {shown(value)}{changed}')
+    print(
+        'Change one with "pvql config set KEY VALUE", or restore it with "pvql config unset KEY".'
+    )
     return 0
 
 
@@ -487,7 +524,21 @@ def build_parser() -> argparse.ArgumentParser:
     plist.add_argument('--helper', help='absolute path to the pvql executable')
     plist.set_defaults(func=cmd_plist)
 
-    config = sub.add_parser('config', help='show or create the configuration file')
+    config = sub.add_parser(
+        'config',
+        help='show or change settings',
+        description='Show every setting, or get, set, or unset one.',
+        epilog='examples:\n'
+        '  pvql config set max_file_size_mb 4096\n'
+        '  pvql config set info_panel side\n'
+        '  pvql config set window_size 1280 720\n'
+        '  pvql config set extensions.add .h5\n'
+        '  pvql config unset max_file_size_mb',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    config.add_argument('action', nargs='?', choices=('get', 'set', 'unset'))
+    config.add_argument('key', nargs='?', help=', '.join(config_mod.KINDS))
+    config.add_argument('values', nargs='*', help='the value; some settings take several')
     config.add_argument('--init', action='store_true', help='write a configuration file')
     config.add_argument('--python', help='absolute path to the interpreter that has PyVista')
     config.add_argument('--helper', help='absolute path to the pvql executable')

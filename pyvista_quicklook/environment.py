@@ -58,8 +58,8 @@ def interpreter(config: dict[str, Any]) -> str:
     found = config_mod.find_python(config)
     if found is None:
         message = (
-            'No PyVista environment is configured.\n'
-            f'Set "python" to its interpreter in {config_mod.CONFIG_PATH}.'
+            'No PyVista environment is configured. Name its interpreter with:\n\n'
+            '    pvql config set python /path/to/bin/python'
         )
         raise RenderError(message)
     return found
