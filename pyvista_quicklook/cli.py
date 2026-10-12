@@ -21,6 +21,7 @@ from . import plist as plist_mod
 from . import warmup as warmup_mod
 from .environment import RenderError
 from .formats import FORMATS
+from .formats import NATIVE_TYPES
 from .formats import SYSTEM_TYPES
 from .formats import UNCLAIMED
 from .formats import resolve_extensions
@@ -184,6 +185,10 @@ def cmd_types(args: argparse.Namespace) -> int:
             else f'  not claimed: {UNCLAIMED.get(ext, "removed in the config")}'
         )
         print(f'{mark} {ext:<10} {description:<32} {uti_for(ext)}{note}')
+    # Quick Look previews these with its own viewer; the app only offers to open them.
+    for ext, uti in NATIVE_TYPES.items():
+        note = '  not previewed: macOS previews it; the app can open it'
+        print(f'→ {ext:<10} {"macOS type":<32} {uti}{note}')
     for uti, description in SYSTEM_TYPES.items():
         print(f'✓ {"":<10} {description:<32} {uti}')
     if not args.all:

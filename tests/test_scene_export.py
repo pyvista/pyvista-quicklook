@@ -540,6 +540,7 @@ def test_readme_tables_match_the_readers():
 def test_format_table_accounts_for_every_readable_extension():
     """Each extension the environment reads is listed or deliberately unclaimed, and no other."""
     accounted = set(formats.FORMATS) | set(formats.UNCLAIMED) | set(formats.VIA_SYSTEM_TYPE)
+    accounted |= set(formats.NATIVE_TYPES)
     assert set(formats.FORMATS).isdisjoint(formats.UNCLAIMED)
     assert set(formats.FORMATS).isdisjoint(formats.VIA_SYSTEM_TYPE)
     assert all(uti in formats.SYSTEM_TYPES for uti in formats.VIA_SYSTEM_TYPE.values())

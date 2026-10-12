@@ -55,7 +55,8 @@ def test_readme_lists_exactly_the_known_formats():
     readme = (Path(__file__).parents[1] / 'README.md').read_text()
     section = readme.split('## Supported files', 1)[1].split('\n## ', 1)[0]
     listed = set(re.findall(r'`(\.[a-z0-9.]+)`', section))
-    assert listed == set(formats.FORMATS) | set(formats.UNCLAIMED) | set(formats.VIA_SYSTEM_TYPE)
+    known = set(formats.FORMATS) | set(formats.UNCLAIMED) | set(formats.VIA_SYSTEM_TYPE)
+    assert listed == known | set(formats.NATIVE_TYPES)
 
 
 def test_unclaimed_extensions_say_why():
@@ -106,6 +107,27 @@ def test_system_types_are_supported_but_not_exported():
     for uti in formats.SYSTEM_TYPES:
         assert uti in supported
         assert uti not in exported
+
+
+def test_the_app_can_open_its_own_types_and_the_native_ones():
+    """The app opens what it claims and macOS's own 3D types, which Quick Look keeps to."""
+    app = plist.app_plist(['.vtu'])
+    ext = plist.extension_plist(['.vtu'])
+    supported = ext['NSExtension']['NSExtensionAttributes']['QLSupportedContentTypes']
+    exported = [d['UTTypeIdentifier'] for d in app['UTExportedTypeDeclarations']]
+    [documents] = app['CFBundleDocumentTypes']
+    for ext_name, uti in formats.NATIVE_TYPES.items():
+        assert uti.startswith('public.'), ext_name
+        # Quick Look never asks the extension for these, so it does not offer to preview them.
+        assert uti not in supported
+        assert uti not in exported
+    # Listed under Open With, below an app that declares a type as its default.
+    assert documents['LSHandlerRank'] == 'Alternate'
+    assert set(documents['LSItemContentTypes']) == set(exported) | set(
+        formats.NATIVE_TYPES.values()
+    )
+    assert set(formats.NATIVE_TYPES).isdisjoint(formats.FORMATS)
+    assert set(formats.NATIVE_TYPES).isdisjoint(formats.UNCLAIMED)
 
 
 def test_plists_are_writable(tmp_path):
@@ -887,12 +909,15 @@ def test_claimed_extensions_follows_config():
 
 
 def test_types_lists_claimed_extensions(capsys, monkeypatch):
-    """`pvql types` prints one line per claimed extension."""
+    """`pvql types` prints one line per claimed extension, and marks macOS's own apart."""
     monkeypatch.setattr(cli.config_mod, 'load', lambda: dict(cli.config_mod.DEFAULTS))
     assert cli.cmd_types(argparse.Namespace(all=False)) == 0
-    out = capsys.readouterr().out
-    assert '.vtu' in out
-    assert 'extensions claimed' in out
+    lines = capsys.readouterr().out.splitlines()
+    assert any(line.startswith('✓ .vtu ') for line in lines)
+    [stl] = [line for line in lines if ' .stl ' in f' {line}']
+    assert stl.startswith('→ .stl ')
+    assert 'not previewed' in stl
+    assert any('extensions claimed' in line for line in lines)
 
 
 def test_plist_writes_both_files(tmp_path, monkeypatch):

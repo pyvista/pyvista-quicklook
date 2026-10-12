@@ -17,12 +17,13 @@ from pyvista.core.utilities.reader import CLASS_READERS
 from pyvista.core.utilities.reader_registry import registered_readers
 
 from .formats import FORMATS
+from .formats import NATIVE_TYPES
 from .formats import SYSTEM_TYPES
 from .formats import UNCLAIMED
 from .formats import VIA_SYSTEM_TYPE
 
 START = '## Supported files\n'
-END = 'Claims on the extensions macOS previews itself'
+END = 'Claims on an extension that another kind of file owns'
 
 
 class Row(NamedTuple):
@@ -100,6 +101,14 @@ def section() -> str:
         ),
         '',
         'A folder of DICOM slices is claimed the same way, through `public.folder`.',
+        '',
+        (
+            f'{len(NATIVE_TYPES)} more have a type and a preview of their own in macOS, which'
+            ' Quick Look always uses;'
+        ),
+        'the app can open them instead (see [Native formats](#native-formats)):',
+        '',
+        *(f'- `{ext}` (`{uti}`)' for ext, uti in sorted(NATIVE_TYPES.items())),
         '',
         'PyVista can also read these, which are not claimed:',
         '',

@@ -9,6 +9,7 @@ from typing import Any
 
 from . import __version__
 from .formats import FORMATS
+from .formats import NATIVE_TYPES
 from .formats import SYSTEM_TYPES
 from .formats import uti_for
 
@@ -52,6 +53,19 @@ def exported_types(extensions: list[str]) -> list[dict[str, Any]]:
     return declarations
 
 
+def document_types(extensions: list[str]) -> list[dict[str, Any]]:
+    """Return ``CFBundleDocumentTypes`` entries, so the app can be chosen to open a file."""
+    return [
+        {
+            'CFBundleTypeName': 'Mesh',
+            'CFBundleTypeRole': 'Viewer',
+            # Offered under Open With, below any app that declares a type as its own default.
+            'LSHandlerRank': 'Alternate',
+            'LSItemContentTypes': [uti_for(e) for e in extensions] + list(NATIVE_TYPES.values()),
+        }
+    ]
+
+
 def app_plist(extensions: list[str], helper: str | None = None) -> dict[str, Any]:
     """Return the host application's Info.plist contents."""
     plist: dict[str, Any] = {
@@ -71,6 +85,7 @@ def app_plist(extensions: list[str], helper: str | None = None) -> dict[str, Any
         'NSPrincipalClass': 'NSApplication',
         'NSHighResolutionCapable': True,
         'UTExportedTypeDeclarations': exported_types(extensions),
+        'CFBundleDocumentTypes': document_types(extensions),
     }
     if helper:
         plist['PVQLHelperPath'] = helper

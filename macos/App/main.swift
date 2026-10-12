@@ -1,6 +1,7 @@
 import AppKit
+import QuickLookUI
 
-/// Window showing the state of the Quick Look integration.
+/// The diagnostics window, or the Quick Look panel for files opened with the app.
 final class StatusController: NSObject, NSApplicationDelegate {
     let window = NSWindow(
         contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
@@ -10,15 +11,47 @@ final class StatusController: NSObject, NSApplicationDelegate {
     )
     let textView = NSTextView()
     let runButton = NSButton(title: "Run Diagnostics", target: nil, action: nil)
+    /// Whether the app was asked to open files, each then shown in a window of its own.
+    var openedFiles = false
+    /// Where the next file's window goes, so several are offset rather than stacked.
+    var nextWindowCorner = NSPoint.zero
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
+        // Opened for a file, the app is just the panel; closing it quits.
+        guard !openedFiles else {
+            return
+        }
         buildWindow()
         runDiagnostics()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    /// Shows each file opened with the app in a window of its own, previewed as Quick Look would.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        openedFiles = true
+        for url in urls {
+            let controller = PVQLPreviewViewController()
+            let window = NSWindow(contentViewController: controller)
+            window.title = url.lastPathComponent
+            window.setContentSize(NSSize(width: 1100, height: 720))
+            window.center()
+            nextWindowCorner = window.cascadeTopLeft(from: nextWindowCorner)
+            window.isReleasedWhenClosed = false
+            window.makeKeyAndOrderFront(nil)
+            controller.preparePreviewOfFile(at: url) { error in
+                guard error != nil else {
+                    return
+                }
+                // Declined, as a file that is not a mesh is; show its details instead.
+                DispatchQueue.main.async { controller.show(detailsView(url)) }
+            }
+            pvqlLog("opened \(url.lastPathComponent) in a window")
+        }
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     /// Installs a minimal main menu so the standard shortcuts work.

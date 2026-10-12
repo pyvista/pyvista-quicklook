@@ -145,6 +145,21 @@ enum Helper {
         return (path as NSString).expandingTildeInPath
     }
 
+    /// Returns the folder the service watches: the extension's container, found by the app
+    /// from the extension it embeds.
+    static func exchangeDirectory() -> String {
+        guard ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] == nil,
+              let plugIns = Bundle.main.builtInPlugInsURL,
+              let embedded = try? FileManager.default.contentsOfDirectory(at: plugIns, includingPropertiesForKeys: nil),
+              let identifier = embedded.lazy.compactMap({ Bundle(url: $0)?.bundleIdentifier }).first
+        else {
+            return NSTemporaryDirectory()
+        }
+        let container = "\(realHome())/Library/Containers/\(identifier)/Data/tmp/"
+        try? FileManager.default.createDirectory(atPath: container, withIntermediateDirectories: true)
+        return container
+    }
+
     /// Files above this many bytes are not staged; the service refuses them at the same size.
     static func maximumFileBytes() -> Int {
         let megabytes = (configuration()?["max_file_size_mb"] as? NSNumber)?.intValue ?? 2048
@@ -232,7 +247,7 @@ enum Helper {
         do {
             return try exchange(url, force: force, copy: nil, early: early)
         } catch let failure as Failure where failure.needsCopy {
-            let directory = NSTemporaryDirectory() as NSString
+            let directory = exchangeDirectory() as NSString
             let stagingPath = directory.appendingPathComponent("\(UUID().uuidString).staging")
             guard let copy = stage(url, in: stagingPath, force: force) else {
                 try? FileManager.default.removeItem(atPath: stagingPath)
@@ -282,7 +297,7 @@ enum Helper {
         copy: String?,
         early: (([String: Any]) -> Void)?
     ) throws -> Reply {
-        let directory = NSTemporaryDirectory() as NSString
+        let directory = exchangeDirectory() as NSString
         let token = UUID().uuidString
         let requestPath = directory.appendingPathComponent("\(token)\(requestSuffix)")
         let replyPath = directory.appendingPathComponent("\(token)\(replySuffix)")

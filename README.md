@@ -128,9 +128,16 @@ the last suffix of a compressed dataset:
 
 A folder of DICOM slices is claimed the same way, through `public.folder`.
 
+3 more have a type and a preview of their own in macOS, which Quick Look always uses;
+the app can open them instead (see [Native formats](#native-formats)):
+
+- `.obj` (`public.geometry-definition-format`)
+- `.ply` (`public.polygon-file-format`)
+- `.stl` (`public.standard-tesselated-geometry-format`)
+
 PyVista can also read these, which are not claimed:
 
-- macOS previews it: `.bmp`, `.dcm`, `.gif`, `.glb`, `.gltf`, `.hdr`, `.jpeg`, `.jpg`, `.obj`, `.ply`, `.png`, `.pnm`, `.stl`, `.tif`, `.tiff`
+- macOS previews it: `.bmp`, `.dcm`, `.gif`, `.glb`, `.gltf`, `.hdr`, `.jpeg`, `.jpg`, `.png`, `.pnm`, `.tif`, `.tiff`
 - disk images own the extension: `.img`
 - camera raw images own the extension: `.raw`
 - XML owns the extension: `.xml`
@@ -142,15 +149,28 @@ PyVista can also read these, which are not claimed:
 - meshio hangs on it: `.wkt`
 - meshio writes it but does not read it: `.svg`
 
-Claims on the extensions macOS previews itself, such as STL and PLY, or that another kind
-of file owns, are ignored by macOS, which is why those are not claimed. To claim fewer,
-or to add one of the others, change the claims and run the install command again, which
-rebuilds the app with them:
+Claims on an extension that another kind of file owns, such as `.xml`, are ignored by
+macOS, which is why those are not claimed. To claim fewer, or to add one of the others,
+change the claims and run the install command again, which rebuilds the app with them:
 
 ```bash
 pvql config set extensions.add .h5
 pvql config set extensions.remove .dat
 ```
+
+### Native formats
+
+macOS previews `.ply`, `.stl` and `.obj` itself, showing the shape but nothing about the
+data, and Quick Look uses that viewer for any 3D file before it consults extensions, so
+pressing space on one never shows this preview. The app is offered for them under Open
+With instead: select a `.ply` in the Finder, press ⌘I, choose PyVista Quick Look under
+Open With, and click Change All. Double-clicking such a file then opens this preview,
+render and dataset panel alike, in a window of its own.
+
+The claimed formats open the same way. The app is their default opener unless another
+app that reads them, such as ParaView, says it is, and Open With chooses between them.
+The compressed formats claimed through gzip and DICOM folders are not opened by the app,
+since it would otherwise offer to open every gzip archive and folder.
 
 ## How it works
 
