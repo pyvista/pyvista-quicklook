@@ -46,12 +46,9 @@ def scene_key(identity: tuple[str, int, int], config: dict[str, Any]) -> str:
     return cache.digest(identity, settings)
 
 
-def info_path(preview: Path) -> Path:
-    """Return where the info panel's description of a cached scene or image is kept."""
-    stem = preview.stem
-    if not stem.startswith(f'{SCENE_VERSION}-'):
-        stem = f'{SCENE_VERSION}-{stem}'
-    return preview.with_name(f'{stem}.json')
+def info_path(identity: tuple[str, int, int]) -> Path:
+    """Return where the info panel's description of a file is kept, whatever its preview."""
+    return config_mod.CACHE_DIR / f'{SCENE_VERSION}-{cache.digest(identity, ["info"])}.json'
 
 
 def wants_info(config: dict[str, Any]) -> bool:
@@ -61,40 +58,47 @@ def wants_info(config: dict[str, Any]) -> bool:
 
 def describe(
     source: str | os.PathLike[str],
-    preview: Path,
     config: dict[str, Any],
+    identity: tuple[str, int, int] | None = None,
     *,
     read: bool = True,
+    timeout: float | None = None,
 ) -> dict[str, Any] | None:
     """Return the info panel's description of a file, describing it if not cached.
 
     With ``read`` false only a cached description is returned, and the file is not read.
+    ``timeout`` limits the read, which otherwise has the conversion's own limit.
     """
     if not wants_info(config):
         return None
-    described = info_path(preview)
+    try:
+        path = environment.source_path(source) if read or identity is None else Path(source)
+        identity = identity or cache.identity_of(path)
+    except environment.RenderError, OSError:
+        return None
+    described = info_path(identity)
     # Named after the file's identity and the describer's version, so never stale.
     if not described.is_file():
         if not read:
             return None
-        try:
-            path = environment.source_path(source)
-            command = [environment.interpreter(config), str(EXPORTER), str(path), '--info']
-        except environment.RenderError:
-            return None
         scratch = described.with_name(f'{described.stem}.{cache.scratch_tag()}.tmp.json')
         try:
+            command = [environment.interpreter(config), str(EXPORTER), str(path), '--info']
             described.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                environment.run(
-                    config, [*command, str(scratch)], task='Describing', cwd=path.parent
-                )
-            except environment.RenderError:
-                scratch.unlink(missing_ok=True)
-            # A file that cannot be described is remembered as such, so it is not read again.
+            environment.run(
+                config,
+                [*command, str(scratch)],
+                task='Describing',
+                cwd=path.parent,
+                timeout=timeout,
+            )
+            # A file the describer read but could not describe is remembered as such.
             if not scratch.is_file():
                 scratch.write_text('{}')
             scratch.replace(described)
+        except environment.RenderError, OSError:
+            # A failure that may pass, such as a timeout, is tried again next time.
+            return None
         finally:
             scratch.unlink(missing_ok=True)
     try:
@@ -156,7 +160,7 @@ def scene(
 
     out = scene_path(identity, config)
     # The export describes the file in the same read, kept aside until the scene is in.
-    pending = info_path(out).with_name(f'{out.stem}.{cache.scratch_tag()}.tmp.json')
+    pending = info_path(identity).with_name(f'{out.stem}.{cache.scratch_tag()}.tmp.json')
 
     def build(scratch: Path) -> None:
         command = [
@@ -176,7 +180,7 @@ def scene(
     try:
         built = cache.fill(out, config, f'{path} (scene)', build)
         if pending.is_file():
-            pending.replace(info_path(built))
+            pending.replace(info_path(identity))
     finally:
         pending.unlink(missing_ok=True)
     return built

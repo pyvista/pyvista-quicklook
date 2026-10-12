@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 from pathlib import Path
 import plistlib
 import re
@@ -344,7 +345,7 @@ def test_handle_sends_the_header_ahead_of_a_slow_preview(tmp_path, monkeypatch):
     early = tmp_path / f'token{daemon.EARLY_SUFFIX}'
     monkeypatch.setattr(daemon.config_mod, 'load', dict)
     monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
-    monkeypatch.setattr(daemon, 'cached', lambda identity, config: False)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: None)
     monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': 'Early'})
     monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: {'type': 'Final'})
 
@@ -368,7 +369,7 @@ def converting_together(tmp_path, monkeypatch, sizes, budget_mb):
     """Request files of the given sizes at once and return how many converted together."""
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_conversion_memory_mb': budget_mb})
     monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
-    monkeypatch.setattr(daemon, 'cached', lambda identity, config: False)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: None)
     monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: None)
     monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
     png = tmp_path / 'built.png'
@@ -423,7 +424,9 @@ def test_two_requests_for_one_file_build_it_once(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
     png = tmp_path / 'built.png'
     builds, running, peak = [], [], []
-    monkeypatch.setattr(daemon, 'cached', lambda identity, config: png.exists())
+    monkeypatch.setattr(
+        daemon, 'cached_preview', lambda identity, config: png if png.exists() else None
+    )
 
     def build(target, config, identity):
         running.append(target)
@@ -516,27 +519,23 @@ def test_a_handler_that_replied_before_dying_keeps_its_reply(tmp_path, monkeypat
     assert json.loads((tmp_path / 'token.pvqlrep').read_text()) == {'ok': True}
 
 
-def test_a_large_file_previewed_once_is_not_refused_again(tmp_path, monkeypatch):
-    """Once Preview Anyway has built a file, selecting it again shows the preview."""
+@pytest.mark.parametrize('reachable', [True, False])
+def test_a_large_file_previewed_once_is_not_refused_again(tmp_path, monkeypatch, reachable):
+    """Once Preview Anyway has built a file, it is served again, even from a private folder."""
     png = tmp_path / 'cached.png'
     png.write_bytes(b'png')
-    limits = []
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_file_size_mb': 1})
-    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
-    monkeypatch.setattr(daemon, 'cached', lambda identity, config: True)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: reachable)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: png)
+    monkeypatch.setattr(daemon, 'produce', lambda *args: pytest.fail('built again'))
     monkeypatch.setattr(daemon.convert_mod, 'header', lambda *args: pytest.fail('header read'))
     monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: {'type': 'X'})
-
-    def produce(target, config, identity):
-        limits.append(config['max_file_size_mb'])
-        return png
-
-    monkeypatch.setattr(daemon, 'produce', produce)
     request = tmp_path / 'token.pvqlreq'
     request.write_text(json.dumps({'path': '/data/huge.vtu', 'mtime': 1, 'size': 5 * 10**9}))
     daemon.handle(request)
-    assert json.loads((tmp_path / 'token.pvqlrep').read_text())['ok'] is True
-    assert limits == [0]
+    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert reply['ok'] is True
+    assert Path(reply['png']).read_bytes() == b'png'
 
 
 def test_the_memory_budget_and_estimates(tmp_path):
@@ -558,7 +557,7 @@ def test_a_forced_preview_also_sends_its_header_first(tmp_path, monkeypatch):
     early = tmp_path / f'token{daemon.EARLY_SUFFIX}'
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_file_size_mb': 1})
     monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
-    monkeypatch.setattr(daemon, 'cached', lambda identity, config: False)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: None)
     monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': 'Early'})
     monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
 
@@ -585,7 +584,7 @@ def test_a_second_request_gets_its_header_while_the_first_converts(tmp_path, mon
     # Too little memory for two at once, so the second conversion waits for the first.
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'max_conversion_memory_mb': 1})
     monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
-    monkeypatch.setattr(daemon, 'cached', lambda identity, config: False)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: None)
     monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': 'Early'})
     monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
     release = threading.Event()
@@ -627,7 +626,7 @@ def test_no_header_is_sent_after_the_preview(tmp_path, monkeypatch):
     sent = threading.Event()
     monkeypatch.setattr(daemon.config_mod, 'load', dict)
     monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
-    monkeypatch.setattr(daemon, 'cached', lambda identity, config: False)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: None)
     monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
     # A description in hand, so the only thread started is the one sending the header.
     monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: {'type': 'X'})
@@ -660,7 +659,9 @@ def test_small_or_cached_files_get_no_early_header(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
     monkeypatch.setattr(daemon.convert_mod, 'header', lambda *args: pytest.fail('header read'))
     for size, is_cached in ((daemon.EARLY_BYTES - 1, False), (daemon.EARLY_BYTES, True)):
-        monkeypatch.setattr(daemon, 'cached', lambda identity, config, value=is_cached: value)
+        monkeypatch.setattr(
+            daemon, 'cached_preview', lambda identity, config, value=is_cached: value and png
+        )
         request = tmp_path / 'token.pvqlreq'
         request.write_text(json.dumps({'path': '/data/big.vtu', 'mtime': 1, 'size': size}))
         daemon.handle(request)
@@ -668,24 +669,20 @@ def test_small_or_cached_files_get_no_early_header(tmp_path, monkeypatch):
 
 
 def test_cached_looks_where_each_kind_of_preview_is_kept(tmp_path, monkeypatch):
-    """A preview counts as cached only when its file, and its description if shown, are there."""
+    """A preview counts as cached once its file is there, whether or not it is described."""
     monkeypatch.setattr(config, 'CACHE_DIR', tmp_path)
     identity = ('/data/a.vtu', 1, 2)
     scene, image = {'interactive': True}, {'interactive': False}
-    assert not daemon.cached(identity, scene)
+    assert daemon.cached_preview(identity, scene) is None
     built = convert.scene_path(identity, scene)
     built.write_bytes(b'x')
-    assert not daemon.cached(identity, scene)
-    assert daemon.cached(identity, {**scene, 'info_panel': 'hidden'})
-    convert.info_path(built).write_text('{}')
-    assert daemon.cached(identity, scene)
-    assert not daemon.cached(identity, {**scene, 'cache': False})
-    assert not daemon.cached(None, scene)
-    assert not daemon.cached(identity, image)
+    assert daemon.cached_preview(identity, scene) == built
+    assert daemon.cached_preview(identity, {**scene, 'cache': False}) is None
+    assert daemon.cached_preview(None, scene) is None
+    assert daemon.cached_preview(identity, image) is None
     still = render.preview_path(identity, image)
     still.write_bytes(b'x')
-    convert.info_path(still).write_text('{}')
-    assert daemon.cached(identity, image)
+    assert daemon.cached_preview(identity, image) == still
 
 
 def test_a_cached_preview_does_not_wait_for_another_conversion(tmp_path, monkeypatch):
@@ -694,8 +691,8 @@ def test_a_cached_preview_does_not_wait_for_another_conversion(tmp_path, monkeyp
     png.write_bytes(b'png')
     monkeypatch.setattr(daemon.config_mod, 'load', dict)
     monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
-    monkeypatch.setattr(daemon, 'cached', lambda identity, config: True)
-    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: png)
+    monkeypatch.setattr(daemon, 'produce', lambda *args: pytest.fail('built again'))
     monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
     request = tmp_path / 'token.pvqlreq'
     request.write_text(json.dumps({'path': '/data/a.vtu', 'mtime': 1, 'size': 10}))
@@ -1089,18 +1086,9 @@ def test_scenes_of_other_versions_are_discarded(tmp_path, monkeypatch):
     ]
 
 
-def test_descriptions_are_named_for_the_current_describer():
-    """A scene's description sits beside it, and an image's carries the describer's version."""
-    scene = Path(f'/c/{convert.SCENE_VERSION}-abc.ply')
-    assert convert.info_path(scene) == Path(f'/c/{convert.SCENE_VERSION}-abc.json')
-    assert convert.info_path(Path('/c/def.png')) == Path(f'/c/{convert.SCENE_VERSION}-def.json')
-
-
 def test_hidden_panel_skips_describing(tmp_path):
     """No description is asked of the exporter when the panel is hidden."""
-    assert (
-        convert.describe(tmp_path / 'x.vtp', tmp_path / 'x.png', {'info_panel': 'hidden'}) is None
-    )
+    assert convert.describe(tmp_path / 'x.vtp', {'info_panel': 'hidden'}) is None
     assert convert.wants_info({})
     assert not convert.wants_info({'info_panel': 'hidden'})
 
@@ -1289,6 +1277,29 @@ def test_resolve_pyvista_stays_inside_the_configured_environment(tmp_path):
 def test_an_unreadable_description_is_none(tmp_path, monkeypatch):
     """A cached description that is not JSON leaves the panel out."""
     monkeypatch.setattr(convert.config_mod, 'CACHE_DIR', tmp_path)
-    preview = tmp_path / 'key.png'
-    convert.info_path(preview).write_text('{not json')
-    assert convert.describe('/data/x.vtp', preview, {}, read=False) is None
+    identity = ('/data/x.vtp', 1, 2)
+    convert.info_path(identity).write_text('{not json')
+    assert convert.describe('/data/x.vtp', {}, identity, read=False) is None
+
+
+def test_descriptions_are_named_for_the_file_and_the_describer(monkeypatch, tmp_path):
+    """A description is named by the describer's version and the file alone, not its preview."""
+    monkeypatch.setattr(convert.config_mod, 'CACHE_DIR', tmp_path)
+    first = convert.info_path(('/d/a.vtu', 1, 2))
+    assert first.parent == tmp_path
+    assert first.name.startswith(f'{convert.SCENE_VERSION}-')
+    assert first.suffix == '.json'
+    assert convert.info_path(('/d/a.vtu', 1, 2)) == first
+    assert convert.info_path(('/d/a.vtu', 3, 2)) != first
+
+
+def test_stale_scratch_files_are_discarded(monkeypatch, tmp_path):
+    """Scratch left by a stopped build goes once it is old; a fresh one may still be in use."""
+    monkeypatch.setattr(cache.config_mod, 'CACHE_DIR', tmp_path)
+    old, fresh = tmp_path / 'a.1.2.tmp.json', tmp_path / 'b.1.2.tmp.ply'
+    for path in (old, fresh, tmp_path / 'kept.json'):
+        path.write_text('x')
+    stamp = time.time() - 700
+    os.utime(old, (stamp, stamp))
+    assert cache.discard_scratch(600) == 1
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['b.1.2.tmp.ply', 'kept.json']
