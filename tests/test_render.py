@@ -18,10 +18,17 @@ TOOL = ROOT / 'build' / 'RenderScene'
 pytestmark = pytest.mark.skipif(sys.platform != 'darwin', reason='SceneKit is macOS only')
 
 
+SOURCES = [
+    ROOT / 'macos' / 'Shared' / 'Camera.swift',
+    ROOT / 'macos' / 'Tools' / 'RenderScene.swift',
+    ROOT / 'macos' / 'Tools' / 'RenderScene-Info.plist',
+]
+
+
 @pytest.fixture(scope='session', autouse=True)
 def render_tool():
-    """Compile the off-screen renderer when the build has not already produced it."""
-    if TOOL.exists():
+    """Compile the off-screen renderer unless a build at least as new as its sources exists."""
+    if TOOL.exists() and TOOL.stat().st_mtime >= max(path.stat().st_mtime for path in SOURCES):
         return TOOL
     TOOL.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
@@ -29,8 +36,8 @@ def render_tool():
             'swiftc',
             '-O',
             '-parse-as-library',
-            str(ROOT / 'macos' / 'Shared' / 'Camera.swift'),
-            str(ROOT / 'macos' / 'Tools' / 'RenderScene.swift'),
+            str(SOURCES[0]),
+            str(SOURCES[1]),
             '-o',
             str(TOOL),
             '-framework',
@@ -45,7 +52,7 @@ def render_tool():
             '-Xlinker',
             '__info_plist',
             '-Xlinker',
-            str(ROOT / 'macos' / 'Tools' / 'RenderScene-Info.plist'),
+            str(SOURCES[2]),
         ],
         check=True,
         capture_output=True,
@@ -55,7 +62,7 @@ def render_tool():
 
 
 def rendered(mesh, tmp_path, name='scene', side=192):
-    """Export a dataset, render it off screen, and return the pixels."""
+    """Export a dataset, render it off screen, and return the pixels, top row first."""
     source = tmp_path / f'{name}.vtk'
     mesh.save(source)
     scene = tmp_path / f'{name}.ply'
@@ -70,8 +77,9 @@ def rendered(mesh, tmp_path, name='scene', side=192):
         check=False,
     )
     assert finished.returncode == 0, finished.stderr
+    # pv.read puts an image's bottom row first.
     pixels = np.asarray(pv.read(image).active_scalars).reshape(side, side, -1)
-    return pixels[:, :, :3]
+    return np.flipud(pixels[:, :, :3])
 
 
 def covered(pixels):
@@ -135,6 +143,33 @@ def test_colours_match_what_pyvista_draws(tmp_path, mesh):
     plotter.close()
     difference = lit_percentiles(rendered(mesh, tmp_path)) - lit_percentiles(expected)
     assert np.abs(difference).mean() < 15
+
+
+def highlight(pixels):
+    """Return the brightest tenth's offset from a lit sphere's centre, in radii, x right and y up."""
+    brightness = pixels.astype(float).sum(axis=2)
+    lit = brightness > 30
+    rows, columns = np.nonzero(lit)
+    radius = np.sqrt(lit.sum() / np.pi)
+    bright = brightness[lit] >= np.percentile(brightness[lit], 90)
+    return np.array(
+        [
+            (columns[bright].mean() - columns.mean()) / radius,
+            (rows.mean() - rows[bright].mean()) / radius,
+        ]
+    )
+
+
+@pytest.mark.usefixtures('warmed_up')
+def test_the_light_falls_where_pyvista_puts_it(tmp_path):
+    """The lights sit around the camera as PyVista's do, so the highlight lands where it does."""
+    sphere = pv.Sphere(theta_resolution=64, phi_resolution=64)
+    plotter = pv.Plotter(off_screen=True, window_size=[192, 192])
+    plotter.background_color = 'black'
+    plotter.add_mesh(sphere)
+    expected = plotter.screenshot(return_img=True)[..., :3]
+    plotter.close()
+    assert np.allclose(highlight(rendered(sphere, tmp_path)), highlight(expected), atol=0.15)
 
 
 def test_a_point_cloud_is_drawn(tmp_path):
