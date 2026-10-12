@@ -54,7 +54,8 @@ def test_readme_lists_exactly_the_known_formats():
     readme = (Path(__file__).parents[1] / 'README.md').read_text()
     section = readme.split('## Supported files', 1)[1].split('\n## ', 1)[0]
     listed = set(re.findall(r'`(\.[a-z0-9.]+)`', section))
-    assert listed == set(formats.FORMATS) | set(formats.UNCLAIMED) | set(formats.VIA_SYSTEM_TYPE)
+    known = set(formats.FORMATS) | set(formats.UNCLAIMED) | set(formats.VIA_SYSTEM_TYPE)
+    assert listed == known | set(formats.NATIVE_TYPES)
 
 
 def test_unclaimed_extensions_say_why():
@@ -105,6 +106,26 @@ def test_system_types_are_supported_but_not_exported():
     for uti in formats.SYSTEM_TYPES:
         assert uti in supported
         assert uti not in exported
+
+
+def test_native_types_are_claimed_and_the_app_can_open_every_type():
+    """MacOS's own 3D types are supported by their type, and the app opens all it claims."""
+    app = plist.app_plist(['.vtu'])
+    ext = plist.extension_plist(['.vtu'])
+    supported = ext['NSExtension']['NSExtensionAttributes']['QLSupportedContentTypes']
+    exported = [d['UTTypeIdentifier'] for d in app['UTExportedTypeDeclarations']]
+    [documents] = app['CFBundleDocumentTypes']
+    for ext_name, uti in formats.NATIVE_TYPES.items():
+        assert uti.startswith('public.'), ext_name
+        assert uti in supported
+        assert uti not in exported
+    # Listed under Open With, never made the default by rank alone.
+    assert documents['LSHandlerRank'] == 'None'
+    assert set(documents['LSItemContentTypes']) == set(exported) | set(
+        formats.NATIVE_TYPES.values()
+    )
+    assert set(formats.NATIVE_TYPES).isdisjoint(formats.FORMATS)
+    assert set(formats.NATIVE_TYPES).isdisjoint(formats.UNCLAIMED)
 
 
 def test_plists_are_writable(tmp_path):

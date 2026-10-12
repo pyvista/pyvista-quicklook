@@ -121,12 +121,17 @@ VIA_SYSTEM_TYPE: dict[str, str] = {
     '.vol.gz': 'org.gnu.gnu-zip-archive',
 }
 
+# Formats macOS has a type and a preview of its own for, which Quick Look keeps to; the
+# app declares them so it can open them, and the extension so a panel of its own can.
+NATIVE_TYPES: dict[str, str] = {
+    '.ply': 'public.polygon-file-format',
+    '.stl': 'public.standard-tesselated-geometry-format',
+    '.obj': 'public.geometry-definition-format',
+}
+
 # Extensions the environment can read that are deliberately not claimed, and why.
 UNCLAIMED: dict[str, str] = {
     # macOS previews these itself, and Launch Services keeps its own type for them.
-    '.stl': 'macOS previews it',
-    '.obj': 'macOS previews it',
-    '.ply': 'macOS previews it',
     '.glb': 'macOS previews it',
     '.gltf': 'macOS previews it',
     '.bmp': 'macOS previews it',
