@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from pyvista_quicklook import daemon
+from pyvista_quicklook import environment
 from pyvista_quicklook.environment import RenderError
 
 
@@ -61,6 +62,23 @@ def test_readable_works_off_the_main_thread(tmp_path):
     worker.start()
     worker.join(10)
     assert answers == [True]
+
+
+def test_handle_marks_a_file_that_holds_no_mesh(tmp_path, monkeypatch):
+    """Only a file the exporter cannot read as a mesh is marked for showing as something else."""
+
+    def unreadable(target, config, identity=None):
+        message = 'Converting notes.dat failed.'
+        raise environment.NotAMeshError(message)
+
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'produce', unreadable)
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': str(tmp_path / 'notes.dat')}))
+    daemon.handle(request)
+    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert reply == {'ok': False, 'error': 'Converting notes.dat failed.', 'not_a_mesh': True}
 
 
 def test_handle_reports_an_unexpected_exception(tmp_path, monkeypatch):
@@ -299,3 +317,18 @@ def test_request_preview_times_out_without_a_service(tmp_path, drop):
     source.write_text('x')
     with pytest.raises(RenderError, match='did not answer'):
         daemon.request_preview(str(source), timeout=0)
+
+
+def test_sweep_removes_staged_copies_left_behind(tmp_path):
+    """A staging folder older than the cutoff goes, with whatever copy it holds."""
+    old = tmp_path / 'abc.staging'
+    old.mkdir()
+    (old / 'mesh.vtu').write_bytes(b'x')
+    stamp = time.time() - daemon.STALE_SECONDS - 10
+    os.utime(old / 'mesh.vtu', (stamp, stamp))
+    os.utime(old, (stamp, stamp))
+    fresh = tmp_path / 'def.staging'
+    fresh.mkdir()
+    daemon.sweep(tmp_path)
+    assert not old.exists()
+    assert fresh.exists()

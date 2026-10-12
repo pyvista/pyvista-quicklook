@@ -152,7 +152,7 @@ def test_the_result_is_centred(tmp_path):
 
 def test_an_empty_dataset_is_reported(tmp_path):
     """A dataset with nothing in it says so instead of writing an empty scene."""
-    with pytest.raises(ValueError, match='no surface'):
+    with pytest.raises(export_mod.NotAMeshError, match='no surface'):
         written(pv.PolyData(), tmp_path)
 
 
@@ -317,7 +317,7 @@ def test_unreadable_iges_files_are_reported(tmp_path):
     """An IGES file cascadio transfers no shapes from fails with a reason."""
     source = tmp_path / 'broken.igs'
     source.write_text('nonsense')
-    with pytest.raises(ValueError, match='no shapes could be read'):
+    with pytest.raises(export_mod.NotAMeshError, match='no shapes could be read'):
         export_mod.export(str(source), str(tmp_path / 'out.ply'), 2_000_000, 20_000)
 
 
@@ -440,10 +440,77 @@ def test_a_failure_is_reported_in_one_line(tmp_path, capsys, monkeypatch):
             '0',
         ],
     )
-    assert export_mod.main() == 1
+    assert export_mod.main() == export_mod.NOT_A_MESH_STATUS
     reported = capsys.readouterr().err.strip()
     assert len(reported.splitlines()) == 1
     assert len(reported) <= 240
+
+
+def raise_import_error(*args, **kwargs):
+    """Stand in for a reader whose module is not installed."""
+    message = 'No module named no_such_reader'
+    raise ImportError(message)
+
+
+@pytest.mark.parametrize(
+    ('trouble', 'expected'),
+    [
+        ('missing', FileNotFoundError),
+        ('unreadable', PermissionError),
+        ('no reader module', ImportError),
+        ('cut off', (RuntimeError, ValueError)),
+    ],
+)
+def test_troubles_other_than_the_format_are_ordinary_failures(
+    tmp_path, monkeypatch, trouble, expected
+):
+    """A file that cannot be reached or read, or a binary one cut short, is not shown as text."""
+    source = tmp_path / 'mesh.ply'
+    pv.Sphere().save(source)
+    assert not export_mod.looks_like_text(str(source))
+    if trouble == 'missing':
+        source.unlink()
+    elif trouble == 'unreadable':
+        source.chmod(0)
+    elif trouble == 'no reader module':
+        monkeypatch.setattr(export_mod.pv, 'read', raise_import_error)
+    else:
+        source.write_bytes(source.read_bytes()[:400])
+    try:
+        with pytest.raises(expected) as raised:
+            export_mod.export(str(source), str(tmp_path / 'out.ply'), 0, 0)
+    finally:
+        if trouble == 'unreadable':
+            source.chmod(0o644)
+    assert not isinstance(raised.value, export_mod.NotAMeshError)
+
+
+def test_text_that_is_not_a_mesh_is_shown_as_text(tmp_path):
+    """Text with a mesh extension, empty or unreadable as a mesh, is handed back as text."""
+    empty = tmp_path / 'empty.vtu'
+    empty.write_text('<?xml version="1.0"?><VTKFile type="UnstructuredGrid"></VTKFile>')
+    assert export_mod.looks_like_text(str(empty))
+    with pytest.raises(export_mod.NotAMeshError, match='no surface'):
+        export_mod.export(str(empty), str(tmp_path / 'out.ply'), 0, 0)
+    table = tmp_path / 'table.dat'
+    table.write_text('x y z\n1 2 3\n')
+    with pytest.raises(export_mod.NotAMeshError):
+        export_mod.export(str(table), str(tmp_path / 'out.ply'), 0, 0)
+
+
+def test_only_a_file_that_holds_no_mesh_exits_as_not_a_mesh(tmp_path, capsys, monkeypatch):
+    """A failure after the file was read is an ordinary failure, not a file to show as text."""
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+
+    def broken(*args):
+        message = 'out of memory'
+        raise MemoryError(message)
+
+    monkeypatch.setattr(export_mod, 'solidify', broken)
+    monkeypatch.setattr('sys.argv', ['export', str(source), str(tmp_path / 'out.ply')])
+    assert export_mod.main() == 1
+    assert capsys.readouterr().err.strip() == 'MemoryError: out of memory'
 
 
 def readable_extensions() -> set[str]:

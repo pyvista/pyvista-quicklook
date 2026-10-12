@@ -128,14 +128,64 @@ def read_selectively(source: str) -> tuple[object, dict[str, Any]] | None:
     return dataset, header
 
 
+# The exit status that tells the service the file holds no mesh, rather than that it failed.
+NOT_A_MESH_STATUS = 3
+
+
+class NotAMeshError(Exception):
+    """Raised when a file cannot be read as a mesh, or holds nothing to show."""
+
+
 def read_for_preview(source: str) -> tuple[object, dict[str, Any] | None]:
     """Read a dataset as little as its format allows, with the header that describes the rest."""
+    if not os.path.isdir(source):
+        # Raises for a missing or unreadable file, which VTK would only log.
+        with Path(source).open('rb'):
+            pass
     selective = None
     with contextlib.suppress(Exception):
         selective = read_selectively(source)
     if selective is not None:
         return selective
-    return read(source), None
+    try:
+        dataset = read(source), None
+    except OSError, ImportError, MemoryError:
+        # The file, the environment, or the machine is at fault, not the format.
+        raise
+    except (Exception, SystemExit) as error:
+        if looks_like_text(source):
+            raise NotAMeshError(summary(error)) from error
+        raise
+    if point_count(dataset[0]) == 0:
+        raise empty(source)
+    return dataset
+
+
+def point_count(dataset: object) -> int:
+    """Return how many points a dataset or composite holds, counting a mystery as some."""
+    if isinstance(dataset, pv.MultiBlock):
+        return sum(block.n_points for block in dataset.recursive_iterator('blocks'))
+    return int(getattr(dataset, 'n_points', 1))
+
+
+def empty(source: str) -> Exception:
+    """Return the error for a file read as a mesh that holds nothing to show."""
+    message = 'the dataset has no surface to show'
+    # Text with nothing in it is shown as text; a binary file with nothing is a failure.
+    return NotAMeshError(message) if looks_like_text(source) else ValueError(message)
+
+
+def looks_like_text(source: str) -> bool:
+    """Return whether a file's opening reads as text, which is then worth showing as such."""
+    try:
+        with Path(source).open('rb') as handle:
+            head = handle.read(8192)
+    except OSError:
+        return False
+    if not head or b'\0' in head:
+        return False
+    controls = sum(byte < 32 and byte not in (9, 10, 13) for byte in head)
+    return controls * 100 < len(head)
 
 
 def skin_estimate(dimensions: tuple[int, int, int]) -> int:
@@ -335,8 +385,7 @@ def export(
     # tube() and glyph() add arrays of their own; colour only by what the file had.
     surface.set_active_scalars(wanted if wanted in surface.array_names else None)
     if surface.n_points == 0:
-        message = 'the dataset has no surface to show'
-        raise ValueError(message)
+        raise empty(source)
 
     # Merging coincident points first, since the surface filter leaves a volume's faces
     # unjoined at their edges. The budget counts a surface once, whatever its sides.
@@ -359,6 +408,12 @@ def export(
     if is_open:
         surface = both_sides(surface)
     surface.save(destination, texture='RGB' if 'RGB' in surface.point_data else None)
+
+
+def summary(error: BaseException) -> str:
+    """Return an error as one short line, named by its type."""
+    text = ' '.join(str(error).split())[:200]
+    return f'{type(error).__name__}: {text}' if text else type(error).__name__
 
 
 def main() -> int:
@@ -385,8 +440,10 @@ def main() -> int:
         # The reason is shown in the Quick Look panel, where a traceback would fill it.
         if os.environ.get('PVQL_TRACEBACK'):
             raise
-        summary = ' '.join(str(error).split())[:200] or type(error).__name__
-        sys.stderr.write(f'{type(error).__name__}: {summary}\n')
+        if isinstance(error, NotAMeshError):
+            sys.stderr.write(f'{error}\n')
+            return NOT_A_MESH_STATUS
+        sys.stderr.write(f'{summary(error)}\n')
         return 1
     return 0
 

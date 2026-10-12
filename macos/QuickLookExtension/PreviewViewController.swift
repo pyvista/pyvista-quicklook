@@ -430,7 +430,8 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             pvqlLog("no preview: \(message.prefix(120))")
             if failure?.isTooLarge == true {
                 outcome = .tooLarge(message, MeshInfo(failure?.info))
-            } else if failure?.isSetup == true {
+            } else if failure?.isNotMesh != true {
+                // The file may well be a mesh, so say what went wrong rather than show it as text.
                 outcome = .message("Could not preview \(name)\n\n\(message)")
             } else if !isOwnType(url) {
                 // macOS has a preview of its own for this type; let it show that, if it still can.

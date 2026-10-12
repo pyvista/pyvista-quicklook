@@ -284,9 +284,12 @@ def handle(request: Path) -> None:
 
     # Prefer the original so datasets that reference neighbouring files still resolve.
     target = source if folder_is_reachable(source) else payload.get('copy')
+
     if not target:
         message = UNREADABLE_MESSAGE.format(path=source)
-        write_json(reply, {'ok': False, 'error': message, 'actionable': True})
+        # The extension copies the file somewhere readable and asks again, when it can.
+        answer = {'ok': False, 'error': message, 'needs_copy': True}
+        write_json(reply, answer)
         return
 
     done, lock = threading.Event(), threading.Lock()
@@ -310,7 +313,10 @@ def handle(request: Path) -> None:
             with contextlib.nullcontext() if cached(identity, config) else budget:
                 built = produce(target, config, identity)
                 info = convert_mod.describe(target, built, config)
-
+    except environment.NotAMeshError as error:
+        # Only then does the extension show the file as text or as its icon instead.
+        answer_with({'ok': False, 'error': str(error), 'not_a_mesh': True})
+        return
     except RenderError as error:
         answer_with({'ok': False, 'error': str(error)})
         return
@@ -340,6 +346,13 @@ def sweep(directory: Path) -> None:
         try:
             if entry.stat().st_mtime < cutoff:
                 entry.unlink(missing_ok=True)
+        except OSError:
+            pass
+    # Copies the extension staged and never cleaned up, when Quick Look stopped it first.
+    for folder in directory.glob('*.staging'):
+        try:
+            if folder.is_dir() and folder.stat().st_mtime < cutoff:
+                shutil.rmtree(folder, ignore_errors=True)
         except OSError:
             pass
 

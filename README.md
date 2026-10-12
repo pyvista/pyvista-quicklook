@@ -211,8 +211,8 @@ pvql config set max_file_size_mb 4096
 A claimed file that turns out not to be a mesh is shown the way Quick Look would have
 shown it: as plain text when it reads as text, such as a `.dat` holding a table of
 numbers, and otherwise as its icon, name, size, and date, with a line saying why it
-holds no mesh. A problem with the installation itself, such as a render service that is
-not running, is reported in full instead.
+holds no mesh. Any other failure, such as a render service that is not running or a
+conversion that timed out, is reported in full instead.
 
 ### Compressed and multi-file datasets
 

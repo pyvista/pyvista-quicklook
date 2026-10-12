@@ -153,3 +153,17 @@ def test_a_description_that_writes_nothing_is_none(tmp_path, env, monkeypatch):
     pv.Sphere().save(source)
     monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: None)
     assert convert.describe(source, tmp_path / 'cache' / 'x.png', env) is None
+
+
+def test_a_file_without_a_mesh_is_told_apart_from_a_failure(tmp_path, env):
+    """The exporter's status says the file holds no mesh, and any other failure stays one."""
+    from pyvista_quicklook import _scene_export
+
+    assert environment.NOT_A_MESH_STATUS == _scene_export.NOT_A_MESH_STATUS
+    notes = tmp_path / 'notes.vtu'
+    notes.write_text('a table of numbers\n1 2 3\n')
+    with pytest.raises(environment.NotAMeshError):
+        convert.scene(notes, env)
+    with pytest.raises(environment.RenderError) as raised:
+        environment.run(env, [sys.executable, '-c', 'raise SystemExit(1)'], task='Failing')
+    assert not isinstance(raised.value, environment.NotAMeshError)

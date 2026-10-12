@@ -19,6 +19,14 @@ class RenderError(Exception):
     """Raised when a preview cannot be produced."""
 
 
+class NotAMeshError(RenderError):
+    """Raised when the file holds no mesh, so it is shown as whatever else it is."""
+
+
+# The exporter's exit status for a file that holds no mesh, as ``_scene_export`` sets it.
+NOT_A_MESH_STATUS = 3
+
+
 def log(config: dict[str, Any], message: str) -> None:
     """Append a timestamped message to the log file when logging is enabled."""
     if not config.get('log'):
@@ -103,6 +111,8 @@ def run(
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or '').strip()
         message = f'{task} failed.\n\n{tail(detail)}'
+        if completed.returncode == NOT_A_MESH_STATUS:
+            raise NotAMeshError(message)
         raise RenderError(message)
     return completed
 

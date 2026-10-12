@@ -264,8 +264,25 @@ def test_handle_reports_unreachable_files_without_a_copy(tmp_path, monkeypatch):
     reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
     assert reply['ok'] is False
     assert 'Privacy & Security' in reply['error']
-    # Marked so the panel shows the whole message rather than the file's details.
-    assert reply['actionable'] is True
+    # The extension copies a file only when asked, then requests it again with the copy.
+    assert reply['needs_copy'] is True
+
+
+def test_handle_previews_the_copy_of_an_unreadable_file(tmp_path, monkeypatch):
+    """A request that brings a copy of a file in an unreadable folder previews the copy."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    built = []
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'info_panel': 'hidden'})
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: False)
+    monkeypatch.setattr(
+        daemon, 'produce', lambda target, config, identity: built.append(target) or png
+    )
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/private/mesh.vtu', 'copy': '/staged/mesh.vtu'}))
+    daemon.handle(request)
+    assert json.loads((tmp_path / 'token.pvqlrep').read_text())['ok'] is True
+    assert built == ['/staged/mesh.vtu']
 
 
 def test_handle_refuses_a_large_file_before_converting_it(tmp_path, monkeypatch):
