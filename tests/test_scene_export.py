@@ -156,6 +156,24 @@ def test_an_empty_dataset_is_reported(tmp_path):
         written(pv.PolyData(), tmp_path)
 
 
+def test_empty_blocks_are_skipped(tmp_path):
+    """Missing blocks and empty nested composites leave the other blocks to preview."""
+    blocks = pv.MultiBlock(
+        [pv.MultiBlock([pv.Sphere(), None]), None, pv.MultiBlock(), pv.MultiBlock([None])]
+    )
+    assert export_mod.point_count(blocks) == pv.Sphere().n_points
+    source = tmp_path / 'in.vtm'
+    blocks.save(source)
+    assert written(str(source), tmp_path).n_points > 0
+
+
+def test_a_composite_of_empty_blocks_is_reported(tmp_path):
+    """A composite with no blocks at all is reported as empty."""
+    blocks = pv.MultiBlock([None, pv.MultiBlock([None])])
+    assert export_mod.point_count(blocks) == 0
+    assert export_mod.to_surface(blocks).n_points == 0
+
+
 def test_the_ramp_matches_viridis_ends():
     """The built-in colour table spans viridis from dark blue to yellow."""
     table = export_mod.ramp()
