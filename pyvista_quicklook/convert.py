@@ -14,6 +14,8 @@ from . import environment
 
 EXPORTER = Path(__file__).with_name('_scene_export.py')
 DESCRIBER = Path(__file__).with_name('_dataset_info.py')
+# Reading a header takes well under a second, so a slow one is not worth waiting for.
+HEADER_SECONDS = 20
 
 
 def exporter_version(exporter: Path = EXPORTER, describer: Path = DESCRIBER) -> str:
@@ -83,6 +85,40 @@ def describe(
         return json.loads(described.read_text())
     except OSError, ValueError:
         return None
+
+
+# Formats whose header describes the dataset, as ``_dataset_info.HEADERS`` reads them.
+HEADER_SUFFIXES = frozenset({'.pv', '.vtu', '.vtp', '.vti', '.vtr', '.vts'})
+
+
+def header(source: str | os.PathLike[str], config: dict[str, Any]) -> dict[str, Any] | None:
+    """Return what a file's header alone says for the info panel, reading none of its values."""
+    if not wants_info(config) or Path(source).suffix.lower() not in HEADER_SUFFIXES:
+        return None
+    scratch = config_mod.CACHE_DIR / f'header.{os.getpid()}.tmp.json'
+    try:
+        scratch.parent.mkdir(parents=True, exist_ok=True)
+        command = [
+            environment.interpreter(config),
+            str(EXPORTER),
+            str(source),
+            '--header',
+            str(scratch),
+        ]
+        environment.run(
+            config,
+            command,
+            task='Reading the header',
+            cwd=Path(source).parent,
+            timeout=HEADER_SECONDS,
+        )
+        info = json.loads(scratch.read_text())
+    except environment.RenderError, OSError, ValueError:
+        return None
+    finally:
+        scratch.unlink(missing_ok=True)
+    # A header that names no dataset type has nothing for the panel to show.
+    return info if isinstance(info, dict) and info.get('type') else None
 
 
 def scene_path(identity: tuple[str, int, int], config: dict[str, Any]) -> Path:

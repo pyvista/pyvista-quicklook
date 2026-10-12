@@ -113,6 +113,30 @@ def test_still_images_come_from_the_pyvista_command(tmp_path, env):
     assert convert.info_path(png).name == f'{convert.SCENE_VERSION}-{png.stem}.json'
 
 
+def test_header_is_read_by_the_exporter_without_the_values(tmp_path, env):
+    """The service asks the exporter what a header says, which needs no conversion."""
+    import pyvista_zstd
+
+    source = tmp_path / 'sphere.pv'
+    pyvista_zstd.write(pv.Sphere(), source)
+    info = convert.header(source, env)
+    assert info['type'] == 'PolyData'
+    assert convert.header(source, {**env, 'info_panel': 'hidden'}) is None
+    assert convert.header(source, {**env, 'python': str(tmp_path / 'missing')}) is None
+    assert not list(config.CACHE_DIR.glob('*.tmp*'))
+
+
+def test_only_formats_with_a_header_reader_get_a_header(tmp_path, env, monkeypatch):
+    """A file with no header to read starts no interpreter, and an unreadable one gives nothing."""
+    stl = tmp_path / 'part.stl'
+    pv.Sphere().save(stl)
+    broken = tmp_path / 'broken.vtu'
+    broken.write_text('<VTKFile type="Nonsense"></VTKFile>')
+    assert convert.header(broken, env) is None
+    monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: pytest.fail('ran'))
+    assert convert.header(stl, env) is None
+
+
 def test_a_scene_built_without_the_cache_keeps_its_description(tmp_path, env, monkeypatch):
     """The description written with a scene is used, rather than reading the file again."""
     source = tmp_path / 'sphere.vtp'

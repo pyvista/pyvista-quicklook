@@ -9,6 +9,9 @@ import plistlib
 import re
 import subprocess
 import sys
+import threading
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -259,6 +262,100 @@ def test_handle_refuses_a_large_file_before_touching_it(tmp_path, monkeypatch):
     assert reply['ok'] is False
     assert 'preview limit' in reply['error']
     assert reply['actionable'] is True
+
+
+def test_handle_sends_the_header_ahead_of_a_slow_preview(tmp_path, monkeypatch):
+    """A large file's header arrives first, and the preview after it."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    early = tmp_path / f'token{daemon.EARLY_SUFFIX}'
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'cached', lambda identity, config: False)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': 'Early'})
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args: {'type': 'Final'})
+
+    def slow(target, config, identity):
+        deadline = time.monotonic() + 10
+        while not early.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return png
+
+    monkeypatch.setattr(daemon, 'produce', slow)
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(
+        json.dumps({'path': '/data/big.vtu', 'mtime': 1, 'size': daemon.EARLY_BYTES})
+    )
+    daemon.handle(request)
+    assert json.loads(early.read_text()) == {'ok': True, 'info': {'type': 'Early'}}
+    assert json.loads((tmp_path / 'token.pvqlrep').read_text())['info'] == {'type': 'Final'}
+
+
+def test_no_header_is_sent_after_the_preview(tmp_path, monkeypatch):
+    """A header that comes back after the preview was sent is dropped."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    sent = threading.Event()
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'cached', lambda identity, config: False)
+    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args: None)
+    threads = []
+    monkeypatch.setattr(
+        daemon.threading,
+        'Thread',
+        lambda target, args: threads.append((target, args)) or SimpleNamespace(start=sent.set),
+    )
+
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(
+        json.dumps({'path': '/data/big.vtu', 'mtime': 1, 'size': daemon.EARLY_BYTES})
+    )
+    daemon.handle(request)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': 'Late'})
+    [(target, args)] = threads
+    target(*args)
+    assert sent.is_set()
+    assert not (tmp_path / f'token{daemon.EARLY_SUFFIX}').exists()
+
+
+def test_small_or_cached_files_get_no_early_header(tmp_path, monkeypatch):
+    """Only a large file that is not yet cached is worth a header first."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args: None)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda *args: pytest.fail('header read'))
+    for size, is_cached in ((daemon.EARLY_BYTES - 1, False), (daemon.EARLY_BYTES, True)):
+        monkeypatch.setattr(daemon, 'cached', lambda identity, config, value=is_cached: value)
+        request = tmp_path / 'token.pvqlreq'
+        request.write_text(json.dumps({'path': '/data/big.vtu', 'mtime': 1, 'size': size}))
+        daemon.handle(request)
+        assert json.loads((tmp_path / 'token.pvqlrep').read_text())['ok'] is True
+
+
+def test_cached_looks_where_each_kind_of_preview_is_kept(tmp_path, monkeypatch):
+    """A preview counts as cached only when its file, and its description if shown, are there."""
+    monkeypatch.setattr(config, 'CACHE_DIR', tmp_path)
+    identity = ('/data/a.vtu', 1, 2)
+    scene, image = {'interactive': True}, {'interactive': False}
+    assert not daemon.cached(identity, scene)
+    built = convert.scene_path(identity, scene)
+    built.write_bytes(b'x')
+    assert not daemon.cached(identity, scene)
+    assert daemon.cached(identity, {**scene, 'info_panel': 'hidden'})
+    convert.info_path(built).write_text('{}')
+    assert daemon.cached(identity, scene)
+    assert not daemon.cached(identity, {**scene, 'cache': False})
+    assert not daemon.cached(None, scene)
+    assert not daemon.cached(identity, image)
+    still = render.preview_path(identity, image)
+    still.write_bytes(b'x')
+    convert.info_path(still).write_text('{}')
+    assert daemon.cached(identity, image)
 
 
 @pytest.fixture

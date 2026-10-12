@@ -74,6 +74,7 @@ enum Helper {
     static let hardTimeout: TimeInterval = 120
     static let requestSuffix = ".pvqlreq"
     static let replySuffix = ".pvqlrep"
+    static let earlySuffix = ".pvqlpre"
 
     static let serviceMissingMessage = """
     The PyVista Quick Look render service is not answering.
@@ -205,11 +206,19 @@ enum Helper {
     }
 
     /// Asks the render service for a preview of a mesh file.
-    static func requestPreview(_ url: URL, timeout: TimeInterval = 90) throws -> Reply {
+    ///
+    /// `early` is handed what the file's header says when the service sends it ahead of a
+    /// slow preview.
+    static func requestPreview(
+        _ url: URL,
+        timeout: TimeInterval = 90,
+        early: (([String: Any]) -> Void)? = nil
+    ) throws -> Reply {
         let directory = NSTemporaryDirectory() as NSString
         let token = UUID().uuidString
         let requestPath = directory.appendingPathComponent("\(token)\(requestSuffix)")
         let replyPath = directory.appendingPathComponent("\(token)\(replySuffix)")
+        let earlyPath = directory.appendingPathComponent("\(token)\(earlySuffix)")
         let scratchPath = requestPath + ".tmp"
         let stagingPath = directory.appendingPathComponent("\(token).staging")
         let manager = FileManager.default
@@ -245,7 +254,16 @@ enum Helper {
         }
 
         let deadline = Date().addingTimeInterval(timeout)
+        defer { try? manager.removeItem(atPath: earlyPath) }
         while Date() < deadline {
+            if let data = manager.contents(atPath: earlyPath) {
+                try? manager.removeItem(atPath: earlyPath)
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let info = json["info"] as? [String: Any] {
+                    pvqlLog("received the header ahead of the preview")
+                    early?(info)
+                }
+            }
             guard let data = manager.contents(atPath: replyPath) else {
                 Thread.sleep(forTimeInterval: 0.05)
                 continue

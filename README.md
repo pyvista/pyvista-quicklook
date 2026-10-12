@@ -180,6 +180,17 @@ Surfaces are sent whole up to `max_scene_points`. Above that, images and volumes
 thinned on their lattice and other surfaces are decimated. Set it to `0` to never
 thin.
 
+### Large files
+
+A `.pv` file is read with only the array it is coloured by. Its other arrays are read
+one at a time for their ranges, so a file never needs its arrays and its mesh in memory
+at once. A VTK XML file above 256 MB is read the same way, its other ranges taken from
+the header. A vector's range is that of its magnitude, shown as `||v||`, in every
+format.
+
+For a file of 32 MB or more, the info panel appears as soon as the header is read, with
+a spinner where the render goes until the preview is ready.
+
 A claimed file that turns out not to be a mesh is shown the way Quick Look would have
 shown it: as plain text when it reads as text, such as a `.dat` holding a table of
 numbers, and otherwise as its icon, name, size, and date, with a line saying why it

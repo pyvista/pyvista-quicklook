@@ -28,6 +28,9 @@ LABEL = 'org.pyvista.pvqld'
 LEGACY_LABEL = 'io.github.user27182.pvqld'
 REQUEST_SUFFIX = '.pvqlreq'
 REPLY_SUFFIX = '.pvqlrep'
+# What the header says, sent while a large file is still being converted.
+EARLY_SUFFIX = '.pvqlpre'
+EARLY_BYTES = 32 * 1024 * 1024
 STALE_SECONDS = 600
 
 UNREADABLE_MESSAGE = """The render service could not read
@@ -102,6 +105,28 @@ def readable(path: str, seconds: float = 2.0) -> bool:
         signal.signal(signal.SIGALRM, previous)
 
 
+def cached(identity: tuple[str, int, int] | None, config: dict[str, Any]) -> bool:
+    """Return whether the preview a request asks for, and its description, are cached."""
+    if identity is None or not config.get('cache', True):
+        return False
+    if config.get('interactive', True):
+        preview = convert_mod.scene_path(identity, config)
+    else:
+        preview = render_mod.preview_path(identity, config)
+    described = not convert_mod.wants_info(config) or convert_mod.info_path(preview).is_file()
+    return preview.is_file() and described
+
+
+def send_early(
+    request: Path, target: str, config: dict[str, Any], done: threading.Event, lock: threading.Lock
+) -> None:
+    """Send what the header says, unless the preview itself has already been sent."""
+    info = convert_mod.header(target, config)
+    with lock:
+        if info and not done.is_set():
+            write_json(request.with_suffix(EARLY_SUFFIX), {'ok': True, 'info': info})
+
+
 def produce(
     target: str | os.PathLike[str],
     config: dict[str, Any],
@@ -130,6 +155,7 @@ def handle(request: Path) -> None:
         identity = (source, int(payload['mtime']), int(payload['size']))
 
     config = config_mod.load()
+
     if identity is not None:
         try:
             environment.check_size(identity, config)
@@ -145,21 +171,35 @@ def handle(request: Path) -> None:
         write_json(reply, {'ok': False, 'error': message, 'actionable': True})
         return
 
+    done, lock = threading.Event(), threading.Lock()
+    ready = cached(identity, config)
+    large = identity is not None and identity[2] >= EARLY_BYTES
+    if large and convert_mod.wants_info(config) and not ready:
+        early = threading.Thread(target=send_early, args=(request, target, config, done, lock))
+        early.start()
+
+    def answer_with(message: dict[str, Any]) -> None:
+        """Send the final reply, after which no early one may follow."""
+        with lock:
+            done.set()
+            write_json(reply, message)
+
     try:
         built = produce(target, config, identity)
+        info = convert_mod.describe(target, built, config)
     except RenderError as error:
-        write_json(reply, {'ok': False, 'error': str(error)})
+        answer_with({'ok': False, 'error': str(error)})
         return
     except Exception as error:  # noqa: BLE001
-        write_json(reply, {'ok': False, 'error': f'{type(error).__name__}: {error}'})
+        answer_with({'ok': False, 'error': f'{type(error).__name__}: {error}'})
         return
     delivered = reply.with_suffix(built.suffix)
     shutil.copyfile(built, delivered)
     kind = 'scene' if built.suffix == '.ply' else 'png'
     answer: dict[str, Any] = {'ok': True, kind: str(delivered)}
-    if (info := convert_mod.describe(target, built, config)) is not None:
+    if info is not None:
         answer['info'] = info
-    write_json(reply, answer)
+    answer_with(answer)
 
 
 def sweep(directory: Path) -> None:
@@ -167,6 +207,7 @@ def sweep(directory: Path) -> None:
     cutoff = time.time() - STALE_SECONDS
     stale = [
         *directory.glob(f'*{REPLY_SUFFIX}'),
+        *directory.glob(f'*{EARLY_SUFFIX}'),
         *directory.glob('*.png'),
         *directory.glob('*.ply'),
     ]

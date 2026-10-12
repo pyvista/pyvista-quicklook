@@ -596,8 +596,276 @@ def file_facts(path: Path) -> list[list[str]]:
         return []
 
 
-def describe(dataset: Any, source: str) -> dict[str, Any]:
-    """Return everything the info panel shows about a dataset read from a file."""
+# What a file header says about a dataset, from the format's own reader, without its values.
+DATASET_TYPES = ('ImageData', 'RectilinearGrid', 'StructuredGrid', 'PolyData', 'UnstructuredGrid')
+XML_DTYPES = {
+    **{f'{k}{n}': f'{k.lower()}{n}' for k in ('Int', 'UInt') for n in (8, 16, 32, 64)},
+    'Float32': 'float32',
+    'Float64': 'float64',
+    'String': 'string',
+    'Bit': 'bool',
+}
+XML_SECTIONS = {'PointData': 'Point', 'CellData': 'Cell', 'FieldData': 'Field'}
+# Header bytes searched for tags; a file whose tags run on past them is read whole.
+XML_TAGS_HEAD = 8 * 1024 * 1024
+
+
+def header_row(
+    name: str, association: str, dtype: str, components: int, roles: list[str]
+) -> dict[str, Any]:
+    """Return an array row known only from a header, its range still to be found."""
+    return {
+        'name': name,
+        'association': association,
+        'dtype': dtype,
+        'components': components,
+        'range': '',
+        'extent': None,
+        'active': roles,
+    }
+
+
+def grid_counts(extent: list[int]) -> tuple[list[int], int, int]:
+    """Return the dimensions, point count, and cell count of a structured extent."""
+    dims = [extent[i + 1] - extent[i] + 1 for i in (0, 2, 4)]
+    cells = int(np.prod([d - 1 for d in dims if d > 1])) if any(d > 1 for d in dims) else 0
+    return dims, int(np.prod(dims)), cells
+
+
+def header_facts(
+    points: int, cells: int, dims: list[int] | None, spacing: list[float] | None
+) -> list:
+    """Return the facts a header gives: counts, and the shape of a grid."""
+    facts: list[list[Any]] = [['Points', count(points)], ['Cells', count(cells)]]
+    if dims is not None:
+        facts.append(['Dimensions', TIMES.join(str(d) for d in dims)])
+    if spacing is not None:
+        facts.append(['Spacing', triple(spacing)])
+    return facts
+
+
+def scalar_roles(actives: dict[str, str | None], association: str, name: str) -> list[str]:
+    """Return an array's roles from the active names a header records per association."""
+    # PyVista makes point scalars active over cell scalars, and vectors the same way.
+    roles = []
+    for role in ('scalars', 'vectors'):
+        point, cell = actives.get(f'Point {role}'), actives.get(f'Cell {role}')
+        if (('Point', point) if point else ('Cell', cell)) == (association, name):
+            roles.append(role)
+    return roles + [
+        role for role in ('normals', 'texture') if actives.get(f'{association} {role}') == name
+    ]
+
+
+def zstd_metadata(path: Path) -> Any:
+    """Return the root dataset metadata of a ``.pv`` file, read without any of its arrays."""
+    import pyvista_zstd
+
+    with pyvista_zstd.Reader(path) as reader:
+        # pyvista-zstd 0.5 keeps the per-array metadata behind a private accessor.
+        return reader._root_ds_meta_from_core()
+
+
+def zstd_frame(uid: str, name: str, association: str) -> str:
+    """Return the name of the frame holding one array of a ``.pv`` dataset."""
+    return f'{uid}{name}__{association.lower()}_data'
+
+
+def zstd_header(path: Path) -> dict:
+    """Return what a ``.pv`` file's metadata says, with its user dict but no array values."""
+    meta = zstd_metadata(path)
+    kind = getattr(meta, 'ds_type', None)
+    if kind not in DATASET_TYPES:
+        return {}
+    actives = {
+        f'{association} {role}': getattr(
+            meta, f'{association.lower()}_data_active_{attribute}_name'
+        )
+        for association in ('Point', 'Cell')
+        for role, attribute in (
+            ('scalars', 'scalars'),
+            ('vectors', 'vectors'),
+            ('normals', 'normals'),
+            ('texture', 'texture_coordinates'),
+        )
+    }
+    rows = []
+    for association in ('Point', 'Cell', 'Field'):
+        for name, array in (getattr(meta, f'{association.lower()}_data_keys') or {}).items():
+            if name == USER_DICT_KEY:
+                continue
+            dtype = np.dtype(array.dtype) if array.dtype not in ('str', 'object') else None
+            is_text = dtype is None or dtype.kind in 'OUS'
+            shape = list(array.shape)
+            components = int(np.prod(shape[1:])) if len(shape) > 1 else 1
+            roles = [] if association == 'Field' else scalar_roles(actives, association, name)
+            rows.append(
+                header_row(
+                    name, association, 'string' if is_text else str(dtype), components, roles
+                )
+            )
+    dims = list(meta.dimensions) if getattr(meta, 'dimensions', None) is not None else None
+    spacing = meta.spacing if kind == 'ImageData' else None
+    if dims is not None and kind != 'ImageData':
+        dims = None
+    info: dict[str, Any] = {
+        'type': kind,
+        'uid': meta.uid,
+        'facts': header_facts(meta.n_points, meta.n_cells, dims, spacing),
+        'rows': rows,
+    }
+    if USER_DICT_KEY in (meta.field_data_keys or {}):
+        from pyvista_zstd._capi import CoreReader
+
+        with CoreReader(path) as core:
+            index = core.find(zstd_frame(meta.uid, USER_DICT_KEY, 'Field'))
+            if index is not None:
+                info['user_dict'] = user_dict_lines(np.asarray(core.read_at(index)))
+    return info
+
+
+def zstd_ranges(path: Path, header: dict, skip: set[tuple[str, str]] = frozenset()) -> dict:
+    """Fill in a ``.pv`` header's ranges, reading each array alone, and return the header."""
+    from pyvista_zstd._capi import CoreReader
+
+    with CoreReader(path) as core:
+        for row in header['rows']:
+            if (row['name'], row['association']) in skip:
+                continue
+            index = core.find(zstd_frame(header['uid'], row['name'], row['association']))
+            if index is None:
+                continue
+            # One array at a time, so memory never holds more than the largest.
+            values = np.asarray(core.read_at(index))
+            if row['dtype'] == 'string':
+                row['range'] = text_preview(values)
+            else:
+                row['extent'] = values_extent(values)
+    return header
+
+
+def xml_attributes(text: str) -> dict[str, str]:
+    """Return the attributes of an XML tag."""
+    return dict(re.findall(r'(\w+)="([^"]*)"', text))
+
+
+def xml_header(path: Path) -> dict:
+    """Return what a serial VTK XML file's header says, ranges included where VTK wrote them."""
+    with path.open('rb') as handle:
+        head = handle.read(XML_TAGS_HEAD).decode('latin-1')
+    # Inline data can push later arrays past the window, so only a whole header is used.
+    if '<AppendedData' not in head and '</VTKFile>' not in head:
+        return {}
+    head = head.split('<AppendedData', 1)[0]
+    match = re.search(r'<VTKFile\b([^>]*)>', head)
+    kind = xml_attributes(match.group(1)).get('type') if match else None
+    if kind not in DATASET_TYPES:
+        return {}
+    points = cells = 0
+    dims: list[int] | None = None
+    spacing: list[float] | None = None
+    if (grid := re.search(rf'<{kind}\b([^>]*)>', head)) is not None:
+        attributes = xml_attributes(grid.group(1))
+        if 'WholeExtent' in attributes:
+            dims, points, cells = grid_counts([int(v) for v in attributes['WholeExtent'].split()])
+        if 'Spacing' in attributes:
+            spacing = [float(v) for v in attributes['Spacing'].split()]
+    if dims is None:
+        for piece in re.finditer(r'<Piece\b([^>]*)>', head):
+            attributes = xml_attributes(piece.group(1))
+            points += int(attributes.get('NumberOfPoints', 0))
+            parts = (
+                ('NumberOfCells',)
+                if kind != 'PolyData'
+                else ('NumberOfVerts', 'NumberOfLines', 'NumberOfStrips', 'NumberOfPolys')
+            )
+            cells += sum(int(attributes.get(part, 0)) for part in parts)
+    actives: dict[str, str | None] = {}
+    rows: dict[tuple[str, str], dict[str, Any]] = {}
+    section = None
+    tags = 'PointData|CellData|FieldData|Points|Coordinates|Cells|Verts|Lines|Strips|Polys'
+    pattern = rf'<(/?)({tags}|DataArray|Array)\b([^>]*?)/?>'
+    for closing, tag, text in re.findall(pattern, head):
+        attributes = xml_attributes(text)
+        if tag in XML_SECTIONS:
+            section = None if closing else XML_SECTIONS[tag]
+            for role, key in (
+                ('scalars', 'Scalars'),
+                ('vectors', 'Vectors'),
+                ('normals', 'Normals'),
+                ('texture', 'TCoords'),
+            ):
+                if section and key in attributes:
+                    actives[f'{section} {role}'] = attributes[key]
+            continue
+        if tag not in ('DataArray', 'Array'):
+            if not closing:
+                section = None
+            continue
+        name = attributes.get('Name')
+        # PyVista keeps the user dict and its own bookkeeping in arrays of this prefix.
+        if section is None or not name or name.startswith('_PYVISTA_') or (name, section) in rows:
+            continue
+        components = int(attributes.get('NumberOfComponents', 1))
+        dtype = XML_DTYPES.get(attributes.get('type', ''), attributes.get('type', '').lower())
+        row = header_row(name, section, dtype, components, [])
+        if 'RangeMin' in attributes and 'RangeMax' in attributes and dtype != 'string':
+            kind_code = 'f' if dtype.startswith('float') else 'b' if dtype == 'bool' else 'i'
+            low, high = float(attributes['RangeMin']), float(attributes['RangeMax'])
+            # VTK records a vector's range over its magnitude, which is said as such.
+            norm = VECTOR_NORM if components > 1 else ''
+            row['extent'] = (low, high, 'f' if norm else kind_code, norm)
+        rows[(name, section)] = row
+    for (name, association), row in rows.items():
+        if association != 'Field':
+            row['active'] = scalar_roles(actives, association, name)
+    # Listed as a dataset lists them, point arrays first, though a file puts field data first.
+    order = [association for association, _ in ASSOCIATIONS]
+    return {
+        'type': kind,
+        'facts': header_facts(points, cells, dims, spacing),
+        'rows': sorted(rows.values(), key=lambda row: order.index(row['association'])),
+    }
+
+
+HEADERS = {
+    '.pv': zstd_header,
+    **dict.fromkeys(('.vtu', '.vtp', '.vti', '.vtr', '.vts'), xml_header),
+}
+
+
+def header_info(source: str) -> dict[str, Any]:
+    """Return what the info panel can show from a file's header alone, read in a moment."""
+    path = Path(source)
+    header: dict[str, Any] = {}
+    reader = HEADERS.get(path.suffix.lower())
+    if reader is not None and path.is_file():
+        with contextlib.suppress(Exception):
+            header = reader(path)
+    info: dict[str, Any] = {'type': header.get('type', '')}
+    if header:
+        rows = header['rows']
+        info['facts'] = header['facts']
+        info['array_count'] = len(rows)
+        info['arrays'] = format_rows(rows)
+        if header.get('user_dict'):
+            info['user_dict'] = header['user_dict']
+    info['file'] = file_facts(path)
+    return info
+
+
+def merged_rows(loaded: list[dict[str, Any]], header: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the header's rows in its order, with the rows of the arrays that were read."""
+    read = {(row['name'], row['association']): row for row in loaded}
+    rows = [read.pop((row['name'], row['association']), row) for row in header.get('rows', [])]
+    return rows + list(read.values())
+
+
+def describe(dataset: Any, source: str, header: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return everything the info panel shows about a dataset read from a file.
+
+    ``header`` describes the arrays a selective read left out.
+    """
     info: dict[str, Any] = {'type': type(dataset).__name__}
     if isinstance(dataset, pv.PartitionedDataSet):
         dataset = pv.MultiBlock(list(dataset))
@@ -610,6 +878,8 @@ def describe(dataset: Any, source: str) -> dict[str, Any]:
     elif isinstance(dataset, pv.DataSet):
         facts = dataset_facts(dataset, Path(source).suffix.lower())
         rows = array_rows(dataset)
+        if header:
+            rows = merged_rows(rows, header)
     else:
         facts = []
     if isinstance(dataset, pv.DataSet | pv.MultiBlock):
@@ -617,7 +887,7 @@ def describe(dataset: Any, source: str) -> dict[str, Any]:
         info['arrays'] = format_rows(rows)
     info['facts'] = facts
     if isinstance(dataset, pv.DataSet | pv.MultiBlock):
-        lines = user_dict(dataset)
+        lines = user_dict(dataset) or (header or {}).get('user_dict')
         if lines:
             info['user_dict'] = lines
     info['file'] = file_facts(Path(source))
