@@ -1303,3 +1303,41 @@ def test_stale_scratch_files_are_discarded(monkeypatch, tmp_path):
     os.utime(old, (stamp, stamp))
     assert cache.discard_scratch(600) == 1
     assert sorted(p.name for p in tmp_path.iterdir()) == ['b.1.2.tmp.ply', 'kept.json']
+
+
+def test_background_work_waits_behind_the_reader(tmp_path):
+    """A preview the reader asked for starts before background work that asked earlier."""
+    budget = daemon.MemoryBudget()
+    order = []
+
+    def wait(name, background):
+        with budget.reserve(1, 1, background=background):
+            order.append(name)
+
+    with budget.reserve(1, 1):
+        later = threading.Thread(target=wait, args=('description', True))
+        later.start()
+        while not budget.waiting:
+            time.sleep(0.01)
+        sooner = threading.Thread(target=wait, args=('preview', False))
+        sooner.start()
+        while len(budget.waiting) < 2:
+            time.sleep(0.01)
+    later.join(5)
+    sooner.join(5)
+    assert order == ['preview', 'description']
+
+
+def test_the_sweep_leaves_a_copy_a_request_still_reads(tmp_path):
+    """A staged copy older than the cutoff stays while its request is being handled."""
+    folder = tmp_path / 'abc.staging'
+    folder.mkdir()
+    (folder / 'mesh.vtu').write_bytes(b'x')
+    stamp = time.time() - daemon.STALE_SECONDS - 10
+    os.utime(folder, (stamp, stamp))
+    with daemon.staged_in_use(str(folder / 'mesh.vtu')):
+        daemon.sweep(tmp_path)
+        assert folder.exists()
+    with daemon.staged_in_use(None):
+        daemon.sweep(tmp_path)
+    assert not folder.exists()
