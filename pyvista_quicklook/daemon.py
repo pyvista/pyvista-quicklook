@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
 from pathlib import Path
+import queue
 import shutil
 import signal
 import threading
@@ -29,6 +31,9 @@ LEGACY_LABEL = 'io.github.user27182.pvqld'
 REQUEST_SUFFIX = '.pvqlreq'
 REPLY_SUFFIX = '.pvqlrep'
 STALE_SECONDS = 600
+# How long the extension waits for a reply, and how much of that is kept in hand.
+REPLY_SECONDS = 90
+REPLY_MARGIN_SECONDS = 5
 
 UNREADABLE_MESSAGE = """The render service could not read
 
@@ -113,36 +118,55 @@ def produce(
     return render_mod.preview(target, config, identity=identity)
 
 
-# Descriptions being written on threads of their own, so each file is read once at a time.
+# Still images waiting to be described after their replies, and the files among them.
+_descriptions: queue.Queue[tuple[str, dict[str, Any], tuple[str, int, int]]] = queue.Queue()
 _describing: set[Path] = set()
 _describing_guard = threading.Lock()
 
 
-def describe_later(target: str, preview: Path, config: dict[str, Any]) -> threading.Thread | None:
-    """Describe a file on a thread of its own, unless that is done, underway, or not wanted."""
-    described = convert_mod.info_path(preview)
-    with _describing_guard:
-        wanted = convert_mod.wants_info(config) and not described.is_file()
-        if not wanted or described in _describing:
-            return None
-        _describing.add(described)
-
-    def work() -> None:
+def describe_queued() -> None:
+    """Describe queued files one after another, so their reads never pile up."""
+    while True:
+        target, config, identity = _descriptions.get()
         try:
-            convert_mod.describe(target, preview, config)
+            convert_mod.describe(target, config, identity)
+        except Exception as error:  # noqa: BLE001
+            environment.log(config, f'describing {target} failed: {error}')
         finally:
             with _describing_guard:
-                _describing.discard(described)
+                _describing.discard(convert_mod.info_path(identity))
+            _descriptions.task_done()
 
-    thread = threading.Thread(target=work, daemon=True)
+
+@functools.cache
+def describer() -> threading.Thread:
+    """Return the thread that describes queued files, starting it the first time."""
+    thread = threading.Thread(target=describe_queued, daemon=True)
     thread.start()
     return thread
+
+
+def describe_later(
+    target: str, config: dict[str, Any], identity: tuple[str, int, int] | None
+) -> bool:
+    """Queue a file to be described, unless that is done, queued, or not wanted."""
+    if identity is None or not convert_mod.wants_info(config):
+        return False
+    described = convert_mod.info_path(identity)
+    with _describing_guard:
+        if described.is_file() or described in _describing:
+            return False
+        _describing.add(described)
+    describer()
+    _descriptions.put((target, config, identity))
+    return True
 
 
 def handle(request: Path) -> None:
     """Render the file named by one request and write the reply beside it."""
     reply = request.with_suffix(REPLY_SUFFIX)
     try:
+        asked = request.stat().st_mtime
         payload = json.loads(request.read_text())
         source = payload['path']
     except (OSError, ValueError, KeyError) as error:
@@ -184,16 +208,19 @@ def handle(request: Path) -> None:
     kind = 'scene' if built.suffix == '.ply' else 'png'
     answer: dict[str, Any] = {'ok': True, kind: str(delivered)}
     # A scene is described as it is built; a still image is described in a read of its own.
-    info = convert_mod.describe(target, built, config, read=False)
+    info = convert_mod.describe(target, config, identity, read=False)
     if info is None and target != source:
-        # The copy is removed once the reply is read, so it is described before replying.
-        info = convert_mod.describe(target, built, config)
-    elif info is None:
-        # The image is sent at once, and its description is ready the next time.
-        describe_later(target, built, config)
+        # The copy is removed once the reply is read, so it is described now, in the time
+        # the extension still waits; past that the reply goes without it.
+        left = REPLY_SECONDS - REPLY_MARGIN_SECONDS - (time.time() - asked)
+        if left > 1:
+            info = convert_mod.describe(target, config, identity, timeout=left)
     if info is not None:
         answer['info'] = info
     write_json(reply, answer)
+    if info is None and target == source:
+        # The image went out first, and its description is ready the next time.
+        describe_later(target, config, identity)
 
 
 def sweep(directory: Path) -> None:
@@ -232,6 +259,7 @@ def serve(poll: float = 0.05) -> int:
     directory = drop_dir()
     directory.mkdir(parents=True, exist_ok=True)
     cache.discard_other_versions(convert_mod.SCENE_VERSION)
+    cache.discard_scratch(STALE_SECONDS)
     startup = config_mod.load()
     if startup.get('warm_on_start', True):
         warm_in_background(startup)

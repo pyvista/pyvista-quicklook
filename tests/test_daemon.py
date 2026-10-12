@@ -88,68 +88,24 @@ def test_a_still_image_is_sent_before_its_description(tmp_path, monkeypatch):
     """An image whose description is not cached is sent at once and described afterwards."""
     png = tmp_path / 'cached.png'
     png.write_bytes(b'png')
-    described = threading.Event()
+    reply = tmp_path / 'token.pvqlrep'
+    replied_first = []
 
-    def describe(target, built, config, *, read=True):
+    def describe(target, config, identity=None, *, read=True, timeout=None):
         if read:
-            described.set()
+            replied_first.append(reply.exists())
 
     monkeypatch.setattr(daemon.config_mod, 'load', dict)
     monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
     monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
     monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
+    monkeypatch.setattr(daemon.convert_mod, 'info_path', lambda identity: tmp_path / 'x.json')
     request = tmp_path / 'token.pvqlreq'
-    request.write_text(json.dumps({'path': str(tmp_path / 'mesh.vtu')}))
+    request.write_text(json.dumps({'path': '/data/mesh.vtu', 'mtime': 1, 'size': 2}))
     daemon.handle(request)
-    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
-    assert reply['ok'] is True
-    assert 'info' not in reply
-    assert described.wait(5)
-
-
-def test_a_copy_is_described_before_the_reply(tmp_path, monkeypatch):
-    """A staged copy goes once the reply is read, so it is described while it is there."""
-    png = tmp_path / 'cached.png'
-    png.write_bytes(b'png')
-    reads = []
-
-    def describe(target, built, config, *, read=True):
-        reads.append((target, read))
-        return {'type': 'X'} if read else None
-
-    monkeypatch.setattr(daemon.config_mod, 'load', dict)
-    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: False)
-    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
-    monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
-    request = tmp_path / 'token.pvqlreq'
-    request.write_text(json.dumps({'path': '/private/mesh.vtu', 'copy': '/staged/mesh.vtu'}))
-    daemon.handle(request)
-    assert json.loads((tmp_path / 'token.pvqlrep').read_text())['info'] == {'type': 'X'}
-    assert reads == [('/staged/mesh.vtu', False), ('/staged/mesh.vtu', True)]
-
-
-def test_a_file_is_described_once_at_a_time(tmp_path, monkeypatch):
-    """A second request for a description already being written starts no second read."""
-    started, release = threading.Event(), threading.Event()
-    calls = []
-
-    def describe(*args, **kwargs):
-        calls.append(args)
-        started.set()
-        release.wait(5)
-
-    monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
-    preview = tmp_path / 'x.png'
-    first = daemon.describe_later('/data/x.vtu', preview, {})
-    assert started.wait(5)
-    assert daemon.describe_later('/data/x.vtu', preview, {}) is None
-    assert daemon.describe_later('/data/x.vtu', preview, {'info_panel': 'hidden'}) is None
-    release.set()
-    first.join(5)
-    assert len(calls) == 1
-    assert daemon.describe_later('/data/x.vtu', preview, {}) is not None
-    daemon.convert_mod.info_path(preview).write_text('{}')
-    assert daemon.describe_later('/data/x.vtu', preview, {}) is None
+    daemon._descriptions.join()
+    assert 'info' not in json.loads(reply.read_text())
+    assert replied_first == [True]
 
 
 def test_sweep_removes_only_stale_replies(tmp_path):
@@ -273,3 +229,91 @@ def test_request_preview_times_out_without_a_service(tmp_path, drop):
     source.write_text('x')
     with pytest.raises(RenderError, match='did not answer'):
         daemon.request_preview(str(source), timeout=0)
+
+
+def test_a_copy_is_described_in_the_time_left(tmp_path, monkeypatch):
+    """A staged copy goes once the reply is read, so it is described before, within the wait."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    reads = []
+
+    def describe(target, config, identity=None, *, read=True, timeout=None):
+        reads.append((target, read, timeout))
+        return {'type': 'X'} if read else None
+
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: False)
+    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/private/mesh.vtu', 'copy': '/staged/mesh.vtu'}))
+    daemon.handle(request)
+    assert json.loads((tmp_path / 'token.pvqlrep').read_text())['info'] == {'type': 'X'}
+    [cached, read] = reads
+    assert cached == ('/staged/mesh.vtu', False, None)
+    assert read[:2] == ('/staged/mesh.vtu', True)
+    assert 1 < read[2] <= daemon.REPLY_SECONDS - daemon.REPLY_MARGIN_SECONDS
+
+
+def test_a_copy_is_not_described_once_the_wait_is_over(tmp_path, monkeypatch):
+    """A request that has waited out the extension's patience is answered without a panel."""
+    png = tmp_path / 'cached.png'
+    png.write_bytes(b'png')
+    reads = []
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: False)
+    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(
+        daemon.convert_mod, 'describe', lambda *args, read=True, **kwargs: reads.append(read)
+    )
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/private/mesh.vtu', 'copy': '/staged/mesh.vtu'}))
+    stamp = time.time() - daemon.REPLY_SECONDS
+    os.utime(request, (stamp, stamp))
+    daemon.handle(request)
+    assert 'info' not in json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert reads == [False]
+
+
+def test_files_are_described_one_at_a_time(tmp_path, monkeypatch):
+    """Queued descriptions run one after another, each file once, and only when wanted."""
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def describe(target, config, identity=None, **kwargs):
+        calls.append(target)
+        started.set()
+        release.wait(5)
+
+    monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
+    monkeypatch.setattr(daemon.convert_mod, 'info_path', lambda identity: tmp_path / identity[0])
+    first, second = ('a.json', 1, 2), ('b.json', 1, 2)
+    assert daemon.describe_later('/data/a.vtu', {}, first)
+    assert started.wait(5)
+    assert not daemon.describe_later('/data/a.vtu', {}, first)
+    assert daemon.describe_later('/data/b.vtu', {}, second)
+    assert not daemon.describe_later('/data/c.vtu', {'info_panel': 'hidden'}, ('c.json', 1, 2))
+    assert not daemon.describe_later('/data/d.vtu', {}, None)
+    assert calls == ['/data/a.vtu']
+    release.set()
+    daemon._descriptions.join()
+    assert calls == ['/data/a.vtu', '/data/b.vtu']
+    (tmp_path / 'a.json').write_text('{}')
+    assert not daemon.describe_later('/data/a.vtu', {}, first)
+
+
+def test_a_description_that_raises_does_not_stop_the_others(tmp_path, monkeypatch):
+    """An unexpected error describing one file is logged, and the next is still described."""
+    calls = []
+
+    def describe(target, config, identity=None, **kwargs):
+        calls.append(target)
+        if target == '/data/a.vtu':
+            raise ZeroDivisionError
+
+    monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
+    monkeypatch.setattr(daemon.convert_mod, 'info_path', lambda identity: tmp_path / identity[0])
+    assert daemon.describe_later('/data/a.vtu', {}, ('a.json', 1, 2))
+    assert daemon.describe_later('/data/b.vtu', {}, ('b.json', 1, 2))
+    daemon._descriptions.join()
+    assert calls == ['/data/a.vtu', '/data/b.vtu']

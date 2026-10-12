@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import plistlib
 import re
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -620,18 +622,9 @@ def test_scenes_of_other_versions_are_discarded(tmp_path, monkeypatch):
     ]
 
 
-def test_descriptions_are_named_for_the_current_describer():
-    """A scene's description sits beside it, and an image's carries the describer's version."""
-    scene = Path(f'/c/{convert.SCENE_VERSION}-abc.ply')
-    assert convert.info_path(scene) == Path(f'/c/{convert.SCENE_VERSION}-abc.json')
-    assert convert.info_path(Path('/c/def.png')) == Path(f'/c/{convert.SCENE_VERSION}-def.json')
-
-
 def test_hidden_panel_skips_describing(tmp_path):
     """No description is asked of the exporter when the panel is hidden."""
-    assert (
-        convert.describe(tmp_path / 'x.vtp', tmp_path / 'x.png', {'info_panel': 'hidden'}) is None
-    )
+    assert convert.describe(tmp_path / 'x.vtp', {'info_panel': 'hidden'}) is None
     assert convert.wants_info({})
     assert not convert.wants_info({'info_panel': 'hidden'})
 
@@ -820,6 +813,29 @@ def test_resolve_pyvista_stays_inside_the_configured_environment(tmp_path):
 def test_an_unreadable_description_is_none(tmp_path, monkeypatch):
     """A cached description that is not JSON leaves the panel out."""
     monkeypatch.setattr(convert.config_mod, 'CACHE_DIR', tmp_path)
-    preview = tmp_path / 'key.png'
-    convert.info_path(preview).write_text('{not json')
-    assert convert.describe('/data/x.vtp', preview, {}, read=False) is None
+    identity = ('/data/x.vtp', 1, 2)
+    convert.info_path(identity).write_text('{not json')
+    assert convert.describe('/data/x.vtp', {}, identity, read=False) is None
+
+
+def test_descriptions_are_named_for_the_file_and_the_describer(monkeypatch, tmp_path):
+    """A description is named by the describer's version and the file alone, not its preview."""
+    monkeypatch.setattr(convert.config_mod, 'CACHE_DIR', tmp_path)
+    first = convert.info_path(('/d/a.vtu', 1, 2))
+    assert first.parent == tmp_path
+    assert first.name.startswith(f'{convert.SCENE_VERSION}-')
+    assert first.suffix == '.json'
+    assert convert.info_path(('/d/a.vtu', 1, 2)) == first
+    assert convert.info_path(('/d/a.vtu', 3, 2)) != first
+
+
+def test_stale_scratch_files_are_discarded(monkeypatch, tmp_path):
+    """Scratch left by a stopped build goes once it is old; a fresh one may still be in use."""
+    monkeypatch.setattr(cache.config_mod, 'CACHE_DIR', tmp_path)
+    old, fresh = tmp_path / 'a.1.2.tmp.json', tmp_path / 'b.1.2.tmp.ply'
+    for path in (old, fresh, tmp_path / 'kept.json'):
+        path.write_text('x')
+    stamp = time.time() - 700
+    os.utime(old, (stamp, stamp))
+    assert cache.discard_scratch(600) == 1
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['b.1.2.tmp.ply', 'kept.json']
