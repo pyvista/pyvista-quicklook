@@ -85,6 +85,28 @@ def test_a_plain_surface_is_drawn_in_the_theme_colour(tmp_path):
     assert (lit[:, 2] - lit[:, 0]).mean() > 20
 
 
+def lit_percentiles(pixels):
+    """Return the 10th, 50th and 90th percentile colours of the pixels that are not background."""
+    lit = pixels.reshape(-1, 3).astype(float)
+    return np.percentile(lit[lit.sum(axis=1) > 30], [10, 50, 90], axis=0)
+
+
+@pytest.mark.parametrize('colour', ['plain', 'elevation'])
+def test_colours_match_what_pyvista_draws(tmp_path, colour):
+    """The scene is lit and shaded as PyVista draws it, so its colours match a PyVista render."""
+    mesh = pv.Sphere(theta_resolution=64, phi_resolution=64)
+    if colour == 'elevation':
+        mesh = mesh.elevation()
+    pv.Plotter(off_screen=True).screenshot()  # the first off-screen render is blank on macOS
+    plotter = pv.Plotter(off_screen=True, window_size=[192, 192])
+    plotter.background_color = 'black'
+    plotter.add_mesh(mesh, show_scalar_bar=False)
+    expected = plotter.screenshot(return_img=True)[..., :3]
+    plotter.close()
+    difference = lit_percentiles(rendered(mesh, tmp_path)) - lit_percentiles(expected)
+    assert np.abs(difference).mean() < 15
+
+
 def test_a_point_cloud_is_drawn(tmp_path):
     """Glyphed points reach the frame instead of rendering blank."""
     cloud = pv.PolyData(np.random.default_rng(0).random((400, 3)))

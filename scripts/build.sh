@@ -76,7 +76,9 @@ echo "==> compiling RenderScene"
 compile "$BUILD/RenderScene" -O -parse-as-library \
   "$ROOT/macos/Shared/Camera.swift" \
   "$ROOT/macos/Tools/RenderScene.swift" \
-  -framework AppKit -framework SceneKit
+  -framework AppKit -framework SceneKit \
+  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
+  -Xlinker "$ROOT/macos/Tools/RenderScene-Info.plist"
 
 echo "==> compiling $EXT_NAME"
 compile "$APPEX/Contents/MacOS/$EXT_NAME" -O -parse-as-library \

@@ -98,6 +98,12 @@ def test_extension_plist_matches_the_app():
     assert ext['NSExtension']['NSExtensionPointIdentifier'] == 'com.apple.quicklook.preview'
 
 
+def test_scenes_blend_colours_as_vtk_does():
+    """The app and the extension both turn off SceneKit's linear-light rendering."""
+    assert plist.app_plist(['.vtu'])['SCNDisableLinearSpaceRendering'] is True
+    assert plist.extension_plist(['.vtu'])['SCNDisableLinearSpaceRendering'] is True
+
+
 def test_system_types_are_supported_but_not_exported():
     """A type macOS declares is claimed by the extension and never exported by the app."""
     app = plist.app_plist(['.vtu'])

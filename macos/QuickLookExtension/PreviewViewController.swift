@@ -45,11 +45,12 @@ func sceneView(for scene: SCNScene) -> SCNView {
     let view = SCNView()
     view.scene = scene
     view.allowsCameraControl = true
-    view.autoenablesDefaultLighting = true
     view.antialiasingMode = .multisampling4X
     view.backgroundColor = .clear
 
-    view.pointOfView = previewCamera(for: scene)
+    let camera = previewCamera(for: scene)
+    lightLikePyVista(scene, camera: camera)
+    view.pointOfView = camera
     return view
 }
 

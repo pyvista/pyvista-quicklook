@@ -32,8 +32,9 @@ func render(_ input: URL, to output: URL, size: CGFloat) throws {
 
     let renderer = SCNRenderer(device: device, options: nil)
     renderer.scene = scene
-    renderer.pointOfView = previewCamera(for: scene)
-    renderer.autoenablesDefaultLighting = true
+    let camera = previewCamera(for: scene)
+    lightLikePyVista(scene, camera: camera)
+    renderer.pointOfView = camera
 
     let image = renderer.snapshot(
         atTime: 0,
