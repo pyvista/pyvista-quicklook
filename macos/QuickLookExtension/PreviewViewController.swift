@@ -425,6 +425,9 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         userInfo: [NSLocalizedDescriptionKey: ""]
     )
 
+    /// Whether a picture the file carries is shown in place of its 3D view; false in the app.
+    var prefersPicture = true
+
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
     }
@@ -499,7 +502,8 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         let completion = DispatchQueue.main.sync { Completion(handler) }
         let name = url.lastPathComponent
         // A current picture the file carries of itself is the preview, without the service.
-        if !force, picture, let png = EmbeddedThumbnail.read(url, allowStale: false) {
+        let prefersPicture = DispatchQueue.main.sync { self.prefersPicture }
+        if !force, picture, prefersPicture, let png = EmbeddedThumbnail.read(url, allowStale: false) {
             let interactive = (Helper.configuration()?["interactive"] as? Bool) ?? true
             DispatchQueue.main.async {
                 guard let view = pictureView(png) else {
@@ -509,9 +513,21 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 }
                 // The 3D view is loaded only when asked for, and only when previews are interactive.
                 let button = ActionButton(title: "Interactive View", onPress: self.loadScene(url, png))
-                self.show(interactive ? overlaid(view, corner: button) : view)
+                let picture = interactive ? overlaid(view, corner: button) : view
+                self.show(picture)
                 completion.finish(nil)
                 pvqlLog("showing the picture \(name) carries as its preview")
+                DispatchQueue.global(qos: .userInitiated).async {
+                    guard let info = Helper.requestDescription(url) else {
+                        return
+                    }
+                    DispatchQueue.main.async {
+                        // Unless the 3D view was asked for meanwhile, the picture gains its details.
+                        if picture.window != nil {
+                            self.show(withInfo(picture, MeshInfo(info)))
+                        }
+                    }
+                }
             }
             return
         }
@@ -541,6 +557,8 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 outcome = .scene(try SCNScene(url: sceneURL, options: nil), info)
             case let .image(png):
                 outcome = .image(png, info)
+            case nil:
+                throw Helper.Failure(message: "The render service sent no preview.")
             }
         } catch {
             let failure = error as? Helper.Failure

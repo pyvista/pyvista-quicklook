@@ -75,7 +75,8 @@ enum Helper {
 
     /// A preview and the service's description of the dataset, when it sent one.
     struct Reply {
-        let payload: Payload
+        /// Nil when only the description was asked for.
+        let payload: Payload?
         let info: [String: Any]?
     }
 
@@ -268,6 +269,11 @@ enum Helper {
         }
     }
 
+    /// Returns the service's description of a file without converting it, or nil.
+    static func requestDescription(_ url: URL) -> [String: Any]? {
+        (try? exchange(url, force: false, copy: nil, early: nil, describe: true))?.info
+    }
+
     /// Copies a file where the service can read it, unless it is a folder or above the limit.
     static func stage(_ url: URL, in stagingPath: String, force: Bool) -> String? {
         let manager = FileManager.default
@@ -295,7 +301,8 @@ enum Helper {
         _ url: URL,
         force: Bool,
         copy: String?,
-        early: (([String: Any]) -> Void)?
+        early: (([String: Any]) -> Void)?,
+        describe: Bool = false
     ) throws -> Reply {
         let directory = exchangeDirectory() as NSString
         let token = UUID().uuidString
@@ -311,6 +318,9 @@ enum Helper {
         }
         if let copy {
             body["copy"] = copy
+        }
+        if describe {
+            body["describe"] = true
         }
         if let attributes = try? manager.attributesOfItem(atPath: url.path) {
             body["size"] = (attributes[.size] as? NSNumber)?.intValue ?? 0
@@ -349,6 +359,9 @@ enum Helper {
             }
             if json["ok"] as? Bool == true {
                 let info = json["info"] as? [String: Any]
+                if describe {
+                    return Reply(payload: nil, info: info)
+                }
                 if let scene = json["scene"] as? String {
                     pvqlLog("received a scene at \(scene)")
                     return Reply(payload: .scene(URL(fileURLWithPath: scene)), info: info)

@@ -342,6 +342,17 @@ def handle(request: Path) -> None:
         respond(request, source, payload, asked)
 
 
+def description_only(
+    source: str, config: dict[str, Any], identity: tuple[str, int, int] | None
+) -> dict[str, Any] | None:
+    """Return a file's cached description, or what its header says, converting nothing."""
+    if not folder_is_reachable(source):
+        return None
+    return convert_mod.describe(source, config, identity, read=False) or convert_mod.header(
+        source, config
+    )
+
+
 def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -> None:
     """Answer a request for ``source``, given what it asked and when."""
     reply = request.with_suffix(REPLY_SUFFIX)
@@ -350,6 +361,9 @@ def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -
         identity = (source, int(payload['mtime']), int(payload['size']))
 
     config = config_mod.load()
+    if payload.get('describe') is True:
+        write_json(reply, {'ok': True, 'info': description_only(source, config, identity)})
+        return
     ready = cached_preview(identity, config)
     if payload.get('force') is True or ready is not None:
         # Asked for whatever its size, or previewed already, so no step of it applies the limit.

@@ -116,6 +116,37 @@ def test_handle_delivers_a_still_image(tmp_path, monkeypatch):
     assert reply['info'] == {'type': 'X'}
 
 
+@pytest.mark.parametrize(
+    ('cached', 'reachable', 'expected'),
+    [
+        ({'type': 'cached'}, True, {'type': 'cached'}),
+        (None, True, {'type': 'header'}),
+        ({'type': 'cached'}, False, None),
+    ],
+)
+def test_a_description_alone_converts_nothing(tmp_path, monkeypatch, cached, reachable, expected):
+    """A request for the description alone is answered from the cache or the header."""
+    reads = []
+
+    def describe(target, config, identity=None, *, read=True, timeout=None):
+        reads.append(read)
+        return cached
+
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: reachable)
+    monkeypatch.setattr(daemon, 'produce', lambda *args: pytest.fail('converted'))
+    monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': 'header'})
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(
+        json.dumps({'path': '/data/big.pv', 'describe': True, 'mtime': 1, 'size': 2})
+    )
+    daemon.handle(request)
+    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert reply == {'ok': True, 'info': expected}
+    assert all(read is False for read in reads)
+
+
 def test_a_still_image_is_sent_before_its_description(tmp_path, monkeypatch):
     """An image whose description is not cached is sent at once and described afterwards."""
     png = tmp_path / 'cached.png'
