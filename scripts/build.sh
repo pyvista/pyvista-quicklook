@@ -14,9 +14,6 @@ THUMB_NAME="PyVistaQuickLookThumbnail"
 THUMB_ID="$APP_ID.Thumbnail"
 HOLDER_BUNDLE_NAME="$BUNDLE_NAME"
 HOLDER_NAME="PyVistaQuickLookExtensions"
-# The agent 0.9.0 registered from inside the nested app, as daemon.BUNDLED_LABEL; carried
-# only so that an upgrade can unregister it.
-SERVICE_LABEL="$APP_ID.Service"
 HOLDER_ID="$APP_ID.Extensions"
 # The oldest macOS CI builds and tests on, as plist.MIN_MACOS.
 DEPLOYMENT_TARGET="15.0"
@@ -83,7 +80,7 @@ compile() {
 echo "==> cleaning $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$HOLDER/Contents/MacOS" \
-  "$HOLDER/Contents/Resources" "$HOLDER/Contents/Library/LaunchAgents" \
+  "$HOLDER/Contents/Resources" \
   "$APPEX/Contents/MacOS" "$THUMBEX/Contents/MacOS"
 cp "$ROOT/icon/AppIcon.icns" "$APP/Contents/Resources/"
 cp "$ROOT/icon/AppIcon.icns" "$HOLDER/Contents/Resources/"
@@ -94,7 +91,6 @@ echo "==> generating Info.plist files (helper: $HELPER)"
   --extension "$APPEX/Contents/Info.plist" \
   --thumbnail "$THUMBEX/Contents/Info.plist" \
   --holder "$HOLDER/Contents/Info.plist" \
-  --agent "$HOLDER/Contents/Library/LaunchAgents/$SERVICE_LABEL.plist" \
   --helper "$BAKED_HELPER" >/dev/null
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 printf 'APPL????' > "$HOLDER/Contents/PkgInfo"
@@ -132,8 +128,7 @@ compile "$APPEX/Contents/MacOS/$EXT_NAME" -O -parse-as-library \
   -Xlinker -e -Xlinker _NSExtensionMain
 
 echo "==> compiling $HOLDER_NAME"
-compile "$HOLDER/Contents/MacOS/$HOLDER_NAME" -O "$ROOT/macos/Holder/main.swift" \
-  -framework ServiceManagement
+compile "$HOLDER/Contents/MacOS/$HOLDER_NAME" -O "$ROOT/macos/Holder/main.swift"
 
 echo "==> compiling $THUMB_NAME"
 compile "$THUMBEX/Contents/MacOS/$THUMB_NAME" -O -parse-as-library \

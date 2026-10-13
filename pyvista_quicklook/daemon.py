@@ -25,7 +25,6 @@ from . import environment
 from . import preload as preload_mod
 from . import render as render_mod
 from .environment import RenderError
-from .plist import APP_BUNDLE_ID
 from .plist import LEGACY_EXT_BUNDLE_ID
 
 if TYPE_CHECKING:
@@ -34,9 +33,6 @@ if TYPE_CHECKING:
 LABEL = 'org.pyvista.pvqld'
 # The name the helper is also installed under, which Login Items shows for the service.
 SERVICE_PROGRAM = 'pyvista-quicklook-daemon'
-# The agent 0.9.0 registered from inside the app, kept only so that an upgrade can
-# unregister it.
-BUNDLED_LABEL = f'{APP_BUNDLE_ID}.Service'
 LEGACY_LABEL = 'io.github.user27182.pvqld'
 LOG_PATH = Path.home() / 'Library' / 'Logs' / 'pvqld.log'
 REQUEST_SUFFIX = '.pvqlreq'
@@ -731,8 +727,3 @@ def agent_plist(helper: str) -> dict[str, Any]:
         'StandardOutPath': str(LOG_PATH),
         'StandardErrorPath': str(LOG_PATH),
     }
-
-
-def bundled_agent_plist() -> dict[str, Any]:
-    """Return the 0.9.0 agent the holder still carries, only so that it can be unregistered."""
-    return {'Label': BUNDLED_LABEL, 'BundleProgram': 'Contents/MacOS/pvqld'}

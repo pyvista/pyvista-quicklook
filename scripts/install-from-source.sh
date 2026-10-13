@@ -216,10 +216,8 @@ echo "==> registering with Launch Services and Quick Look"
 # Quick Look's own service caches which extension answers; it restarts on the next preview.
 /usr/bin/killall QuickLookUIService 2>/dev/null || true
 
-# After the app is in place, so that the agent a 0.9.0 install registered from inside it
-# is unregistered.
 echo "==> installing the render service"
-"$HELPER" service --install --app "$APP" --helper "$HELPER"
+"$HELPER" service --install --helper "$HELPER"
 
 # A Finder started before the old extension was retired still asks for it by its old identifier.
 if [[ "$("$HELPER" finder 2>/dev/null)" == stale ]]; then

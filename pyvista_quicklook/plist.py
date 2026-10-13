@@ -168,11 +168,6 @@ def plugins_folder(app: Path, holder: str = HOLDER_BUNDLE) -> Path:
     return app / 'Contents' / 'Library' / holder / 'Contents' / 'PlugIns'
 
 
-def service_registrar(app: Path) -> Path:
-    """Return the program in an installed app that unregisters the agent 0.9.0 registered."""
-    return app / 'Contents' / 'Library' / HOLDER_BUNDLE / 'Contents' / 'MacOS' / HOLDER_EXECUTABLE
-
-
 def thumbnail_plist(extensions: list[str]) -> dict[str, Any]:
     """Return the Finder thumbnail extension's Info.plist contents."""
     pictured = [uti_for(e) for e in extensions if e in THUMBNAIL_EXTENSIONS]

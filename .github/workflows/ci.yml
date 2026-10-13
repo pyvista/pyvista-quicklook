@@ -67,8 +67,6 @@ jobs:
         appex="$holder/Contents/PlugIns/PyVistaQuickLookExtension.appex"
         test -x "$app/Contents/MacOS/PyVistaQuickLook"
         test -x "$appex/Contents/MacOS/PyVistaQuickLookExtension"
-        # The agent 0.9.0 registered, kept so that upgrades can unregister it.
-        plutil -lint "$holder/Contents/Library/LaunchAgents/org.pyvista.PyVistaQuickLook.Service.plist"
         codesign --verify --deep --strict "$app"
         # A preview extension is only registered by macOS when it is sandboxed.
         codesign -d --entitlements - "$appex" 2>&1 | grep -q app-sandbox

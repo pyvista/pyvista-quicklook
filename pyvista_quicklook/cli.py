@@ -102,27 +102,6 @@ def retire_legacy_service() -> None:
     shutil.rmtree(daemon_mod.legacy_drop_dir(), ignore_errors=True)
 
 
-def service_app(args: argparse.Namespace) -> Path | None:
-    """Return the app whose service to manage: the one named, else the first installed."""
-    return Path(args.app) if args.app else next(iter(installed_apps()), None)
-
-
-def registrar(app: Path | None) -> Path | None:
-    """Return the program in an app that unregisters the agent 0.9.0 registered, if any."""
-    if app is None:
-        return None
-    program = plist_mod.service_registrar(app)
-    return program if program.is_file() else None
-
-
-def retire_bundled_service(app: Path | None) -> None:
-    """Unregister the agent 0.9.0 registered from inside the app, if the app can."""
-    program = registrar(app)
-    if program:
-        subprocess.run([str(program), 'unregister'], capture_output=True, check=False)
-    unload_service(daemon_mod.BUNDLED_LABEL)
-
-
 def service_loaded() -> bool:
     """Return whether launchd has the render service loaded in this user's session."""
     return _succeeds(['/bin/launchctl', 'print', service_target()])
@@ -144,7 +123,6 @@ def cmd_service(args: argparse.Namespace) -> int:
     if args.uninstall:
         unload_service()
         path.unlink(missing_ok=True)
-        retire_bundled_service(service_app(args))
         retire_legacy_service()
         print(f'removed {label}')
         return 0
@@ -157,7 +135,6 @@ def cmd_service(args: argparse.Namespace) -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open('wb') as handle:
             plistlib.dump(daemon_mod.agent_plist(program), handle, sort_keys=False)
-        retire_bundled_service(service_app(args))
         retire_legacy_service()
         unload_service()
         # launchd reports an I/O error when it is still tearing the old job down.
@@ -265,9 +242,6 @@ def cmd_plist(args: argparse.Namespace) -> int:
     if args.holder:
         plist_mod.write(plist_mod.holder_plist(helper), args.holder)
         print(args.holder)
-    if args.agent:
-        plist_mod.write(daemon_mod.bundled_agent_plist(), args.agent)
-        print(args.agent)
     return 0
 
 
@@ -544,7 +518,6 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     for executable in (plist_mod.EXT_EXECUTABLE, plist_mod.THUMB_EXECUTABLE):
         subprocess.run(['/usr/bin/pkill', '-x', executable], capture_output=True, check=False)
     for app in installed_apps():
-        retire_bundled_service(app)
         # Where this layout keeps the extensions, where development builds of 0.9 kept
         # them, and where 0.8 and earlier did.
         legacy_folder = plist_mod.plugins_folder(app, plist_mod.LEGACY_HOLDER_BUNDLE)
@@ -598,7 +571,6 @@ def build_parser() -> argparse.ArgumentParser:
     service = sub.add_parser('service', help='install or remove the render service')
     service.add_argument('--install', action='store_true')
     service.add_argument('--uninstall', action='store_true')
-    service.add_argument('--app', help='the installed app; the first one found otherwise')
     service.add_argument('--helper', help='absolute path to the pvql executable')
     service.set_defaults(func=cmd_service)
 
@@ -618,7 +590,6 @@ def build_parser() -> argparse.ArgumentParser:
     plist.add_argument('--extension')
     plist.add_argument('--thumbnail')
     plist.add_argument('--holder')
-    plist.add_argument('--agent', help='where the holder carries the agent 0.9.0 registered')
     plist.add_argument('--helper', help='absolute path to the pvql executable')
     plist.set_defaults(func=cmd_plist)
 

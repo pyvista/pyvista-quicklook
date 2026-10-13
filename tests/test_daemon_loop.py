@@ -39,9 +39,6 @@ def test_agent_runs_the_helper_and_keeps_it_running():
     assert agent['KeepAlive'] is True
     assert agent['Label'] == daemon.LABEL
     assert agent['StandardOutPath'].endswith('pvqld.log')
-    # The 0.9.0 agent is carried under its own label, only for unregistering.
-    assert daemon.bundled_agent_plist()['Label'] == daemon.BUNDLED_LABEL
-    assert daemon.BUNDLED_LABEL != daemon.LABEL
 
 
 def test_a_missing_file_says_nothing_about_its_folder(tmp_path, monkeypatch):

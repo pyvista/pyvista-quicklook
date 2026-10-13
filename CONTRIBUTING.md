@@ -44,11 +44,9 @@ Launch Services record keeps Quick Look from starting the extension at all.
 
 The render service is a launch agent in `~/Library/LaunchAgents` that runs `pvql
 daemon` as `pyvista-quicklook-daemon`, which is how Login Items lists it, apart from
-the app. Version 0.9.0 instead registered it from inside the nested app with
-`SMAppService`, which made one Login Items entry but had launchd pin the service to
-that build's binary, so the next build would not start. The nested app still carries
-that agent's property list, and its binary unregisters it, so that upgrades from 0.9.0
-retire it.
+the app. It is not registered from inside the app with `SMAppService`, which would make
+one Login Items entry: without a Developer ID, launchd pins such an agent to the build
+that registered it, and the next build's service does not start.
 
 ## Releasing
 
