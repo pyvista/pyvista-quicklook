@@ -118,7 +118,8 @@ enum Helper {
     static let serviceMissingMessage = """
     The PyVista Quick Look render service is not answering.
 
-    Start it with:
+    Check that PyVista Quick Look is switched on in System Settings, under
+    General, Login Items & Extensions. Otherwise start it with:
 
         pvql service --install
 
@@ -220,7 +221,7 @@ enum Helper {
     /// macOS re-registers an app without a Developer ID signature on every launch, and with it
     /// the extensions it embeds.
     static func plugInsFolder() -> URL {
-        Bundle.main.bundleURL.appendingPathComponent("Contents/Library/PyVista Quick Look Extensions.app/Contents/PlugIns")
+        Bundle.main.bundleURL.appendingPathComponent("Contents/Library/PyVista Quick Look.app/Contents/PlugIns")
     }
 
     /// The folder the service watches: the container of the preview extension the app ships.

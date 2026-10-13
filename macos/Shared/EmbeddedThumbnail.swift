@@ -5,13 +5,19 @@ import zlib
 enum EmbeddedThumbnail {
     /// The bytes every `.pv` file with a thumbnail starts with: a raw zstd frame holding the
     /// `__thumbnail` array header, then the magic of the skippable frame that holds the picture.
-    static let prefix = Data(
-        [0x28, 0xB5, 0x2F, 0xFD, 0xA0, 0x2B, 0x00, 0x00, 0x00, 0x59, 0x01, 0x00, 0x0B, 0x00, 0x00, 0x00]
-            + Array("__thumbnail".utf8)
-            + [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-            + Array("|u1".utf8) + Array(repeating: 0x20, count: 13)
-            + [0x50, 0x2A, 0x4D, 0x18]
-    )
+    static let prefix: Data = {
+        let frame: [UInt8] = [0x28, 0xB5, 0x2F, 0xFD, 0xA0, 0x2B, 0x00, 0x00, 0x00, 0x59, 0x01, 0x00, 0x0B, 0x00, 0x00, 0x00]
+        let shape: [UInt8] = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        let padding = [UInt8](repeating: 0x20, count: 13)
+        let magic: [UInt8] = [0x50, 0x2A, 0x4D, 0x18]
+        var bytes = frame
+        bytes += Array("__thumbnail".utf8)
+        bytes += shape
+        bytes += Array("|u1".utf8)
+        bytes += padding
+        bytes += magic
+        return Data(bytes)
+    }()
     /// Where the thumbnail record, and its descriptor, start.
     static let recordOffset = 63
     /// The length of the version 1 descriptor.

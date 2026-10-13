@@ -30,10 +30,16 @@ THUMB_EXECUTABLE = 'PyVistaQuickLookThumbnail'
 THUMB_PRINCIPAL_CLASS = 'PVQLThumbnailProvider'
 # The extensions live in an app of their own, nested in the main one and never launched: macOS
 # re-registers an app without a Developer ID signature on every launch, and with it the
-# extensions it embeds, stopping the one the Finder is showing a preview through.
-HOLDER_BUNDLE = f'{APP_NAME} Extensions.app'
+# extensions it embeds, stopping the one the Finder is showing a preview through. It also
+# carries the render service, and Login Items lists both under its file name.
+HOLDER_BUNDLE = APP_BUNDLE
+LEGACY_HOLDER_BUNDLE = f'{APP_NAME} Extensions.app'
 HOLDER_BUNDLE_ID = f'{APP_BUNDLE_ID}.Extensions'
 HOLDER_EXECUTABLE = 'PyVistaQuickLookExtensions'
+# What the holder's service agent runs: it finds pvql and starts the render service.
+SERVICE_EXECUTABLE = 'pvqld'
+# AppIcon.icns, which the build copies from icon/ into both apps' Resources.
+ICON_FILE = 'AppIcon'
 # Only these formats can carry a picture of themselves.
 THUMBNAIL_EXTENSIONS = ('.pv',)
 
@@ -45,7 +51,8 @@ def bundle_version(version: str = __version__) -> str:
 
 
 VERSION = bundle_version()
-MIN_MACOS = '12.0'
+# The oldest macOS CI builds and tests on.
+MIN_MACOS = '15.0'
 
 
 def exported_types(extensions: list[str]) -> list[dict[str, Any]]:
@@ -84,6 +91,7 @@ def app_plist(extensions: list[str], helper: str | None = None) -> dict[str, Any
         'CFBundleDisplayName': APP_NAME,
         'CFBundleIdentifier': APP_BUNDLE_ID,
         'CFBundleExecutable': APP_EXECUTABLE,
+        'CFBundleIconFile': ICON_FILE,
         'CFBundlePackageType': 'APPL',
         'CFBundleInfoDictionaryVersion': '6.0',
         'CFBundleDevelopmentRegion': 'en',
@@ -135,13 +143,14 @@ def extension_plist(extensions: list[str], helper: str | None = None) -> dict[st
     return plist
 
 
-def holder_plist() -> dict[str, Any]:
-    """Return the Info.plist contents of the app that holds the extensions."""
-    return {
-        'CFBundleName': f'{APP_NAME} Extensions',
-        'CFBundleDisplayName': f'{APP_NAME} Extensions',
+def holder_plist(helper: str | None = None) -> dict[str, Any]:
+    """Return the Info.plist contents of the app that holds the extensions and the service."""
+    plist: dict[str, Any] = {
+        'CFBundleName': APP_NAME,
+        'CFBundleDisplayName': APP_NAME,
         'CFBundleIdentifier': HOLDER_BUNDLE_ID,
         'CFBundleExecutable': HOLDER_EXECUTABLE,
+        'CFBundleIconFile': ICON_FILE,
         'CFBundlePackageType': 'APPL',
         'CFBundleInfoDictionaryVersion': '6.0',
         'CFBundleDevelopmentRegion': 'en',
@@ -152,11 +161,19 @@ def holder_plist() -> dict[str, Any]:
         'LSMinimumSystemVersion': MIN_MACOS,
         'LSBackgroundOnly': True,
     }
+    if helper:
+        plist['PVQLHelperPath'] = helper
+    return plist
 
 
-def plugins_folder(app: Path) -> Path:
+def plugins_folder(app: Path, holder: str = HOLDER_BUNDLE) -> Path:
     """Return the folder of an installed app that holds its Quick Look extensions."""
-    return app / 'Contents' / 'Library' / HOLDER_BUNDLE / 'Contents' / 'PlugIns'
+    return app / 'Contents' / 'Library' / holder / 'Contents' / 'PlugIns'
+
+
+def service_registrar(app: Path) -> Path:
+    """Return the program in an installed app that registers the render service with macOS."""
+    return app / 'Contents' / 'Library' / HOLDER_BUNDLE / 'Contents' / 'MacOS' / HOLDER_EXECUTABLE
 
 
 def thumbnail_plist(extensions: list[str]) -> dict[str, Any]:

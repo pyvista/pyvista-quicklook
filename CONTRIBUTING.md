@@ -34,12 +34,18 @@ the executables, and the downloadable zip.
 
 ## Layout of the app
 
-The Quick Look extensions live in `PyVista Quick Look Extensions.app`, nested inside the
+The Quick Look extensions live in a second `PyVista Quick Look.app`, nested inside the
 main app and never launched. macOS re-registers an app without a Developer ID signature
 on every launch, and with it the extensions it embeds, which stops the extension that is
 showing a preview; held by an app that is never launched, they stay registered. The
 installer unregisters every other copy of the app before registering, since a stale
 Launch Services record keeps Quick Look from starting the extension at all.
+
+The nested app also carries the render service, as a launch agent in
+`Contents/Library/LaunchAgents` that runs `Contents/MacOS/pvqld`, which starts `pvql
+daemon`. The installer runs the nested app's binary directly, never through Launch
+Services, to register the agent with `SMAppService`; Login Items then lists the
+extensions and the service as one entry, under the nested bundle's file name.
 
 ## Releasing
 

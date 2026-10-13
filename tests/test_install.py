@@ -222,10 +222,10 @@ def test_upgrades_from_before_0_7_are_retired_by_python_3_17():
         '  run_strict, ask_to_restart_finder, check_finder, and this test\n'
         '- tests/test_cli.py: the finder tests\n'
         '- README.md: the Finder troubleshooting entry\n'
-        '- tests/test_pyvista_quicklook.py: test_uninstall_removes_a_bundle_under_the_old_name,\n'
-        '  test_uninstall_removes_the_service_under_the_old_label, and the old service in\n'
-        '  test_service_install_runs_the_daemon_under_the_package_name\n'
-        '- tests/test_daemon.py: the legacy assertions in\n'
+        '- tests/test_cli.py: test_uninstall_removes_a_bundle_under_the_old_name,\n'
+        '  test_uninstall_removes_the_service_under_the_old_label, and\n'
+        '  test_service_install_retires_the_agent_of_the_old_label\n'
+        '- tests/test_daemon_loop.py: the legacy assertions in\n'
         '  test_exchange_locations_are_in_the_extension_containers\n'
         '- tests/conftest.py: the legacy_agent_path and legacy_drop_dir stand-ins'
     )
@@ -255,6 +255,8 @@ def test_the_installer_picks_app_records_out_of_the_launch_services_dump():
         '\tpath:                       /Users/x/Applications/PyVista Quick Look.app (0x2b28)\n'
         '\tpath:                       /Users/x/Applications/PyVista Quick Look.app'
         '/Contents/Library/PyVista Quick Look Extensions.app (0x2b30)\n'
+        '\tpath:                       /Users/x/Applications/PyVista Quick Look.app'
+        '/Contents/Library/PyVista Quick Look.app (0x2b34)\n'
         '\tpath:                       /Users/x/src/build/PyVista Quick Look.app (0x2c00)\n'
         '\tpath:                       /Users/x/PyVista Quick Look notes/Other.app (0x2d00)\n'
         '\tpath:                       /Users/x/Applications/PyVista Quick Look.app'
@@ -264,8 +266,32 @@ def test_the_installer_picks_app_records_out_of_the_launch_services_dump():
     assert extracted('"$LSREGISTER" -dump', listing) == [
         app,
         f'{app}/Contents/Library/PyVista Quick Look Extensions.app',
+        f'{app}/Contents/Library/PyVista Quick Look.app',
         '/Users/x/src/build/PyVista Quick Look.app',
     ]
+
+
+@pytest.mark.parametrize(
+    ('record', 'kept'),
+    [
+        ('app', True),
+        ('app/Contents/Library/PyVista Quick Look.app', True),
+        ('app/Contents/Library/PyVista Quick Look Extensions.app', False),
+        ('build/PyVista Quick Look.app', False),
+    ],
+)
+def test_the_installer_keeps_only_records_of_this_copy_as_installed(tmp_path, record, kept):
+    """The installed bundles stay registered; a nested one an earlier layout left does not."""
+    app = tmp_path / 'app'
+    (app / 'Contents' / 'Library' / 'PyVista Quick Look.app').mkdir(parents=True)
+    (tmp_path / 'build' / 'PyVista Quick Look.app').mkdir(parents=True)
+    function = script_lines('keeps_record() {', '\n}\n')
+    path = shlex.quote(str(tmp_path / record))
+    decided = run_strict(
+        f'APP={shlex.quote(str(app))}\n{function}'
+        f'if keeps_record {path}; then echo kept; else echo dropped; fi\n'
+    )
+    assert decided.stdout.splitlines()[0] == ('kept' if kept else 'dropped')
 
 
 def test_the_installer_picks_extension_records_out_of_the_pluginkit_listing():
@@ -292,11 +318,61 @@ def test_every_part_names_the_extensions_app_as_plist_does():
     """The Swift helper and both scripts find the extensions where plist.py puts them."""
     from pyvista_quicklook import plist
 
-    for source in (
-        ROOT / 'macos' / 'Shared' / 'Helper.swift',
-        ROOT / 'scripts' / 'build.sh',
-        INSTALLER,
-    ):
-        assert plist.HOLDER_BUNDLE in source.read_text() or (
-            '$BUNDLE_NAME Extensions' in source.read_text()
-        ), source.name
+    nested = f'Contents/Library/{plist.HOLDER_BUNDLE}/Contents/PlugIns'
+    assert nested in (ROOT / 'macos' / 'Shared' / 'Helper.swift').read_text()
+    for source in (ROOT / 'scripts' / 'build.sh', INSTALLER):
+        assert 'HOLDER_BUNDLE_NAME="$BUNDLE_NAME"\n' in source.read_text(), source.name
+
+
+def test_the_build_targets_the_oldest_macos_the_bundles_declare():
+    """build.sh compiles for the macOS the Info.plist files name as the minimum."""
+    from pyvista_quicklook import plist
+
+    assert f'DEPLOYMENT_TARGET="{plist.MIN_MACOS}"' in (ROOT / 'scripts' / 'build.sh').read_text()
+
+
+def test_every_part_names_the_service_agent_as_daemon_does():
+    """The registrar, the build and CI name the agent's plist by daemon.LABEL."""
+    from pyvista_quicklook import cli
+    from pyvista_quicklook import daemon
+    from pyvista_quicklook import plist
+
+    registrar = (ROOT / 'macos' / 'Holder' / 'main.swift').read_text()
+    build = (ROOT / 'scripts' / 'build.sh').read_text()
+    assert f'{plist.APP_BUNDLE_ID}.Service' == daemon.LABEL
+    assert f'"{daemon.LABEL}.plist"' in registrar
+    assert f'APP_ID="{plist.APP_BUNDLE_ID}"' in build
+    assert 'SERVICE_LABEL="$APP_ID.Service"' in build
+    assert f'{daemon.LABEL}.plist' in (ROOT / '.github' / 'workflows' / 'ci.yml').read_text()
+    assert f'return "{cli.SWITCHED_OFF}"' in registrar
+
+
+def test_both_installers_refuse_a_macos_older_than_the_bundles_declare():
+    """The installers stop on a macOS below plist.MIN_MACOS before changing anything."""
+    from pyvista_quicklook import plist
+
+    major = plist.MIN_MACOS.split('.')[0]
+    for source in (ROOT / 'install.sh', INSTALLER):
+        assert f'MIN_MACOS={major}\n' in source.read_text(), source.name
+
+
+@pytest.mark.parametrize(
+    ('version', 'stops'), [('14.7.2', True), ('15.0', False), ('27.1', False)]
+)
+def test_the_installers_stop_on_an_older_macos(tmp_path, version, stops):
+    """Each installer's version check stops below the minimum and lets the rest through."""
+    sw_vers = tmp_path / 'sw_vers'
+    sw_vers.write_text(f'#!/bin/sh\necho {version}\n')
+    sw_vers.chmod(0o755)
+    path = f'PATH={shlex.quote(str(tmp_path))}:"$PATH"\n'
+    one_line = (ROOT / 'install.sh').read_text()
+    start = one_line.index('MIN_MACOS=')
+    guard = one_line[start : one_line.index('\n', one_line.index('|| die', start)) + 1]
+    checks = [
+        f'die() {{ echo "$*" >&2; exit 1; }}\n{guard}',
+        script_lines('MIN_MACOS=', '\nfi\n') + '\n',
+    ]
+    for check in checks:
+        result = run_strict(path + check)
+        assert ('reached the end' not in result.stdout) == stops, check
+        assert ('needs macOS 15' in result.stderr) == stops

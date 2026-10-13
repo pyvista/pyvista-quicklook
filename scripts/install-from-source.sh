@@ -10,7 +10,7 @@ EXT_NAME="PyVistaQuickLookExtension"
 EXT_ID="org.pyvista.PyVistaQuickLook.QuickLook"
 THUMB_NAME="PyVistaQuickLookThumbnail"
 THUMB_ID="org.pyvista.PyVistaQuickLook.Thumbnail"
-HOLDER_BUNDLE_NAME="$BUNDLE_NAME Extensions"
+HOLDER_BUNDLE_NAME="$BUNDLE_NAME"
 SUPPORT="$HOME/Library/Application Support/PyVistaQuickLook"
 VENV="$SUPPORT/venv"
 DEST="$HOME/Applications"
@@ -37,6 +37,14 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
+
+# The oldest macOS it is built and tested on, as plist.MIN_MACOS; checked before anything changes.
+MIN_MACOS=15
+MACOS=$(sw_vers -productVersion)
+if (( ${MACOS%%.*} < MIN_MACOS )); then
+  echo "PyVista Quick Look needs macOS $MIN_MACOS or newer; this Mac runs $MACOS." >&2
+  exit 1
+fi
 
 # Only building needs a compiler; a prebuilt app is copied as it is.
 if [[ -z "$PREBUILT" ]] && ! xcrun --find swiftc >/dev/null 2>&1; then
@@ -162,12 +170,16 @@ LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 # macOS gives an app without a Developer ID on every launch leaves them alone.
 PLUGINS="$APP/Contents/Library/$HOLDER_BUNDLE_NAME.app/Contents/PlugIns"
 echo "==> retiring registrations of other copies"
+# Whether a Launch Services record is of this copy as installed, so it stays registered.
+keeps_record() {
+  [[ ( "$1" == "$APP" || "$1" == "$APP/"* ) && -d "$1" ]]
+}
 # A record of a copy that was removed or lives elsewhere, the build folder's included, keeps
 # Quick Look from starting the extension at all.
 "$LSREGISTER" -dump 2>/dev/null \
   | sed -n 's/^[[:space:]]*path:[[:space:]]*\(.*\/PyVista Quick Look\( Extensions\)\{0,1\}\.app\) (0x.*/\1/p' | sort -u \
   | while IFS= read -r other; do
-      [[ "$other" == "$APP" || "$other" == "$APP/"* ]] && continue
+      keeps_record "$other" && continue
       "$LSREGISTER" -u "$other" >/dev/null 2>&1 || true
     done || true
 # Including the records of an earlier layout of this very copy, under Contents/PlugIns.
@@ -204,9 +216,9 @@ echo "==> registering with Launch Services and Quick Look"
 # Quick Look's own service caches which extension answers; it restarts on the next preview.
 /usr/bin/killall QuickLookUIService 2>/dev/null || true
 
-# After the app, so macOS lists the service under the app's name.
+# After the app is in place, since the nested app it holds registers the service.
 echo "==> installing the render service"
-"$HELPER" service --install --helper "$HELPER"
+"$HELPER" service --install --app "$APP"
 
 # A Finder started before the old extension was retired still asks for it by its old identifier.
 if [[ "$("$HELPER" finder 2>/dev/null)" == stale ]]; then

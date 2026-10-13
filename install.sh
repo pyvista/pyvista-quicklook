@@ -11,6 +11,10 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 [ "$(uname -s)" = 'Darwin' ] || die 'PyVista Quick Look only runs on macOS.'
+# The oldest macOS it is built and tested on, as plist.MIN_MACOS.
+MIN_MACOS=15
+MACOS=$(sw_vers -productVersion)
+[ "${MACOS%%.*}" -ge "$MIN_MACOS" ] || die "PyVista Quick Look needs macOS $MIN_MACOS or newer; this Mac runs $MACOS."
 
 # Run from the checkout this script lives in when there is one, otherwise fetch it.
 HERE=''

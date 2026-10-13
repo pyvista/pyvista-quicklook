@@ -27,11 +27,15 @@ from . import render as render_mod
 from .environment import RenderError
 from .plist import APP_BUNDLE_ID
 from .plist import LEGACY_EXT_BUNDLE_ID
+from .plist import SERVICE_EXECUTABLE
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-LABEL = 'org.pyvista.pvqld'
+# macOS keys background items by label, and a record left under UNBUNDLED_LABEL blocks
+# registration, so the bundled agent has a label of its own.
+LABEL = f'{APP_BUNDLE_ID}.Service'
+UNBUNDLED_LABEL = 'org.pyvista.pvqld'
 LEGACY_LABEL = 'io.github.user27182.pvqld'
 REQUEST_SUFFIX = '.pvqlreq'
 REPLY_SUFFIX = '.pvqlrep'
@@ -86,7 +90,8 @@ def reply_seconds(config: dict[str, Any]) -> float:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     """Write JSON to a path, renaming it into place so readers never see a partial file."""
-    scratch = cache.scratch_path(path)
+    # Not under the path's own suffix, which the service would take as a finished request.
+    scratch = cache.scratch_path(path, '.json')
     scratch.write_text(json.dumps(payload))
     scratch.replace(path)
 
@@ -702,9 +707,9 @@ def request_preview(source: str, timeout: float = 90, scene: bool | None = None)
     raise RenderError(message)
 
 
-def agent_path() -> Path:
-    """Return the path of the launch agent property list."""
-    return Path.home() / 'Library' / 'LaunchAgents' / f'{LABEL}.plist'
+def unbundled_agent_path() -> Path:
+    """Return where installs before the bundled agent wrote the launch agent."""
+    return Path.home() / 'Library' / 'LaunchAgents' / f'{UNBUNDLED_LABEL}.plist'
 
 
 def legacy_agent_path() -> Path:
@@ -712,18 +717,14 @@ def legacy_agent_path() -> Path:
     return Path.home() / 'Library' / 'LaunchAgents' / f'{LEGACY_LABEL}.plist'
 
 
-def agent_plist(helper: str) -> dict[str, Any]:
-    """Return the launch agent definition for the render service."""
-    logs = Path.home() / 'Library' / 'Logs'
+def bundled_agent_plist() -> dict[str, Any]:
+    """Return the agent the holder app carries, which macOS lists under the app."""
     return {
         'Label': LABEL,
-        'ProgramArguments': [helper, 'daemon'],
-        # Listed under the app's name in Login Items, rather than the program's.
-        'AssociatedBundleIdentifiers': [APP_BUNDLE_ID],
+        # Finds pvql and opens the log, neither of which a bundled plist can name.
+        'BundleProgram': f'Contents/MacOS/{SERVICE_EXECUTABLE}',
         'RunAtLoad': True,
         'KeepAlive': True,
         # Background would throttle the renderer; previews answer a key press.
         'ProcessType': 'Interactive',
-        'StandardOutPath': str(logs / 'pvqld.log'),
-        'StandardErrorPath': str(logs / 'pvqld.log'),
     }
