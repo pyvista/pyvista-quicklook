@@ -219,7 +219,7 @@ echo "==> registering with Launch Services and Quick Look"
 # After the app is in place, so that the agent a 0.9.0 install registered from inside it
 # is unregistered.
 echo "==> installing the render service"
-"$HELPER" service --install --app "$APP"
+"$HELPER" service --install --app "$APP" --helper "$HELPER"
 
 # A Finder started before the old extension was retired still asks for it by its old identifier.
 if [[ "$("$HELPER" finder 2>/dev/null)" == stale ]]; then

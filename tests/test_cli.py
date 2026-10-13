@@ -134,7 +134,8 @@ def test_service_install_reports_a_job_launchd_refuses(capsys, monkeypatch, home
 
 def test_service_reports_a_job_that_is_not_loaded(capsys, monkeypatch):
     """With no flags, the status of the job is printed, or that it is not loaded."""
-    monkeypatch.setattr(cli, '_run', lambda command: '')
+    monkeypatch.setattr(cli, '_run', lambda command: 'Bad request.')
+    monkeypatch.setattr(cli, '_succeeds', lambda command: False)
     assert cli.cmd_service(argparse.Namespace(install=False, uninstall=False, app=None)) == 0
     assert 'is not loaded' in capsys.readouterr().out
 
@@ -739,7 +740,7 @@ def test_service_install_retires_the_agent_of_the_old_label(commands, home):
     app, _ = installed_holder(home)
     (home / 'old-agent.plist').write_text('x')
     cli.daemon_mod.legacy_drop_dir().mkdir(parents=True)
-    args = argparse.Namespace(install=True, uninstall=False, app=str(app), helper=None)
+    args = argparse.Namespace(install=True, uninstall=False, app=str(app), helper='/opt/pvql')
     assert cli.cmd_service(args) == 0
     assert not (home / 'old-agent.plist').exists()
     assert not cli.daemon_mod.legacy_drop_dir().exists()

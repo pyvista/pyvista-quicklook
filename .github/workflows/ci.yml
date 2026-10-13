@@ -126,7 +126,8 @@ jobs:
     - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33   # release/v1
 
   release:
-      # Attaches the built app and install.sh to the tag's release, so installing needs no compiler.
+      # Attaches the built app to the tag's release, so installing needs no compiler, with the
+      # installer that release was tested with.
     needs: [app, build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest

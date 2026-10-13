@@ -34,10 +34,11 @@ if TYPE_CHECKING:
 LABEL = 'org.pyvista.pvqld'
 # The name the helper is also installed under, which Login Items shows for the service.
 SERVICE_PROGRAM = 'pyvista-quicklook-daemon'
-# The agent 0.9.0 registered from inside the app, which launchd pinned to that build's
-# program and would not start again after an upgrade.
+# The agent 0.9.0 registered from inside the app, kept only so that an upgrade can
+# unregister it.
 BUNDLED_LABEL = f'{APP_BUNDLE_ID}.Service'
 LEGACY_LABEL = 'io.github.user27182.pvqld'
+LOG_PATH = Path.home() / 'Library' / 'Logs' / 'pvqld.log'
 REQUEST_SUFFIX = '.pvqlreq'
 REPLY_SUFFIX = '.pvqlrep'
 # A request the service has picked up, so the next poll does not pick it up again.
@@ -720,7 +721,6 @@ def legacy_agent_path() -> Path:
 
 def agent_plist(helper: str) -> dict[str, Any]:
     """Return the launch agent definition for the render service."""
-    logs = Path.home() / 'Library' / 'Logs'
     return {
         'Label': LABEL,
         'ProgramArguments': [helper, 'daemon'],
@@ -728,8 +728,8 @@ def agent_plist(helper: str) -> dict[str, Any]:
         'KeepAlive': True,
         # Background would throttle the renderer; previews answer a key press.
         'ProcessType': 'Interactive',
-        'StandardOutPath': str(logs / 'pvqld.log'),
-        'StandardErrorPath': str(logs / 'pvqld.log'),
+        'StandardOutPath': str(LOG_PATH),
+        'StandardErrorPath': str(LOG_PATH),
     }
 
 

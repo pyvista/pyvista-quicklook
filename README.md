@@ -318,8 +318,8 @@ pvql service --install  # (re)install and start it
 pvql service --uninstall
 ```
 
-It appears as `pyvista-quicklook-daemon` under Login Items & Extensions in System Settings, next to the
-app's own entry, where it can be switched off; its output goes to
+It appears as `pyvista-quicklook-daemon` under Login Items & Extensions in System
+Settings, next to the app's own entry, where it can be switched off; its output goes to
 `~/Library/Logs/pvqld.log`.
 
 ### Files in the Desktop, Documents, and Downloads folders

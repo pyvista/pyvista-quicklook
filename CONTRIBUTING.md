@@ -43,11 +43,12 @@ installer unregisters every other copy of the app before registering, since a st
 Launch Services record keeps Quick Look from starting the extension at all.
 
 The render service is a launch agent in `~/Library/LaunchAgents` that runs `pvql
-daemon`, and Login Items lists it as `pyvista-quicklook-daemon`, apart from the app. Version 0.9.0 instead
-registered it from inside the nested app with `SMAppService`, which made one Login
-Items entry but had launchd pin the service to that build's binary, so the next build
-would not start. The nested app still carries that agent's property list, and its
-binary unregisters it, so that upgrades from 0.9.0 retire it.
+daemon` as `pyvista-quicklook-daemon`, which is how Login Items lists it, apart from
+the app. Version 0.9.0 instead registered it from inside the nested app with
+`SMAppService`, which made one Login Items entry but had launchd pin the service to
+that build's binary, so the next build would not start. The nested app still carries
+that agent's property list, and its binary unregisters it, so that upgrades from 0.9.0
+retire it.
 
 ## Releasing
 
@@ -58,5 +59,6 @@ to PyPI through trusted publishing from the `release` environment, while the `re
 job creates the tag's GitHub release if there is none and attaches the built app to it,
 which is what the installer downloads. The two jobs are independent, so check both.
 Between the tag and the end of that job the release has no app attached; the installer,
-fetched from `main` rather than from a release, passes such a release over for the
-newest one that has it.
+fetched from `main` rather than from a release, passes such a release over, and any
+pre-release, for the newest release that has it. The release also carries the
+`install.sh` it was tested with.

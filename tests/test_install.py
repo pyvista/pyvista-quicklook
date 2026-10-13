@@ -387,19 +387,27 @@ def test_the_installers_stop_on_an_older_macos(tmp_path, version, stops):
         assert ('needs macOS 15' in result.stderr) == stops
 
 
-@pytest.mark.parametrize(('api_down', 'picked'), [(False, 'v0.9.0'), (True, '')])
-def test_the_installer_picks_the_newest_release_with_the_app(tmp_path, api_down, picked):
-    """A release tagged before CI attached the app is passed over; without the API, none is."""
+@pytest.mark.parametrize(
+    ('failing', 'picked'),
+    [('v0.9.1', 'v0.9.0'), ('api', ''), ('all', '')],
+    ids=['newest-without-app', 'api-down', 'downloads-down'],
+)
+def test_the_installer_picks_the_newest_release_with_the_app(tmp_path, failing, picked):
+    """A release tagged before CI attached the app, or a pre-release, is passed over."""
+    releases = ''.join(
+        f'  {{\n    "tag_name": "{tag}",\n    "prerelease": {pre},\n  }},\n'
+        for tag, pre in [('v0.9.2', 'true'), ('v0.9.1', 'false'), ('v0.9.0', 'false')]
+    )
     curl = tmp_path / 'curl'
     curl.write_text(
         '#!/bin/sh\n'
         'for arg in "$@"; do url=$arg; done\n'
         'case "$url" in\n'
-        f'  *api.github.com*) [ -z "{"down" if api_down else ""}" ] || exit 22;'
-        ' printf \'[\\n  {\\n    "tag_name": "v0.9.1",\\n  },\\n'
-        '  {\\n    "tag_name": "v0.9.0",\\n  }\\n]\\n\' ;;\n'
-        '  */download/v0.9.1/*) printf 404 ;;\n'
-        '  *) printf 200 ;;\n'
+        '  *api.github.com*) [ "$FAILING" = api ] && exit 22;'
+        f" printf '%s' {shlex.quote(releases)} ;;\n"
+        '  */download/v0.9.2/*) printf 200 ;;\n'
+        '  */download/*) case "$FAILING" in all) printf 000; exit 6 ;; esac;'
+        ' case "$url" in */download/$FAILING/*) printf 404 ;; *) printf 200 ;; esac ;;\n'
         'esac\n'
     )
     curl.chmod(0o755)
@@ -408,6 +416,7 @@ def test_the_installer_picks_the_newest_release_with_the_app(tmp_path, api_down,
     functions = one_line[start : one_line.index('\n}\n', one_line.index('published_tag()')) + 3]
     script = (
         f'PATH={shlex.quote(str(tmp_path))}:"$PATH"\n'
+        f'export FAILING={failing}\n'
         'REPO=pyvista/pyvista-quicklook; ASSET=PyVistaQuickLook.zip\n'
         f'say() {{ printf \'%s\\n\' "$*"; }}\n{functions}'
         'printf "picked=%s\\n" "$(published_tag || true)"\n'

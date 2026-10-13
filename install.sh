@@ -15,10 +15,12 @@ has_app() {
   [ "$(curl -sIL -o /dev/null -w '%{http_code}' "https://github.com/$REPO/releases/download/$1/$ASSET")" = 200 ]
 }
 
-# The newest release with the app attached, so a release CI is still building is passed over.
+# The newest release, pre-releases aside, with the app attached, so a release CI is still
+# building is passed over. The API lists one key a line; anything else leaves no tags, and
+# the caller falls back.
 published_tag() {
   for tag in $(curl -sf "https://api.github.com/repos/$REPO/releases?per_page=10" \
-      | sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p'); do
+      | awk -F'"' '/^ *"tag_name":/ { tag = $4 } /^ *"prerelease": *false/ { print tag }'); do
     if has_app "$tag"; then
       say "$tag"
       return 0

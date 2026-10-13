@@ -31,7 +31,7 @@ from .formats import uti_for
 
 # Where the app may have been installed, and where the render service writes.
 APP_DIRS = (Path.home() / 'Applications', Path('/Applications'))
-SERVICE_LOG = Path.home() / 'Library' / 'Logs' / 'pvqld.log'
+SERVICE_LOG = daemon_mod.LOG_PATH
 LSREGISTER = (
     '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework'
     '/Support/lsregister'
@@ -180,7 +180,10 @@ def cmd_service(args: argparse.Namespace) -> int:
         print(f'installed {path}')
         return 0
 
-    print(_run(['/bin/launchctl', 'print', target]) or f'{label} is not loaded')
+    if service_loaded():
+        print(_run(['/bin/launchctl', 'print', target]))
+    else:
+        print(f'{label} is not loaded')
     return 0
 
 
