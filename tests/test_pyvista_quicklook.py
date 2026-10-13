@@ -817,7 +817,7 @@ def installation(home, commands, monkeypatch):
         (support / folder / 'file').write_text('x')
     (support / 'config.json').write_text('{}')
     app = home / 'Applications' / plist.APP_BUNDLE
-    (app / 'Contents' / 'PlugIns').mkdir(parents=True)
+    plist.plugins_folder(app).mkdir(parents=True)
     (home / 'cache').mkdir()
     (home / 'agent.plist').write_text('x')
     (home / 'container').mkdir()
@@ -844,7 +844,15 @@ def test_uninstall_removes_everything_but_the_config(installation, capsys):
         assert not (tmp_path / gone).exists(), gone
     assert (tmp_path / 'support' / 'config.json').exists()
     joined = [' '.join(str(part) for part in command) for command in commands]
-    assert any('pluginkit -r' in c for c in joined)
+    removed = [c for c in joined if 'pluginkit -r' in c]
+    assert any(
+        str(plist.plugins_folder(tmp_path / 'Applications' / plist.APP_BUNDLE)) in c
+        for c in removed
+    )
+    assert any(
+        'Contents/PlugIns/PyVistaQuickLookExtension.appex' in c and 'Extensions.app' not in c
+        for c in removed
+    )
     assert any('lsregister -u' in c for c in joined)
     assert any('launchctl bootout' in c for c in joined)
     assert any(c.endswith('uv tool uninstall pyvista-quicklook') for c in joined)
@@ -985,10 +993,18 @@ def test_plist_writes_every_file(tmp_path, monkeypatch):
     app = tmp_path / 'App.plist'
     ext = tmp_path / 'Ext.plist'
     thumb = tmp_path / 'Thumb.plist'
+    holder = tmp_path / 'Holder.plist'
     args = argparse.Namespace(
-        app=str(app), extension=str(ext), thumbnail=str(thumb), helper='/bin/pvql'
+        app=str(app),
+        extension=str(ext),
+        thumbnail=str(thumb),
+        holder=str(holder),
+        helper='/bin/pvql',
     )
     assert cli.cmd_plist(args) == 0
+    held = plistlib.loads(holder.read_bytes())
+    assert held['CFBundleIdentifier'] == plist.HOLDER_BUNDLE_ID
+    assert held['LSBackgroundOnly'] is True
     assert plistlib.loads(app.read_bytes())['PVQLHelperPath'] == '/bin/pvql'
     assert plistlib.loads(ext.read_bytes())['CFBundlePackageType'] == 'XPC!'
     assert plistlib.loads(thumb.read_bytes())['CFBundleIdentifier'] == plist.THUMB_BUNDLE_ID

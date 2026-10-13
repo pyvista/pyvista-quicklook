@@ -163,9 +163,11 @@ def test_types_all_lists_unclaimed_formats(capsys, monkeypatch):
 
 
 def test_plist_writes_nothing_without_targets(capsys, monkeypatch):
-    """Without ``--app``, ``--extension`` or ``--thumbnail`` no file is written."""
+    """Without a target no file is written."""
     monkeypatch.setattr(cli.config_mod, 'load', lambda: dict(config.DEFAULTS))
-    args = argparse.Namespace(app=None, extension=None, thumbnail=None, helper='/bin/pvql')
+    args = argparse.Namespace(
+        app=None, extension=None, thumbnail=None, holder=None, helper='/bin/pvql'
+    )
     assert cli.cmd_plist(args) == 0
     assert capsys.readouterr().out == ''
 

@@ -28,6 +28,12 @@ EXT_PRINCIPAL_CLASS = 'PVQLPreviewViewController'
 THUMB_BUNDLE_ID = f'{APP_BUNDLE_ID}.Thumbnail'
 THUMB_EXECUTABLE = 'PyVistaQuickLookThumbnail'
 THUMB_PRINCIPAL_CLASS = 'PVQLThumbnailProvider'
+# The extensions live in an app of their own, nested in the main one and never launched: macOS
+# re-registers an app without a Developer ID signature on every launch, and with it the
+# extensions it embeds, stopping the one the Finder is showing a preview through.
+HOLDER_BUNDLE = f'{APP_NAME} Extensions.app'
+HOLDER_BUNDLE_ID = f'{APP_BUNDLE_ID}.Extensions'
+HOLDER_EXECUTABLE = 'PyVistaQuickLookExtensions'
 # Only these formats can carry a picture of themselves.
 THUMBNAIL_EXTENSIONS = ('.pv',)
 
@@ -127,6 +133,30 @@ def extension_plist(extensions: list[str], helper: str | None = None) -> dict[st
     if helper:
         plist['PVQLHelperPath'] = helper
     return plist
+
+
+def holder_plist() -> dict[str, Any]:
+    """Return the Info.plist contents of the app that holds the extensions."""
+    return {
+        'CFBundleName': f'{APP_NAME} Extensions',
+        'CFBundleDisplayName': f'{APP_NAME} Extensions',
+        'CFBundleIdentifier': HOLDER_BUNDLE_ID,
+        'CFBundleExecutable': HOLDER_EXECUTABLE,
+        'CFBundlePackageType': 'APPL',
+        'CFBundleInfoDictionaryVersion': '6.0',
+        'CFBundleDevelopmentRegion': 'en',
+        'CFBundleSupportedPlatforms': ['MacOSX'],
+        'DTPlatformName': 'macosx',
+        'CFBundleShortVersionString': VERSION,
+        'CFBundleVersion': VERSION,
+        'LSMinimumSystemVersion': MIN_MACOS,
+        'LSBackgroundOnly': True,
+    }
+
+
+def plugins_folder(app: Path) -> Path:
+    """Return the folder of an installed app that holds its Quick Look extensions."""
+    return app / 'Contents' / 'Library' / HOLDER_BUNDLE / 'Contents' / 'PlugIns'
 
 
 def thumbnail_plist(extensions: list[str]) -> dict[str, Any]:

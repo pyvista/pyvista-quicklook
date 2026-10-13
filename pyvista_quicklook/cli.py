@@ -210,6 +210,9 @@ def cmd_plist(args: argparse.Namespace) -> int:
     if args.thumbnail:
         plist_mod.write(plist_mod.thumbnail_plist(extensions), args.thumbnail)
         print(args.thumbnail)
+    if args.holder:
+        plist_mod.write(plist_mod.holder_plist(), args.holder)
+        print(args.holder)
     return 0
 
 
@@ -472,11 +475,13 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     for executable in (plist_mod.EXT_EXECUTABLE, plist_mod.THUMB_EXECUTABLE):
         subprocess.run(['/usr/bin/pkill', '-x', executable], capture_output=True, check=False)
     for app in installed_apps():
-        for executable in (plist_mod.EXT_EXECUTABLE, plist_mod.THUMB_EXECUTABLE):
-            appex = app / 'Contents' / 'PlugIns' / f'{executable}.appex'
-            subprocess.run(
-                ['/usr/bin/pluginkit', '-r', str(appex)], capture_output=True, check=False
-            )
+        # Versions before 0.10 embedded the extensions in the app itself.
+        for folder in (plist_mod.plugins_folder(app), app / 'Contents' / 'PlugIns'):
+            for executable in (plist_mod.EXT_EXECUTABLE, plist_mod.THUMB_EXECUTABLE):
+                appex = folder / f'{executable}.appex'
+                subprocess.run(
+                    ['/usr/bin/pluginkit', '-r', str(appex)], capture_output=True, check=False
+                )
         subprocess.run([LSREGISTER, '-u', str(app)], capture_output=True, check=False)
     target = f'gui/{os.getuid()}/{daemon_mod.LABEL}'
     subprocess.run(['/bin/launchctl', 'bootout', target], capture_output=True, check=False)
@@ -539,6 +544,7 @@ def build_parser() -> argparse.ArgumentParser:
     plist.add_argument('--app')
     plist.add_argument('--extension')
     plist.add_argument('--thumbnail')
+    plist.add_argument('--holder')
     plist.add_argument('--helper', help='absolute path to the pvql executable')
     plist.set_defaults(func=cmd_plist)
 

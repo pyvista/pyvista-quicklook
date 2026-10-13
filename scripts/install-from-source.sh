@@ -10,6 +10,7 @@ EXT_NAME="PyVistaQuickLookExtension"
 EXT_ID="org.pyvista.PyVistaQuickLook.QuickLook"
 THUMB_NAME="PyVistaQuickLookThumbnail"
 THUMB_ID="org.pyvista.PyVistaQuickLook.Thumbnail"
+HOLDER_BUNDLE_NAME="$BUNDLE_NAME Extensions"
 SUPPORT="$HOME/Library/Application Support/PyVistaQuickLook"
 VENV="$SUPPORT/venv"
 DEST="$HOME/Applications"
@@ -159,9 +160,12 @@ fi
 echo "==> registering with Launch Services and Quick Look"
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 "$LSREGISTER" -f -R -trusted "$APP"
-/usr/bin/pluginkit -a "$APP/Contents/PlugIns/$EXT_NAME.appex" 2>/dev/null || true
+# The extensions are held by a nested app that is never launched, so the re-registration
+# macOS gives an app without a Developer ID on every launch leaves them alone.
+PLUGINS="$APP/Contents/Library/$HOLDER_BUNDLE_NAME.app/Contents/PlugIns"
+/usr/bin/pluginkit -a "$PLUGINS/$EXT_NAME.appex" 2>/dev/null || true
 /usr/bin/pluginkit -e use -i "$EXT_ID" 2>/dev/null || true
-/usr/bin/pluginkit -a "$APP/Contents/PlugIns/$THUMB_NAME.appex" 2>/dev/null || true
+/usr/bin/pluginkit -a "$PLUGINS/$THUMB_NAME.appex" 2>/dev/null || true
 /usr/bin/pluginkit -e use -i "$THUMB_ID" 2>/dev/null || true
 /usr/bin/qlmanage -r >/dev/null 2>&1 || true
 /usr/bin/qlmanage -r cache >/dev/null 2>&1 || true
