@@ -33,7 +33,7 @@ def probe():
         ROOT / 'macos' / 'QuickLookExtension' / 'InfoPanel.swift',
         ROOT / 'macos' / 'Tools' / 'InfoProbe.swift',
     )
-    return compiled('InfoProbe', sources, ('-O', '-parse-as-library', '-framework', 'AppKit'))
+    return compiled('InfoProbe', sources, ('-parse-as-library', '-framework', 'AppKit'))
 
 
 @pytest.fixture

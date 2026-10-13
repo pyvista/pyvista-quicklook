@@ -28,7 +28,6 @@ TOOL_PLIST = ROOT / 'macos' / 'Tools' / 'RenderScene-Info.plist'
 def render_tool():
     """Compile the off-screen renderer unless a build at least as new as its sources exists."""
     flags = (
-        '-O',
         '-parse-as-library',
         '-framework',
         'AppKit',
