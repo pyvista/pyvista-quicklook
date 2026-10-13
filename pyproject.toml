@@ -53,6 +53,11 @@ source = ['pyvista_quicklook']
 
 [tool.pytest.ini_options]
 addopts = '--cov=pyvista_quicklook --cov-fail-under=95'
+filterwarnings = [
+  'error',
+  # lib3mf's ctypes structures trip a deprecation in Python 3.14; nothing here can fix it.
+  "ignore:Due to '_pack_':DeprecationWarning:lib3mf",
+]
 testpaths = 'tests'
 
 [tool.ruff]

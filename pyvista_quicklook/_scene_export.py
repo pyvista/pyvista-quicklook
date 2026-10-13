@@ -14,6 +14,7 @@ from pathlib import Path
 import sys
 import tempfile
 from typing import Any
+import warnings
 
 import numpy as np
 import pyvista as pv
@@ -35,7 +36,10 @@ def apply_theme(spec: str | None) -> None:
     if not spec:
         return
     if os.path.isabs(spec):
-        pv.global_theme.load_theme(spec)
+        with warnings.catch_warnings():
+            # PyVista saves this flag with the theme, then refuses it when loading it back.
+            warnings.filterwarnings('ignore', 'The jupyter_extension_available flag is read only')
+            pv.global_theme.load_theme(spec)
     else:
         pv.set_plot_theme(spec)
 
@@ -295,7 +299,10 @@ def ramp() -> np.ndarray:
 def solidify(surface: pv.PolyData, max_glyphs: int) -> pv.PolyData:
     """Give lines and loose points a surface, so there is something to draw."""
     if surface.n_faces:
-        return surface
+        # Only the faces are drawn then, and the triangle filter garbles the cell data of
+        # faces mixed with points or lines; those come first, in VTK's order of cells.
+        loose = surface.n_verts + surface.n_lines
+        return surface.remove_cells(np.arange(loose)) if loose else surface
 
     size = surface.length or 1.0
     if surface.n_lines:
