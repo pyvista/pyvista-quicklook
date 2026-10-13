@@ -23,6 +23,10 @@ final class ThumbnailProvider: QLThumbnailProvider {
             image.draw(in: CGRect(origin: .zero, size: size))
             return true
         })
+        // The plain flavor, so Finder draws the transparent picture without a white card behind it.
+        if reply.responds(to: NSSelectorFromString("setIconFlavor:")) {
+            reply.setValue(0, forKey: "iconFlavor")
+        }
         handler(reply, nil)
     }
 }
