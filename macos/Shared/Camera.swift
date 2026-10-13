@@ -94,7 +94,8 @@ func previewCamera(for scene: SCNScene) -> Framing {
     return (node, target)
 }
 
-/// Whether a scene file asks for its faces drawn flat, as PyVista's theme draws them by default.
+/// Whether a scene file asks for its faces drawn flat, as PyVista's theme draws them by default;
+/// `_scene_export.py`'s SHADING_COMMENT writes the marker.
 func drawsFlat(_ url: URL) -> Bool {
     guard let handle = try? FileHandle(forReadingFrom: url) else {
         return false
@@ -158,7 +159,7 @@ func lightLikePyVista(_ scene: SCNScene) -> SCNNode {
 final class LightsFollowCamera: NSObject, SCNSceneRendererDelegate {
     let rig: SCNNode
     /// Called on the main thread once the first few frames have been drawn.
-    var onFirstFrame: (() -> Void)?
+    var onReady: (() -> Void)?
     /// Frames drawn so far; the first can come out before the scene is ready.
     private var framesDrawn = 0
 
@@ -174,10 +175,10 @@ final class LightsFollowCamera: NSObject, SCNSceneRendererDelegate {
 
     func renderer(_ renderer: SCNSceneRenderer, didRenderScene scene: SCNScene, atTime time: TimeInterval) {
         framesDrawn += 1
-        guard framesDrawn >= 3, let shown = onFirstFrame else {
+        guard framesDrawn >= 3, let ready = onReady else {
             return
         }
-        onFirstFrame = nil
-        DispatchQueue.main.async(execute: shown)
+        onReady = nil
+        DispatchQueue.main.async(execute: ready)
     }
 }

@@ -53,13 +53,13 @@ def reader(tmp_path_factory):
     ).stdout.split('\n')[:2]
 
 
-def pv_file(path, *, index=b'i' * 64, crc_of=None, record_extra=0):
+def pv_file(path, *, index=b'i' * 64, crc_of=None, record_extra=0, png=PNG):
     """Write a file laid out as a .pv with a picture, ending in a four-frame index."""
     entries = crc_of if crc_of is not None else index
     # The checksum covers the index entries after the first two frames.
     crc = zlib.crc32(entries[32:])
-    descriptor = b'PVZTHUMB' + struct.pack('<6I', 1, 32, 64, 48, len(PNG), crc)
-    record = descriptor + PNG
+    descriptor = b'PVZTHUMB' + struct.pack('<6I', 1, 32, 64, 48, len(png), crc)
+    record = descriptor + png
     data = PREFIX + struct.pack('<I', len(record) + record_extra) + record
     data += b'frames' + index + struct.pack('<Q', len(index) // 16)
     path.write_bytes(data)
@@ -84,6 +84,14 @@ def test_a_picture_older_than_the_data_is_stale(reader, tmp_path):
 def test_a_record_of_the_wrong_length_is_ignored(reader, tmp_path, record_extra):
     """A frame whose length disagrees with its descriptor holds no picture the reader trusts."""
     assert reader(pv_file(tmp_path / 'mesh.pv', record_extra=record_extra)) == ['none', 'declined']
+
+
+@pytest.mark.parametrize(
+    'png', [b'GIF89a' + b'picture', PNG + bytes(8 * 1024 * 1024)], ids=['not a png', 'too large']
+)
+def test_a_picture_that_is_not_a_small_png_is_ignored(reader, tmp_path, png):
+    """Only a PNG under the size cap is taken, so a damaged length never reads the whole file."""
+    assert reader(pv_file(tmp_path / 'mesh.pv', png=png)) == ['none', 'declined']
 
 
 def test_a_truncated_file_holds_no_picture(reader, tmp_path):

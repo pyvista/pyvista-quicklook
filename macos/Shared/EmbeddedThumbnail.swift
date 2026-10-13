@@ -26,30 +26,30 @@ enum EmbeddedThumbnail {
         let png: Data
         let width: Int
         let height: Int
-        /// Whether the data changed after the picture was taken; false when that was not checked.
+        /// Whether the data changed after the picture was taken.
         let isStale: Bool
     }
 
     /// Returns the PNG a file carries of itself, or nil when it has none, or only a stale one
     /// and `allowStale` is false.
     static func read(_ url: URL, allowStale: Bool = true) -> Data? {
-        guard let picture = picture(url, checkingStaleness: !allowStale), !picture.isStale else {
+        guard let picture = picture(url), allowStale || !picture.isStale else {
             return nil
         }
         return picture.png
     }
 
-    /// Returns the picture a file carries of itself, or nil; staleness is checked only when asked.
-    static func picture(_ url: URL, checkingStaleness: Bool = true) -> Picture? {
+    /// Returns the picture a file carries of itself, or nil when it has none.
+    static func picture(_ url: URL) -> Picture? {
         guard url.pathExtension.lowercased() == "pv", let handle = try? FileHandle(forReadingFrom: url) else {
             return nil
         }
         defer { try? handle.close() }
-        return locate(in: handle, checkingStaleness: checkingStaleness)
+        return locate(in: handle)
     }
 
     /// Returns the picture from where the format keeps it, at the start of the file.
-    static func locate(in handle: FileHandle, checkingStaleness: Bool) -> Picture? {
+    static func locate(in handle: FileHandle) -> Picture? {
         guard let head = try? handle.read(upToCount: recordOffset + descriptorBytes),
               head.count == recordOffset + descriptorBytes,
               head.prefix(prefix.count) == prefix,
@@ -72,7 +72,7 @@ enum EmbeddedThumbnail {
             png: png,
             width: Int(uint32(head, recordOffset + 16)),
             height: Int(uint32(head, recordOffset + 20)),
-            isStale: checkingStaleness && !matchesData(handle, crc: uint32(head, recordOffset + 28))
+            isStale: !matchesData(handle, crc: uint32(head, recordOffset + 28))
         )
     }
 

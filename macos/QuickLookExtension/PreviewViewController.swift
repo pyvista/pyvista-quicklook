@@ -55,20 +55,21 @@ final class LitSceneView: SCNView {
     }
 }
 
-/// A description fetched on another thread, waited for with a time limit.
+/// A description fetched on another thread, which any number of waits can ask for.
 final class DescriptionWait: @unchecked Sendable {
-    private let done = DispatchSemaphore(value: 0)
+    private let done = DispatchGroup()
     private var info: [String: Any]?
 
-    /// Records the description, or nil when there is none, and wakes whoever waits.
-    func finish(_ info: [String: Any]?) {
-        self.info = info
-        done.signal()
-        done.signal()
+    init(_ url: URL) {
+        done.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.info = Helper.requestDescription(url)
+            self.done.leave()
+        }
     }
 
     /// Returns the description once it comes, or nil when there is none or it takes too long.
-    func wait(seconds: Double) -> [String: Any]? {
+    func wait(seconds: Double = .infinity) -> [String: Any]? {
         let deadline: DispatchTime = seconds.isFinite ? .now() + seconds : .distantFuture
         guard done.wait(timeout: deadline) == .success else {
             return nil
@@ -94,7 +95,7 @@ func sceneView(for scene: SCNScene, framing: Framing) -> SCNView {
     // Hidden, and drawn continuously, until a few frames are out: the first can show a blank.
     view.alphaValue = 0
     view.rendersContinuously = true
-    view.lights?.onFirstFrame = { [weak view] in
+    view.lights?.onReady = { [weak view] in
         view?.alphaValue = 1
         view?.rendersContinuously = false
     }
@@ -388,6 +389,15 @@ enum PreviewMode: Int {
     case interactive
 }
 
+/// A file to preview, and the picture it carries of itself, read once per panel.
+struct Request {
+    let url: URL
+    let force: Bool
+    let carried: EmbeddedThumbnail.Picture?
+
+    var name: String { url.lastPathComponent }
+}
+
 /// The Static and Interactive tabs above a mesh preview.
 final class ModeTabs: NSSegmentedControl {
     private var onSelect: ((PreviewMode) -> Void)?
@@ -553,49 +563,38 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 return
             }
 
-            self.load(url, force: false, handler: handler)
-        }
-    }
-
-    /// Returns what pressing "Preview Anyway" does: load the file past its size limit.
-    func previewAnyway(_ url: URL, _ info: MeshInfo?, _ thumbnail: Data?) -> () -> Void {
-        { [weak self] in
-            guard let self else {
-                return
-            }
-            self.generation += 1
-            self.show(withInfo(placeholderView(url.lastPathComponent, thumbnail), info))
-            DispatchQueue.global(qos: .userInitiated).async {
-                self.load(url, force: true, handler: nil)
-            }
+            self.load(Request(url: url, force: false, carried: EmbeddedThumbnail.picture(url)), handler: handler)
         }
     }
 
     /// Shows a mesh preview with the tabs that switch it, unless a newer load took the panel.
-    func present(_ content: NSView, _ mode: PreviewMode, _ info: MeshInfo?, _ url: URL, force: Bool, generation: Int) {
+    func present(_ content: NSView, _ mode: PreviewMode, _ info: MeshInfo?, _ request: Request, generation: Int) {
         guard generation == self.generation else {
             return
         }
-        let kept = shownInfo?.url == url ? shownInfo?.info : nil
+        let kept = shownInfo?.url == request.url ? shownInfo?.info : nil
         // What the header alone says has no bounds, so it never replaces what the values said.
         if let info, info.bounds.isEmpty == false || kept?.bounds.isEmpty != false {
-            shownInfo = (url, info)
+            shownInfo = (request.url, info)
         } else if kept == nil {
             shownInfo = nil
         }
-        let tabs = ModeTabs(mode) { [weak self] chosen in
-            self?.switchTo(chosen, url, force: force)
-        }
+        let tabs = ModeTabs(mode, onSelect: switching(request))
         show(withInfo(belowTabs(content, tabs), shownInfo?.info))
     }
 
-    /// Shows the other kind of preview, setting aside whatever the last one was still loading.
-    func switchTo(_ mode: PreviewMode, _ url: URL, force: Bool) {
+    /// Returns what a control in the panel calls to load the file again on a tab.
+    func switching(_ request: Request) -> (PreviewMode) -> Void {
+        { [weak self] mode in self?.switchTo(mode, request) }
+    }
+
+    /// Loads a preview again from a panel already showing, setting aside whatever the last load
+    /// was still making.
+    func switchTo(_ mode: PreviewMode, _ request: Request) {
         generation += 1
-        let waiting = placeholderView(url.lastPathComponent, EmbeddedThumbnail.read(url))
-        present(waiting, mode, nil, url, force: force, generation: generation)
+        present(placeholderView(request.name, request.carried?.png), mode, nil, request, generation: generation)
         DispatchQueue.global(qos: .userInitiated).async {
-            self.load(url, force: force, mode: mode, handler: nil)
+            self.load(request, mode: mode, handler: nil)
         }
     }
 
@@ -604,35 +603,32 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
     /// `handler` is Quick Look's, called once the panel has something to show; it is nil when a
     /// file is loaded again from a panel already showing. `mode` is the tab asked for; without
     /// one, previews start as a picture unless the settings or the app ask for 3D.
-    nonisolated func load(_ url: URL, force: Bool, mode: PreviewMode? = nil, handler: ((Error?) -> Void)?) {
+    nonisolated func load(_ request: Request, mode: PreviewMode? = nil, handler: ((Error?) -> Void)?) {
         let (completion, generation, prefersPicture) = DispatchQueue.main.sync {
             (Completion(handler), self.generation, self.prefersPicture)
         }
-        let name = url.lastPathComponent
+        let (url, name, thumbnail) = (request.url, request.name, request.carried?.png)
         // False when unset, as config.py's DEFAULTS has it.
         let startsInteractive = (Helper.configuration()?["interactive"] as? Bool) ?? false
         let shown = mode ?? (prefersPicture && !startsInteractive ? .still : .interactive)
         /// Shows a mesh preview with its tabs, for this load only.
         let present: @MainActor (NSView, PreviewMode, MeshInfo?) -> Void = { content, mode, info in
-            self.present(content, mode, info, url, force: force, generation: generation)
+            self.present(content, mode, info, request, generation: generation)
         }
-        let carried = EmbeddedThumbnail.picture(url, checkingStaleness: shown == .still)
+        let failed = { (message: String) in "Could not preview \(name)\n\n\(message)" }
         // A current picture the file carries of itself is the preview, without the service.
-        if shown == .still, let png = carried?.png, carried?.isStale == false {
+        if shown == .still, let png = thumbnail, request.carried?.isStale == false {
             // The description usually comes in a fraction of a second, and showing the picture
             // without it first would shrink the picture when the details arrive beside or below it.
-            let described = DescriptionWait()
-            DispatchQueue.global(qos: .userInitiated).async {
-                described.finish(Helper.requestDescription(url))
-            }
+            let described = DescriptionWait(url)
             let early = described.wait(seconds: 0.5)
             DispatchQueue.main.async {
-                let picture = pictureView(png) ?? messageView("Could not preview \(name)")
+                let picture = pictureView(png) ?? messageView(failed("Its picture could not be read."))
                 present(picture, .still, early.flatMap(MeshInfo.init))
                 completion.finish(nil)
                 pvqlLog("showing the picture \(name) carries as its preview")
             }
-            guard early == nil, let info = described.wait(seconds: .infinity) else {
+            guard early == nil, let info = described.wait() else {
                 return
             }
             DispatchQueue.main.async {
@@ -641,7 +637,6 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             return
         }
         // A picture the file carries of itself is shown at once, before the service answers.
-        let thumbnail = carried?.png
         if thumbnail != nil {
             pvqlLog("showing the picture \(name) carries")
             DispatchQueue.main.async {
@@ -653,7 +648,7 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         }
         let outcome: Preview
         do {
-            let reply = try Helper.requestPreview(url, force: force, scene: shown == .interactive) { info in
+            let reply = try Helper.requestPreview(url, force: request.force, scene: shown == .interactive) { info in
                 DispatchQueue.main.async {
                     present(placeholderView(name, thumbnail), shown, MeshInfo(info))
                     completion.finish(nil)
@@ -682,16 +677,14 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 outcome = .tooLarge(message, MeshInfo(failure?.info))
             } else if failure?.isNotMesh != true {
                 // The file may well be a mesh, so say what went wrong rather than show it as text.
-                outcome = .message("Could not preview \(name)\n\n\(message)")
+                outcome = .message(failed(message))
                 if let png = thumbnail {
                     // The file's own picture is still worth showing, with why it is all there is.
-                    let note = "The interactive preview could not be made: \(briefly(message))"
+                    let what = shown == .still ? "A current picture" : "The interactive preview"
+                    let note = "\(what) could not be made: \(briefly(message))"
                     DispatchQueue.main.async {
-                        if let picture = pictureView(png) {
-                            present(pictureWithNote(picture, note), shown, nil)
-                        } else {
-                            present(messageView("Could not preview \(name)\n\n\(message)"), shown, nil)
-                        }
+                        let picture = pictureView(png).map { pictureWithNote($0, note) }
+                        present(picture ?? messageView(failed(message)), shown, nil)
                         completion.finish(nil)
                     }
                     return
@@ -703,7 +696,7 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                     if completion.isPending {
                         completion.finish(Self.noPreview)
                     } else {
-                        self.show(messageView("Could not preview \(name)\n\n\(message)"))
+                        self.show(messageView(failed(message)))
                     }
                 }
                 return
@@ -727,8 +720,9 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 present(pictureView(png) ?? NSImageView(), .still, info)
                 pvqlLog("showing a rendered image in \(self.view.bounds.size)")
             case let .tooLarge(message, info):
-                let notice = largeFileView(message, thumbnail: thumbnail, onPreview: self.previewAnyway(url, info, thumbnail))
-                self.show(withInfo(notice, info))
+                let anyway = self.switching(Request(url: url, force: true, carried: request.carried))
+                let notice = largeFileView(message, thumbnail: thumbnail) { anyway(shown) }
+                present(notice, shown, info)
                 pvqlLog("showing a size notice")
             case let .text(text):
                 self.show(textView(text))
