@@ -252,10 +252,8 @@ def test_large_images_are_strided_to_the_budget(tmp_path):
     out = tmp_path / 'out.ply'
     export_mod.export(str(tmp_path / 'in.vti'), str(out), 10_000, 20_000)
     scene = pv.read(out)
-    # The flat image is open, so its back side counts against the budget too.
-    assert scene.n_points <= 10_000
-    assert scene.n_points == 2 * np.unique(scene.points[:, 0]).size ** 2
-    assert np.unique(scene.points[:, 0]).size > 50
+    assert scene.n_points == 100 * 100
+    assert np.unique(scene.points[:, 0]).size == 100
     assert 'RGB' in scene.point_data
 
 
@@ -267,16 +265,18 @@ def inside_the_bounds(scene):
     return float(np.mean(~on_a_face.any(axis=1)))
 
 
-def test_open_surfaces_are_written_from_both_sides(tmp_path):
-    """An open surface gets a flipped copy; a closed one does not."""
+def test_surfaces_are_written_once(tmp_path):
+    """An open surface is written once; the viewer draws both sides, as PyVista does."""
     out = tmp_path / 'out.ply'
+    image = pv.ImageData(dimensions=(20, 20, 1))
+    image.save(tmp_path / 'slice.vti')
+    export_mod.export(str(tmp_path / 'slice.vti'), str(out), 2_000_000, 20_000)
+    assert pv.read(out).n_points == image.n_points
     pv.Plane().save(tmp_path / 'plane.vtp')
     export_mod.export(str(tmp_path / 'plane.vtp'), str(out), 2_000_000, 20_000)
     plane = pv.read(out)
-    assert plane.n_faces == 2 * pv.Plane().triangulate().n_faces
-    normals = np.asarray(plane.point_data['Normals'])[:, 2]
-    assert (normals > 0).any()
-    assert (normals < 0).any()
+    assert plane.n_faces == pv.Plane().triangulate().n_faces
+    assert (np.asarray(plane.point_data['Normals'])[:, 2] > 0).all()
     pv.Sphere().save(tmp_path / 'sphere.vtp')
     export_mod.export(str(tmp_path / 'sphere.vtp'), str(out), 2_000_000, 20_000)
     assert pv.read(out).n_faces == pv.Sphere().n_faces
@@ -290,7 +290,7 @@ def test_volumes_with_scalars_are_cut_into_slices(tmp_path):
     out = tmp_path / 'out.ply'
     export_mod.export(str(tmp_path / 'in.vti'), str(out), 2_000_000, 20_000)
     scene = pv.read(out)
-    assert scene.n_points == 2 * 3 * 30 * 30
+    assert scene.n_points == 3 * 30 * 30
     assert inside_the_bounds(scene) > 0.5
     assert 'RGB' in scene.point_data
 

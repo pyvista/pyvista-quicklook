@@ -139,11 +139,13 @@ struct SceneStyle: Decodable {
         }
         // The view-space position's change across the pixel gives the face's normal toward the eye.
         let flat = "_surface.normal = normalize(cross(dfdy(_surface.position), dfdx(_surface.position)));"
+        // A back face keeps its vertex normal, which points away from the eye; turn it round.
+        let smooth = "if (dot(_surface.normal, _surface.view) < 0.0) { _surface.normal = -_surface.normal; }"
         scene.rootNode.enumerateHierarchy { node, _ in
             node.geometry?.materials.forEach { material in
-                if shading == "flat" {
-                    material.shaderModifiers = [.surface: flat]
-                }
+                // PyVista culls nothing by default, so a surface shows from either side.
+                material.isDoubleSided = true
+                material.shaderModifiers = [.surface: shading == "flat" ? flat : smooth]
                 material.lightingModel = !lighting ? .constant : specular > 0 ? .blinn : .lambert
                 material.diffuse.intensity = lighting ? diffuse : 1
                 material.locksAmbientWithDiffuse = true

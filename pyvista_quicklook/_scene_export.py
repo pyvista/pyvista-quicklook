@@ -263,9 +263,6 @@ def thin(dataset: object, max_points: int) -> object:
         return dataset
     axes = sum(1 for k in dataset.dimensions if k > 1)
     budget = max_points // 3 if has_cell_scalars(dataset) else max_points
-    if axes < 3:
-        # A flat grid is an open surface, which is written with a back side.
-        budget //= 2
     expected = skin_estimate(dataset.dimensions)
     if expected <= budget:
         return dataset
@@ -276,10 +273,17 @@ def thin(dataset: object, max_points: int) -> object:
 
 def slice_volume(dataset: pv.DataSet) -> pv.DataSet:
     """Cut three slices through the centre of a volume that has scalars to show."""
-    dimensions = getattr(dataset, 'dimensions', None)
-    if dimensions is None or min(dimensions) < 2 or not dataset.active_scalars_name:
+    if not will_slice(dataset):
         return dataset
     return dataset.slice_orthogonal()
+
+
+def will_slice(dataset: object) -> bool:
+    """Return whether a volume is shown as slices through its centre."""
+    dimensions = getattr(dataset, 'dimensions', None)
+    if dimensions is None or min(dimensions) < 2:
+        return False
+    return bool(dataset.active_scalars_name)
 
 
 def to_surface(dataset: object) -> pv.PolyData:
@@ -366,17 +370,6 @@ def triangles(surface: pv.PolyData) -> pv.PolyData:
     return surface if surface.is_all_triangles else surface.triangulate()
 
 
-def both_sides(surface: pv.PolyData) -> pv.PolyData:
-    """Add a flipped copy of an open surface, so it is drawn and lit from either side."""
-    back = surface.flip_faces()
-    if 'Normals' in back.point_data:
-        back.point_data['Normals'] = -np.asarray(back.point_data['Normals'])
-    both = pv.merge([surface, back], merge_points=False)
-    if 'Normals' in both.point_data:
-        both.point_data.active_normals_name = 'Normals'
-    return both
-
-
 def recentre(surface: pv.PolyData) -> pv.PolyData:
     """Move the mesh to the origin, so far-from-origin coordinates keep their precision."""
     return surface.translate(-np.array(surface.center), inplace=False)
@@ -447,10 +440,9 @@ def colours_for(surface: pv.PolyData) -> np.ndarray | None:
     return colours
 
 
-def projected_points(surface: pv.PolyData, is_open: bool) -> int:
-    """Return how many points the scene will hold once cells are split and a back side added."""
-    points = 3 * surface.n_faces if has_cell_scalars(surface) else surface.n_points
-    return 2 * points if is_open else points
+def projected_points(surface: pv.PolyData) -> int:
+    """Return how many points the scene will hold once cells are split."""
+    return 3 * surface.n_faces if has_cell_scalars(surface) else surface.n_points
 
 
 def write_info(
@@ -490,8 +482,7 @@ def export(
     if not isinstance(dataset, pv.PolyData):
         # The surface filter leaves a volume's faces unjoined at their edges.
         surface = surface.clean()
-    is_open = surface.n_open_edges > 0
-    projected = projected_points(surface, is_open)
+    projected = projected_points(surface)
     if max_points and projected > max_points:
         ratio = 1.0 - (max_points / projected)
         surface = surface.decimate_pro(ratio, preserve_topology=True)
@@ -509,8 +500,6 @@ def export(
         surface.point_data['Normals'] = normals
         surface.point_data.active_normals_name = 'Normals'
     surface['RGB'] = colours
-    if is_open:
-        surface = both_sides(surface)
     save_scene(surface, destination)
 
 

@@ -231,6 +231,18 @@ def test_a_specular_theme_draws_highlights(tmp_path, monkeypatch):
     assert shiny[..., 0].max() > dull[..., 0].max() + 60
 
 
+@pytest.mark.parametrize('smooth', [False, True])
+def test_a_surface_is_drawn_from_behind(tmp_path, monkeypatch, smooth):
+    """A face turned away from the camera is drawn and lit, as PyVista culls nothing."""
+    monkeypatch.setattr(pv.global_theme, 'smooth_shading', smooth)
+    # The panel looks along (-1, -1, -1), so this plane shows the camera its back.
+    plane = pv.Plane(direction=(-1, -1, -1), i_resolution=4, j_resolution=4)
+    pixels = rendered(plane, tmp_path, name='back')
+    assert covered(pixels) > 0.2
+    lit = pixels[np.abs(pixels.astype(int) - pixels[0, 0].astype(int)).sum(axis=2) > 12]
+    assert np.median(lit.astype(int).sum(axis=1)) > 150
+
+
 def test_a_point_cloud_is_drawn(tmp_path):
     """Glyphed points reach the frame instead of rendering blank."""
     cloud = pv.PolyData(np.random.default_rng(0).random((400, 3)))

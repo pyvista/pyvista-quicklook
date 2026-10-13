@@ -61,13 +61,13 @@ def test_cell_scalars_fit_the_budget_once_split(tmp_path, budget):
     assert scene.n_faces > 0
 
 
-def test_an_open_surface_fits_the_budget_with_its_back_side(tmp_path):
-    """An open surface is decimated so both of its sides fit the budget."""
+def test_an_open_surface_fits_the_budget_once(tmp_path):
+    """An open polygonal surface is written once, so it is decimated to the budget itself."""
     plane = pv.Plane(i_resolution=60, j_resolution=60).triangulate()
     plane['height'] = plane.points[:, 0]
-    assert 2 * plane.n_points > 2_000
+    assert plane.n_points > 2_000
     scene = exported(plane, tmp_path, max_points=2_000)
-    assert scene.n_points <= 2_000 * 1.05
+    assert 2_000 * 0.5 < scene.n_points <= 2_000 * 1.05
     assert scene.n_faces > 0
 
 
