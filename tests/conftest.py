@@ -2,12 +2,36 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import subprocess
 
 import pytest
 
 from pyvista_quicklook import cli
 from pyvista_quicklook import config
+
+
+@pytest.fixture(autouse=True)
+def private_home(tmp_path_factory):
+    """Give every test a home folder of its own, and return it.
+
+    Locations named when the package is imported are moved there too. Patched on its
+    own, so a test that undoes its own patches does not undo these.
+    """
+    home = tmp_path_factory.mktemp('home')
+    library = home / 'Library'
+    support = library / 'Application Support' / 'PyVistaQuickLook'
+    container = library / 'Containers' / config.EXT_BUNDLE_ID / 'Data' / 'tmp'
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Path, 'home', classmethod(lambda cls: home))
+        patch.setattr(config, 'APP_SUPPORT', support)
+        patch.setattr(config, 'CONFIG_PATH', support / 'config.json')
+        patch.setattr(config, 'MIRROR_PATH', container / 'config.json')
+        patch.setattr(config, 'LOG_PATH', support / 'pvql.log')
+        patch.setattr(config, 'CACHE_DIR', library / 'Caches' / 'PyVistaQuickLook')
+        patch.setattr(cli, 'APP_DIRS', (home / 'Applications',))
+        patch.setattr(cli, 'SERVICE_LOG', library / 'Logs' / 'pvqld.log')
+        yield home
 
 
 @pytest.fixture
