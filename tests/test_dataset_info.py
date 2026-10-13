@@ -121,7 +121,7 @@ def test_many_arrays_are_cut_short(tmp_path):
     assert rows[-1] == {'name': '\u2026 6 more arrays', 'more': True}
 
 
-def test_ranges_of_each_kind_of_array():
+def test_each_kind_of_array_reports_its_range_in_its_own_terms():
     """Ranges come from get_data_range, of the magnitude for vectors and modulus for complex."""
     mesh = pv.PolyData(np.zeros((2, 3)))
     mesh.point_data['floats'] = [0.0, 580.0]
@@ -255,15 +255,21 @@ def test_bounds_are_always_floats():
 
 
 def test_numbers_are_formatted_for_a_narrow_column():
-    """Integers stay whole, others get four significant figures."""
-    assert info_mod.number(0) == '0'
-    assert info_mod.number(3.0) == '3'
-    assert info_mod.number(0.123456) == '0.1235'
-    assert info_mod.number(1.5e-7) == '1.5e-7'
-    assert info_mod.number(2.5e12) == '2.5e12'
+    """Numbers keep plain digits up to six figures, then an exponent without padding."""
+    assert info_mod.digits(0, 4) == '0'
+    assert info_mod.digits(0.123456, 4) == '0.1235'
+    assert info_mod.digits(1.5e-7, 4) == '1.5e-7'
+    assert info_mod.digits(2.5e12, 4) == '2.5e12'
+    assert info_mod.digits(-10420.0, 4) == '-10420'
+    assert info_mod.digits(1234567.0, 4) == '1.235e6'
+    assert info_mod.real(-10420.0, 4) == '-10420.0'
     assert info_mod.size(512) == '512 bytes'
     assert info_mod.size(2_680_000) == '2.68 MB'
-    assert info_mod.size(5e15) == '5e+03 TB'
+    assert info_mod.size(5e15) == '5000 TB'
+    mesh = pv.PolyData(np.zeros((2, 3)))
+    mesh.point_data['wide'] = [-10420.0, 6527.0]
+    [row] = info_mod.describe(mesh, 'none')['arrays']
+    assert row['range'] == '[-10420.0, 6527.0]'
 
 
 def test_multiblock_lists_blocks_and_merges_arrays(tmp_path):
@@ -277,7 +283,7 @@ def test_multiblock_lists_blocks_and_merges_arrays(tmp_path):
     rows = facts(info)
     assert rows['Blocks'] == '3'
     assert rows['Depth'] == '2'
-    assert rows['Block types'] == '1 MultiBlock\n3 PolyData'
+    assert rows['Block type'] == '3 PolyData'
     assert [block['name'] for block in info['blocks']] == ['sphere', 'inner/cube', 'inner/cone']
     assert {block['dimensions'] for block in info['blocks']} == {''}
     [normals] = [row for row in info['arrays'] if row['name'] == 'Normals']
@@ -442,7 +448,7 @@ def test_a_failed_description_leaves_the_preview(tmp_path, monkeypatch, capsys):
 
 
 def test_multiblock_counts_every_block_kind(tmp_path):
-    """Block types count nested composites and None blocks, sorted by name."""
+    """Block types count the leaves the block count counts, None blocks included, by name."""
     inner = pv.MultiBlock({'image': pv.ImageData(dimensions=(2, 2, 2)), 'gap': None})
     outer = pv.MultiBlock(
         {'mesh': pv.Sphere(), 'inner': inner, 'deeper': pv.MultiBlock({'leaf': inner.copy()})}
@@ -451,7 +457,7 @@ def test_multiblock_counts_every_block_kind(tmp_path):
     rows = facts(info)
     assert rows['Blocks'] == str(info['block_count']) == '5'
     assert rows['Depth'] == '3'
-    assert rows['Block types'] == '2 ImageData\n3 MultiBlock\n2 None\n1 PolyData'
+    assert rows['Block types'] == '2 ImageData\n2 None\n1 PolyData'
     gap = next(block for block in info['blocks'] if block['name'] == 'inner/gap')
     assert gap['type'] == 'None'
     assert gap['points'] == ''
@@ -704,7 +710,11 @@ def test_small_xml_files_are_read_whole(tmp_path):
             ],
             ('p', 'Cell'),
         ),
-        ([{'name': 'vtkIds', 'association': 'Point', 'active': ['scalars']}], None),
+        ([{'name': 'vtkGhostType', 'association': 'Point', 'active': ['scalars']}], None),
+        (
+            [{'name': 'vtkIds', 'association': 'Point', 'active': ['scalars']}],
+            ('vtkIds', 'Point'),
+        ),
         (
             [
                 {'name': 'vtkGhostType', 'association': 'Cell', 'active': ['scalars']},
@@ -786,10 +796,11 @@ def test_the_service_knows_which_formats_have_a_header():
 
 def test_an_empty_composite_has_only_its_block_count():
     """A MultiBlock with nothing in it has no block types, points, or bounds to show."""
-    facts, blocks = info_mod.composite_facts(pv.MultiBlock())
+    facts, blocks = info_mod.composite_facts(pv.MultiBlock(), [])
     assert facts == [['Blocks', '0'], ['Points', '0'], ['Cells', '0']]
     assert blocks == []
-    facts, _ = info_mod.composite_facts(pv.MultiBlock([None]))
+    gap = pv.MultiBlock([None])
+    facts, _ = info_mod.composite_facts(gap, info_mod.leaves(gap))
     assert dict(facts)['Block type'] == '1 None'
     assert 'Bounds' not in dict(facts)
 
@@ -915,3 +926,108 @@ def test_a_header_that_cannot_be_read_says_why(tmp_path, capsys, monkeypatch):
     info = info_mod.header_info(str(path))
     assert info['type'] == ''
     assert 'header skipped: KeyError' in capsys.readouterr().err
+
+
+def test_a_non_ascii_array_name_survives_the_header(tmp_path, monkeypatch, capsys):
+    """A UTF-8 name is read from the header as written, and the selective read enables it."""
+    mesh = pv.Sphere()
+    mesh.point_data['température'] = np.arange(mesh.n_points, dtype=float)
+    mesh.set_active_scalars('température')
+    path = tmp_path / 'warm.vtp'
+    mesh.save(path)
+    names = {row['name'] for row in info_mod.header_info(str(path))['arrays']}
+    assert 'température' in names
+    monkeypatch.setattr(export_mod, 'SELECTIVE_BYTES', 0)
+    dataset, header = export_mod.read_for_preview(str(path))
+    assert header is not None
+    assert dataset.active_scalars_name == 'température'
+    assert 'selective read skipped' not in capsys.readouterr().err
+    assert info_mod.xml_attributes('Name="a &amp; b"') == {'Name': 'a & b'}
+
+
+def test_header_and_values_agree_on_arrays_without_a_range(tmp_path):
+    """An all-NaN array shows NaN and an empty one nothing, from the header as from the file."""
+    mesh = pv.Sphere()
+    mesh.point_data['nan'] = np.full(mesh.n_points, np.nan)
+    mesh.field_data['empty'] = np.zeros(0)
+    head, full = header_and_full(mesh, tmp_path, 'gaps.vtp')
+    heads, fulls = rows_by_name(head), rows_by_name(full)
+    for key in (('nan', 'Point'), ('empty', 'Field')):
+        assert heads[key]['range'] == fulls[key]['range'], key
+    assert heads[('nan', 'Point')]['range'] == 'NaN'
+    assert heads[('empty', 'Field')]['range'] == ''
+    # An all-NaN vector array is one VTK writes but cannot read back; its header still says NaN.
+    inverted = {'RangeMin': '3.1622776601683796e+149', 'RangeMax': 'nan'}
+    extent = info_mod.xml_range(inverted, 'f', info_mod.VECTOR_NORM, mesh.n_points)
+    assert info_mod.range_text(extent) == 'NaN'
+    assert info_mod.range_text(info_mod.values_extent(np.full((4, 3), np.nan))) == 'NaN'
+
+
+def test_an_integer_vector_magnitude_matches_the_header(tmp_path):
+    """The magnitude range of an integer vector array is VTK's own, as the header records it."""
+    mesh = pv.Sphere()
+    vectors = np.zeros((mesh.n_points, 3), dtype=np.int32)
+    vectors[:, 0] = 3
+    vectors[:, 1] = 4
+    vectors[0] = (0, 0, 0)
+    mesh.point_data['steps'] = vectors
+    head, full = header_and_full(mesh, tmp_path, 'steps.vtp')
+    key = ('steps', 'Point')
+    assert rows_by_name(head)[key]['range'] == rows_by_name(full)[key]['range']
+    assert rows_by_name(full)[key]['range'] == f'{info_mod.VECTOR_NORM} [0.0, 5.0]'
+
+
+def test_merged_integer_ranges_keep_every_digit():
+    """Two blocks' integer ranges are merged as integers, however large."""
+    first = (np.int64(2**62 + 1), np.int64(2**62 + 1), 'i', '')
+    second = (np.int64(-1), np.int64(-1), 'i', '')
+    assert info_mod.range_text(info_mod.merge_extents(first, second)) == f'[-1, {2**62 + 1}]'
+    assert info_mod.merge_extents(first, (0.5, 1.5, 'f', ''))[2] == 'f'
+    assert info_mod.merge_extents((True, True, 'b', ''), (3, 4, 'i', ''))[2] == 'i'
+
+
+@pytest.mark.parametrize('dimensions', [(1, 1, 1), (2, 1, 1), (2, 2, 1), (3, 3, 3), (0, 0, 0)])
+def test_header_counts_match_vtk_for_every_grid_shape(dimensions):
+    """A header's cell count for a structured extent is the count VTK reports."""
+    image = pv.ImageData(dimensions=dimensions)
+    _, points, cells = info_mod.grid_counts(list(image.extent))
+    assert (points, cells) == (image.n_points, image.n_cells)
+
+
+def test_pyvista_bookkeeping_fields_are_skipped_by_every_path(tmp_path):
+    """Arrays PyVista keeps for itself are listed neither from the header nor from the file."""
+    mesh = pv.Sphere()
+    mesh.point_data['flags'] = np.ones(mesh.n_points, dtype=bool)
+    mesh.point_data['z'] = np.full(mesh.n_points, 3 + 4j)
+    mesh.field_data[info_mod.USER_DICT_KEY] = np.array([json.dumps({'name': 'sphere'})])
+    for name in ('odd.pv', 'odd.vtp'):
+        head, full = header_and_full(mesh, tmp_path, name)
+        for info in (head, full):
+            assert not any(
+                row['name'].startswith(info_mod.PYVISTA_PREFIX) for row in info['arrays']
+            )
+        assert head['array_count'] == full['array_count']
+        assert set(rows_by_name(head)) == set(rows_by_name(full))
+    heads, fulls = rows_by_name(head), rows_by_name(full)
+    assert fulls[('flags', 'Point')]['dtype'] == 'bool'
+    assert fulls[('z', 'Point')]['dtype'] == 'complex128'
+    # VTK XML stores a bool as bytes and a complex as two floats, and the header says so.
+    assert heads[('flags', 'Point')]['dtype'] == 'uint8'
+    assert heads[('z', 'Point')]['components'] == 2
+    pv_head, _ = header_and_full(mesh, tmp_path, 'again.pv')
+    assert rows_by_name(pv_head)[('flags', 'Point')]['dtype'] == 'bool'
+    assert rows_by_name(pv_head)[('z', 'Point')]['dtype'] == 'complex128'
+
+
+def test_an_unknown_cell_type_is_listed_by_its_id():
+    """A cell type VTK has no name for is listed by its id beside the named ones."""
+    cells = np.array([3, 0, 1, 2, 3, 0, 1, 2])
+    types = np.array([pv.CellType.TRIANGLE, 99], dtype=np.uint8)
+    grid = pv.UnstructuredGrid(cells, types, np.random.default_rng(0).random((3, 3)))
+    assert facts(info_mod.describe(grid, 'x'))['Cell types'] == ['Triangle', 'Type 99']
+
+
+def test_the_header_suffixes_are_the_header_readers():
+    """The suffix set the service copies is the set of formats with a header reader."""
+    assert frozenset(info_mod.HEADERS) == info_mod.HEADER_SUFFIXES
+    assert info_mod.XML_HEADER_SUFFIXES < info_mod.XML_SUFFIXES

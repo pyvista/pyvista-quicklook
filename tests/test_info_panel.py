@@ -9,6 +9,7 @@ import subprocess
 import sys
 import warnings
 
+from conftest import compiled
 import numpy as np
 import pytest
 import pyvista as pv
@@ -26,26 +27,13 @@ pytestmark = pytest.mark.skipif(sys.platform != 'darwin', reason='AppKit is macO
 
 
 @pytest.fixture(scope='session')
-def probe(tmp_path_factory):
+def probe():
     """Compile the off-screen panel probe against the extension's own panel code."""
-    tool = tmp_path_factory.mktemp('probe') / 'InfoProbe'
-    subprocess.run(
-        [
-            'swiftc',
-            '-O',
-            '-parse-as-library',
-            str(ROOT / 'macos' / 'QuickLookExtension' / 'InfoPanel.swift'),
-            str(ROOT / 'macos' / 'Tools' / 'InfoProbe.swift'),
-            '-o',
-            str(tool),
-            '-framework',
-            'AppKit',
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+    sources = (
+        ROOT / 'macos' / 'QuickLookExtension' / 'InfoPanel.swift',
+        ROOT / 'macos' / 'Tools' / 'InfoProbe.swift',
     )
-    return tool
+    return compiled('InfoProbe', sources, ('-O', '-parse-as-library', '-framework', 'AppKit'))
 
 
 @pytest.fixture
@@ -198,10 +186,10 @@ def test_a_short_list_of_cell_types_has_no_count(panel):
 
 
 def test_every_block_type_line_is_shown(panel):
-    """Each block type sits on its own line, alphabetically, None and MultiBlock included."""
+    """Each leaf block type sits on its own line, alphabetically, None included."""
     shown = texts(panel(big_multiblock(), 'below'))
     start = shown.index('Block types') + 1
-    assert shown[start : start + 4] == ['1 ImageData', '1 MultiBlock', '1 None', '60 PolyData']
+    assert shown[start : start + 3] == ['1 ImageData', '1 None', '60 PolyData']
 
 
 def test_bounds_have_no_comma_or_brackets(panel):
