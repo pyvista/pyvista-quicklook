@@ -323,6 +323,16 @@ def test_config_parses_from_the_command_line(home, capsys):
     assert capsys.readouterr().out.endswith('800 600\n')
 
 
+def test_config_takes_a_theme_name_or_a_saved_theme(home, tmp_path):
+    """A theme is a name, kept as given, or a JSON file, kept as an absolute path."""
+    assert config.parse('theme', ['document']) == 'document'
+    saved = tmp_path / 'mine.json'
+    saved.write_text('{}')
+    assert config.parse('theme', [str(saved)]) == str(saved)
+    with pytest.raises(config.SettingError, match='theme name or a theme saved as JSON'):
+        config.parse('theme', [str(tmp_path / 'missing.json')])
+
+
 def test_run_and_succeeds_survive_a_missing_program(tmp_path):
     """A program that cannot be started gives no output and does not succeed."""
     missing = str(tmp_path / 'no-such-program')

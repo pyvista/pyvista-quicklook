@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import TYPE_CHECKING
 from typing import Any
 
 from . import cache
 from . import config as config_mod
 from . import convert
 from . import environment
-
-if TYPE_CHECKING:
-    import os
 
 # Draws a still on a transparent background, cropped to the dataset.
 STILL = Path(__file__).with_name('_still.py')
@@ -26,6 +23,7 @@ def cache_key(identity: tuple[str, int, int], config: dict[str, Any]) -> str:
         repr(config.get('window_size')),
         repr(config.get('background')),
         repr(config.get('extra_args')),
+        config_mod.theme_token(config),
         STILL_VERSION,
     ]
     return cache.digest(identity, settings)
@@ -49,7 +47,8 @@ def window_size(config: dict[str, Any]) -> list[str]:
 
 def still_command(interpreter: str, path: Path, out: Path, config: dict[str, Any]) -> list[str]:
     """Return the command that draws a still on a transparent background."""
-    return [interpreter, str(STILL), str(path), str(out), *window_size(config)]
+    command = [interpreter, str(STILL), str(path), str(out), *window_size(config)]
+    return [*command, str(config['theme'])] if config.get('theme') else command
 
 
 def build_command(executable: str, path: Path, out: Path, config: dict[str, Any]) -> list[str]:
@@ -67,6 +66,12 @@ def build_command(executable: str, path: Path, out: Path, config: dict[str, Any]
     ]
     if config.get('background'):
         command += ['--background', str(config['background'])]
+    theme = config.get('theme')
+    if theme and os.path.isabs(theme):
+        message = '`pyvista plot` takes a theme by name only, not a theme saved as JSON.'
+        raise environment.RenderError(message)
+    if theme:
+        command += ['--theme', str(theme)]
     command += [str(arg) for arg in config.get('extra_args') or []]
     return command
 

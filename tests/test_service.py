@@ -155,6 +155,32 @@ def test_a_background_draws_the_still_with_the_pyvista_command(tmp_path, env):
     assert (corner[:3] == 255).all()
 
 
+@pytest.mark.skipif(sys.platform != 'darwin', reason='rendering needs a display server on Linux')
+def test_a_saved_theme_colours_the_scene_and_the_still(tmp_path, env):
+    """A theme saved as JSON reaches both the exporter and the still renderer."""
+    theme = pv.themes.DocumentTheme()
+    theme.color = 'red'
+    theme.save(tmp_path / 'theme.json')
+    settings = {**env, 'window_size': [64, 64], 'theme': str(tmp_path / 'theme.json')}
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    assert (pv.read(convert.scene(source, settings))['RGB'] == (255, 0, 0)).all()
+    drawn = pixels(render.preview(source, settings))
+    covered = drawn[drawn[..., 3] == 255]
+    assert (covered[:, 0] > 3 * covered[:, 1:3].max(axis=1)).all()
+
+
+@pytest.mark.parametrize('name', ['dark', 'paraview'])
+def test_a_named_theme_reaches_pyvista_plot(tmp_path, env, name):
+    """``pyvista plot`` draws with the theme it is given by name."""
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    png = render.preview(
+        source, {**env, 'window_size': [32, 32], 'background': 'white', 'theme': name}
+    )
+    assert pixels(png).shape[:2] == (32, 32)
+
+
 def test_header_is_read_by_the_exporter_without_the_values(tmp_path, env):
     """The service asks the exporter what a header says, which needs no conversion."""
     import pyvista_zstd

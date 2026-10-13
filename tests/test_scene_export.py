@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import json
 from pathlib import Path
 
 import meshio
@@ -632,12 +634,74 @@ def test_a_file_that_cannot_be_opened_does_not_look_like_text(tmp_path):
     assert not export_mod.looks_like_text(str(tmp_path / 'gone.dat'))
 
 
-@pytest.mark.parametrize(('smooth', 'style'), [(False, b'flat'), (True, b'smooth')])
-def test_the_scene_says_how_the_theme_shades(tmp_path, monkeypatch, smooth, style):
-    """The scene's header names the theme's shading, and the PLY still reads."""
-    monkeypatch.setattr(pv.global_theme, 'smooth_shading', smooth)
+@pytest.fixture
+def theme():
+    """Restore PyVista's global theme after a test changes it."""
+    saved = copy.deepcopy(pv.global_theme)
+    yield pv.global_theme
+    pv.global_theme.load_theme(saved)
+
+
+def style_of(path):
+    """Return the style a scene's header names."""
+    head = Path(path).read_bytes()[:2048]
+    marker = b'\ncomment pvql style '
+    start = head.index(marker) + len(marker)
+    return json.loads(head[start : head.index(b'\n', start)])
+
+
+@pytest.mark.parametrize(
+    ('smooth', 'interpolation', 'style'),
+    [(False, 'flat', 'flat'), (True, 'flat', 'smooth'), (False, 'phong', 'smooth')],
+)
+def test_the_scene_says_how_the_theme_shades(tmp_path, theme, smooth, interpolation, style):
+    """The header names the shading add_mesh would use, and the PLY still reads."""
+    theme.smooth_shading = smooth
+    theme.lighting_params.interpolation = interpolation
     out = written(pv.Sphere(theta_resolution=8, phi_resolution=8), tmp_path)
-    head = (tmp_path / 'out.ply').read_bytes()[:200]
-    assert head.startswith(b'ply\nformat ')
-    assert b'\ncomment pvql shading ' + style + b'\n' in head
+    assert (tmp_path / 'out.ply').read_bytes().startswith(b'ply\nformat ')
+    assert style_of(tmp_path / 'out.ply')['shading'] == style
     assert out.n_points > 0
+
+
+def test_the_scene_carries_the_theme_lighting(tmp_path, theme):
+    """The header holds the theme's lighting, which SceneKit then follows."""
+    theme.lighting = False
+    theme.lighting_params.ambient = 0.2
+    theme.lighting_params.specular = 0.5
+    theme.lighting_params.specular_power = 30
+    written(pv.Sphere(theta_resolution=8, phi_resolution=8), tmp_path)
+    assert style_of(tmp_path / 'out.ply') == {
+        'shading': 'flat',
+        'lighting': False,
+        'ambient': 0.2,
+        'diffuse': 1.0,
+        'specular': 0.5,
+        'specular_power': 30.0,
+    }
+
+
+def test_a_named_theme_is_applied(theme):
+    """A registered theme's name sets PyVista's theme, colormap included."""
+    export_mod.apply_theme('paraview')
+    assert theme.cmap == 'coolwarm'
+    assert tuple(export_mod.ramp()[0]) == tuple(pv.LookupTable(cmap='coolwarm').values[0][:3])
+
+
+def test_a_saved_theme_is_applied(tmp_path, theme):
+    """A theme saved as JSON sets PyVista's theme."""
+    saved = pv.themes.DocumentTheme()
+    saved.color = 'red'
+    saved.smooth_shading = True
+    saved.save(tmp_path / 'theme.json')
+    export_mod.apply_theme(str(tmp_path / 'theme.json'))
+    out = written(pv.Sphere(theta_resolution=8, phi_resolution=8), tmp_path)
+    assert (out['RGB'] == (255, 0, 0)).all()
+    assert style_of(tmp_path / 'out.ply')['shading'] == 'smooth'
+
+
+def test_no_theme_leaves_pyvista_own(theme):
+    """Without a theme setting, PyVista's theme is left as it is."""
+    theme.color = 'green'
+    export_mod.apply_theme(None)
+    assert theme.color == pv.Color('green')

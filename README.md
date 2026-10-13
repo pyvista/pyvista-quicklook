@@ -179,9 +179,10 @@ for each claimed extension. When the Finder previews one of those files, the ext
 hands it to a background render service, which reads it with PyVista, extracts the
 surface, colours the vertices by the active scalars, and writes a PLY. The extension
 shows that PLY in a SceneKit view, which is what makes the preview turnable.
-A mesh without scalars is drawn in PyVista's theme colour, and the scene is lit by VTK's
-light kit, which turns with the camera, so its colours match PyVista's own renders. Faces
-are drawn flat, as PyVista draws them, unless the theme's `smooth_shading` is on.
+A mesh without scalars is drawn in the theme's colour, scalars in its colormap, and the
+scene is lit by VTK's light kit, which turns with the camera, so its colours match PyVista's
+own renders. The scene carries the theme's shading and its ambient, diffuse and specular
+lighting, which SceneKit follows; faces are drawn flat unless the theme shades smoothly.
 
 Point data is interpolated across each face. Cell data is drawn flat: the cells are
 split apart first, so each keeps its own colour. Lines are drawn as tubes and point
@@ -319,11 +320,32 @@ They are kept in `~/Library/Application Support/PyVistaQuickLook/config.json`.
 | `timeout` | `60` | Seconds before a conversion is abandoned |
 | `warm_on_start` | `true` | Load PyVista and VTK when the render service starts |
 | `window_size` | `1024 1024` | Size the still is drawn at, in pixels; without `background` or `extra_args` it is then cropped to the dataset |
+| `theme` | PyVista's own | A PyVista theme by name, such as `document` or `paraview`, or the path of one saved with `Theme.save`; both tabs follow its colour, colormap, shading and lighting |
 | `background` | none | Draw stills with `pyvista plot` on this background colour instead of a transparent one |
 | `extra_args` | none | Draw stills with `pyvista plot`, appending these arguments |
 | `extensions.add`, `extensions.remove` | none | Extensions to claim or stop claiming, on the next install |
 | `cache` | `true` | Reuse previously built previews |
 | `log` | `false` | Append activity to `pvql.log` beside the config file |
+
+A theme of your own is saved from PyVista and then named by its path; editing the file redraws
+previews on the next look:
+
+```python
+import pyvista as pv
+
+theme = pv.themes.DocumentTheme()
+theme.color = 'tan'
+theme.smooth_shading = True
+theme.lighting_params.specular = 0.4
+theme.save('mytheme.json')
+```
+
+```bash
+pvql config set theme mytheme.json
+```
+
+`pyvista plot`, which draws stills when `background` or `extra_args` is set, takes a theme by
+name only.
 
 Changing `extensions` requires a reinstall, because the claimed types are baked into the
 app bundle. Every other key takes effect on the next preview.

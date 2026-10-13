@@ -42,6 +42,7 @@ def scene_key(identity: tuple[str, int, int], config: dict[str, Any]) -> str:
         SCENE_VERSION,
         repr(config.get('max_scene_points')),
         repr(config.get('max_glyph_points')),
+        config_mod.theme_token(config),
     ]
     return cache.digest(identity, settings)
 
@@ -173,6 +174,8 @@ def scene(
             '--max-glyphs',
             str(budget(config, 'max_glyph_points')),
         ]
+        if config.get('theme'):
+            command += ['--theme', str(config['theme'])]
         if wants_info(config):
             command += ['--info', str(pending)]
         environment.run(config, command, task=f'Converting {path.name}', cwd=path.parent)

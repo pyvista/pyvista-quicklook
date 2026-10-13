@@ -532,6 +532,37 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         view = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
     }
 
+    /// Adopts Quick Look's private protocol, through which Finder asks the questions below.
+    static let adoptsPrivateProtocol: Bool = {
+        guard let adopted = objc_getProtocol("QLPreviewingController_Private") else {
+            return false
+        }
+        return class_addProtocol(PVQLPreviewViewController.self, adopted)
+    }()
+
+    override init(nibName: NSNib.Name?, bundle: Bundle?) {
+        super.init(nibName: nibName, bundle: bundle)
+        _ = Self.adoptsPrivateProtocol
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not used")
+    }
+
+    /// Asked by Finder before it drags the file from its preview column: a press on the 3D view
+    /// turns the scene instead.
+    /// Whether Finder should frame the preview in its pane; the system's own 3D preview goes without.
+    @objc func wantsBorder() -> Bool {
+        false
+    }
+
+    /// Whether a press here turns the scene rather than dragging the file out of Finder's pane.
+    @objc(mustHandleDragAtLocation:)
+    func mustHandleDrag(at point: NSPoint) -> Bool {
+        view.hitTest(point) is LitSceneView
+    }
+
     /// Fills the panel with a view, pinned to every edge so it resizes with it.
     @MainActor
     func show(_ replacement: NSView) {

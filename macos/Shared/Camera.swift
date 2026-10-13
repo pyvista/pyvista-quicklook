@@ -94,23 +94,64 @@ func previewCamera(for scene: SCNScene) -> Framing {
     return (node, target)
 }
 
-/// Whether a scene file asks for its faces drawn flat, as PyVista's theme draws them by default;
-/// `_scene_export.py`'s SHADING_COMMENT writes the marker.
-func drawsFlat(_ url: URL) -> Bool {
-    guard let handle = try? FileHandle(forReadingFrom: url) else {
-        return false
-    }
-    defer { try? handle.close() }
-    let head = (try? handle.read(upToCount: 1024)) ?? Data()
-    return head.range(of: Data("comment pvql shading flat\n".utf8)) != nil
-}
+/// How a scene's theme shades and lights it; `_scene_export.py`'s STYLE_COMMENT writes it.
+struct SceneStyle: Decodable {
+    var shading = "flat"
+    var lighting = true
+    var ambient: CGFloat = 0
+    var diffuse: CGFloat = 1
+    var specular: CGFloat = 0
+    var specularPower: CGFloat = 100
 
-/// Shades every face with its own slope, as VTK's flat interpolation does.
-func drawFlat(_ scene: SCNScene) {
-    // The view-space position's change across the pixel gives the face's normal toward the eye.
-    let modifier = "_surface.normal = normalize(cross(dfdy(_surface.position), dfdx(_surface.position)));"
-    scene.rootNode.enumerateHierarchy { node, _ in
-        node.geometry?.materials.forEach { $0.shaderModifiers = [.surface: modifier] }
+    enum CodingKeys: String, CodingKey {
+        case shading, lighting, ambient, diffuse, specular
+        case specularPower = "specular_power"
+    }
+
+    /// The style a scene file's header names, or PyVista's defaults when it names none.
+    static func read(_ url: URL) -> SceneStyle {
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return SceneStyle()
+        }
+        defer { try? handle.close() }
+        let head = (try? handle.read(upToCount: 2048)) ?? Data()
+        let marker = Data("comment pvql style ".utf8)
+        guard let start = head.range(of: marker)?.upperBound,
+              let end = head[start...].firstIndex(of: UInt8(ascii: "\n")),
+              let style = try? JSONDecoder().decode(SceneStyle.self, from: head[start..<end])
+        else {
+            return SceneStyle()
+        }
+        return style
+    }
+
+    /// Gives every material the theme's shading and its share of each kind of light.
+    func apply(to scene: SCNScene) {
+        if lighting && ambient > 0 {
+            // VTK's ambient light is white; the theme's ambient share sets how much reaches a face.
+            let light = SCNLight()
+            light.type = .ambient
+            light.intensity = unitLightIntensity * ambient
+            light.color = NSColor.white
+            let node = SCNNode()
+            node.light = light
+            scene.rootNode.addChildNode(node)
+        }
+        // The view-space position's change across the pixel gives the face's normal toward the eye.
+        let flat = "_surface.normal = normalize(cross(dfdy(_surface.position), dfdx(_surface.position)));"
+        scene.rootNode.enumerateHierarchy { node, _ in
+            node.geometry?.materials.forEach { material in
+                if shading == "flat" {
+                    material.shaderModifiers = [.surface: flat]
+                }
+                material.lightingModel = !lighting ? .constant : specular > 0 ? .blinn : .lambert
+                material.diffuse.intensity = lighting ? diffuse : 1
+                material.locksAmbientWithDiffuse = true
+                material.specular.contents = NSColor(white: 1, alpha: 1)
+                material.specular.intensity = specular
+                material.shininess = specularPower
+            }
+        }
     }
 }
 
@@ -129,7 +170,7 @@ let lightKit: [(direction: SIMD3<Float>, intensity: CGFloat, color: (CGFloat, CG
     (SIMD3(-0.94, 0, -0.342), 0.2143, (1, 1, 1)),
 ]
 
-/// Lights and shades a scene as PyVista does, returning the node that holds the lights.
+/// Lights a scene as PyVista does, returning the node that holds the lights.
 ///
 /// The lights are given in camera space, so the returned node must take the orientation of
 /// whatever camera draws the scene; `LightsFollowCamera` keeps it so as the reader turns it.
@@ -147,9 +188,6 @@ func lightLikePyVista(_ scene: SCNScene) -> SCNNode {
         rig.addChildNode(node)
     }
     scene.rootNode.addChildNode(rig)
-    scene.rootNode.enumerateHierarchy { node, _ in
-        node.geometry?.materials.forEach { $0.lightingModel = .lambert }
-    }
     return rig
 }
 

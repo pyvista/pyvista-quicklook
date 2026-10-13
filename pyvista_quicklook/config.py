@@ -27,6 +27,8 @@ DEFAULTS: dict[str, Any] = {
     # None leaves half the Mac's memory to previews being built at once.
     'max_conversion_memory_mb': None,
     'background': None,
+    # None leaves PyVista's own theme; otherwise a theme's name or a theme saved as JSON.
+    'theme': None,
     'extra_args': [],
     'extensions': {'add': [], 'remove': []},
     'cache': True,
@@ -71,6 +73,7 @@ KINDS: dict[str, str] = {
     'max_file_size_mb': 'count',
     'max_conversion_memory_mb': 'count',
     'background': 'text',
+    'theme': 'theme',
     'extra_args': 'words',
     'extensions.add': 'extensions',
     'extensions.remove': 'extensions',
@@ -166,6 +169,8 @@ def parse(key: str, values: list[str]) -> Any:
             message = f'{key} takes {what}.'
             raise SettingError(message)
         return int(number) if kind == 'count' or float(number).is_integer() else number
+    if kind == 'theme':
+        return theme_spec(value)
     if kind == 'executable':
         found = executable(value)
         if found is None:
@@ -230,3 +235,26 @@ def resolve_pyvista(config: dict[str, Any] | None = None) -> str | None:
     """Return the ``pyvista`` command line interface beside the configured interpreter."""
     interpreter = find_python(config)
     return None if interpreter is None else executable(Path(interpreter).parent / 'pyvista')
+
+
+def theme_spec(value: str) -> str:
+    """Return a theme's name as given, or the absolute path of a theme saved as JSON."""
+    if not (value.lower().endswith('.json') or os.sep in value or value.startswith('~')):
+        return value
+    path = Path(value).expanduser()
+    if not path.is_file():
+        message = f'{value} is not a file; theme takes a theme name or a theme saved as JSON.'
+        raise SettingError(message)
+    return str(path.absolute())
+
+
+def theme_token(config: dict[str, Any]) -> str:
+    """Return what a cache key holds of the theme, so editing a theme file redraws previews."""
+    spec = config.get('theme')
+    if not spec:
+        return repr(None)
+    try:
+        stat = Path(spec).stat() if os.path.isabs(spec) else None
+    except OSError:
+        stat = None
+    return repr((spec, stat and stat.st_mtime_ns, stat and stat.st_size))

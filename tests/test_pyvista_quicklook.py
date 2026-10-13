@@ -177,6 +177,44 @@ def test_cache_key_follows_render_settings():
     )
 
 
+def test_cache_keys_follow_the_theme_and_its_file(tmp_path):
+    """A different theme, or an edited theme file, draws previews again."""
+    identity = ('/mesh.vtu', 1, 2)
+    saved = tmp_path / 'theme.json'
+    saved.write_text('{}')
+    keys = [
+        (render.cache_key(identity, config), convert.scene_key(identity, config))
+        for config in ({}, {'theme': 'dark'}, {'theme': str(saved)})
+    ]
+    saved.write_text('{"color": "red"}')
+    keys.append(
+        (
+            render.cache_key(identity, {'theme': str(saved)}),
+            convert.scene_key(identity, {'theme': str(saved)}),
+        )
+    )
+    saved.unlink()
+    keys.append(
+        (
+            render.cache_key(identity, {'theme': str(saved)}),
+            convert.scene_key(identity, {'theme': str(saved)}),
+        )
+    )
+    assert len({still for still, _ in keys}) == len({scene for _, scene in keys}) == 5
+
+
+def test_the_theme_reaches_every_drawing_command():
+    """Stills, ``pyvista plot`` and scene export are all given the theme."""
+    config = {'window_size': [64, 32], 'theme': 'dark'}
+    assert render.still_command('/bin/python', 'in.vtu', 'out.png', config)[-1] == 'dark'
+    command = render.build_command('/bin/pyvista', 'in.vtu', 'out.png', config)
+    assert command[command.index('--theme') + 1] == 'dark'
+    with pytest.raises(environment.RenderError, match='by name only'):
+        render.build_command(
+            '/bin/pyvista', 'in.vtu', 'out.png', {**config, 'theme': '/a/theme.json'}
+        )
+
+
 def test_build_command_renders_off_screen():
     """The render command never opens a window."""
     command = render.build_command('/bin/pyvista', 'in.vtu', 'out.png', {'window_size': [64, 32]})

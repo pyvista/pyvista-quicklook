@@ -12,11 +12,13 @@ import pyvista as pv
 if __package__:
     from ._scene_export import NOT_A_MESH_STATUS
     from ._scene_export import NotAMeshError
+    from ._scene_export import apply_theme
     from ._scene_export import read_for_preview
     from ._scene_export import summary
 else:
     from _scene_export import NOT_A_MESH_STATUS
     from _scene_export import NotAMeshError
+    from _scene_export import apply_theme
     from _scene_export import read_for_preview
     from _scene_export import summary
 
@@ -90,6 +92,7 @@ def main() -> int:
     """Render the still named on the command line."""
     source, out, width, height = sys.argv[1:5]
     try:
+        apply_theme(sys.argv[5] if len(sys.argv) > 5 else None)
         save(render(source, int(width), int(height)), out)
     except Exception as error:
         # The reason is shown in the Quick Look panel, where a traceback would fill it.

@@ -208,6 +208,25 @@ def test_faces_are_shaded_as_the_theme_says(tmp_path, monkeypatch, smooth, low, 
     assert low < varying(rendered(sphere, tmp_path)) < high
 
 
+def test_an_unlit_theme_draws_one_flat_colour(tmp_path, monkeypatch):
+    """With the theme's lighting off, every face shows the theme's colour as it is."""
+    monkeypatch.setattr(pv.global_theme, 'lighting', False)
+    pixels = rendered(pv.Sphere(theta_resolution=12, phi_resolution=12), tmp_path)
+    lit = pixels[pixels.astype(int).sum(axis=2) > 30]
+    assert (np.abs(lit.astype(int) - pv.global_theme.color.int_rgb).max(axis=1) <= 2).mean() > 0.9
+
+
+def test_a_specular_theme_draws_highlights(tmp_path, monkeypatch):
+    """The theme's specular share brightens the faces turned toward the lights."""
+    sphere = pv.Sphere(theta_resolution=24, phi_resolution=24)
+    monkeypatch.setattr(pv.global_theme, 'color', 'darkblue')
+    dull = rendered(sphere, tmp_path, name='dull')
+    monkeypatch.setattr(pv.global_theme.lighting_params, 'specular', 1.0)
+    monkeypatch.setattr(pv.global_theme.lighting_params, 'specular_power', 10)
+    shiny = rendered(sphere, tmp_path, name='shiny')
+    assert shiny[..., 0].max() > dull[..., 0].max() + 60
+
+
 def test_a_point_cloud_is_drawn(tmp_path):
     """Glyphed points reach the frame instead of rendering blank."""
     cloud = pv.PolyData(np.random.default_rng(0).random((400, 3)))
