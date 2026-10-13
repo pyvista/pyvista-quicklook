@@ -72,4 +72,4 @@ def preview(
         command = build_command(executable, path, scratch, config)
         environment.run(config, command, task=f'Rendering {path.name}', cwd=path.parent)
 
-    return cache.fill(preview_path(identity, config), config, str(path), build)
+    return cache.fill(preview_path(identity, config), config, str(path), build, identity)

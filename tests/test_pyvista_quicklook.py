@@ -990,7 +990,7 @@ def test_cache_reports_its_size(capsys, monkeypatch, tmp_path):
     (tmp_path / 'a.png').write_bytes(b'0123456789')
     (tmp_path / 'v-a.json').write_bytes(b'{}')
     monkeypatch.setattr(cli.config_mod, 'CACHE_DIR', tmp_path)
-    assert cli.cmd_cache(argparse.Namespace(clear=False)) == 0
+    assert cli.cmd_cache(argparse.Namespace(clear=False, prune=False)) == 0
     assert '1 previews' in capsys.readouterr().out
 
 
@@ -1001,7 +1001,7 @@ def test_cache_clear_removes_previews_but_not_the_stamp(capsys, monkeypatch, tmp
     (tmp_path / 'b.json').write_bytes(b'{}')
     (tmp_path / '.warm').touch()
     monkeypatch.setattr(cli.config_mod, 'CACHE_DIR', tmp_path)
-    assert cli.cmd_cache(argparse.Namespace(clear=True)) == 0
+    assert cli.cmd_cache(argparse.Namespace(clear=True, prune=False)) == 0
     assert 'removed 2 cached previews' in capsys.readouterr().out
     assert [p.name for p in tmp_path.iterdir()] == ['.warm']
 
@@ -1372,3 +1372,163 @@ def test_the_sweep_leaves_a_copy_a_request_still_reads(tmp_path):
     with daemon.staged_in_use(None):
         daemon.sweep(tmp_path)
     assert not folder.exists()
+
+
+def aged(path, seconds=3600):
+    """Return ``path`` with its modification time moved into the past."""
+    past = time.time() - seconds
+    os.utime(path, (past, past))
+    return path
+
+
+@pytest.fixture
+def recorded(tmp_path, monkeypatch):
+    """Return a function that caches an entry for a new source file, recording its identity."""
+    monkeypatch.setattr(cache.config_mod, 'CACHE_DIR', tmp_path / 'cache')
+
+    def make(name, suffix='.ply'):
+        source = tmp_path / name
+        source.write_text('mesh')
+        identity = cache.identity_of(source)
+        out = config.CACHE_DIR / f'{cache.digest(identity, [])}{suffix}'
+        return source, cache.fill(out, {}, name, lambda s: s.write_text('built'), identity)
+
+    return make
+
+
+def test_fill_records_the_source_beside_the_entry(recorded):
+    """Each entry has a record naming the file, its time, and its size."""
+    source, entry = recorded('mesh.vtu')
+    record = json.loads(cache.record_path(entry).read_text())
+    assert record == dict(zip(('path', 'mtime', 'size'), cache.identity_of(source), strict=True))
+
+
+def test_prune_keeps_entries_of_unchanged_files(recorded):
+    """A file that is still as it was keeps its preview."""
+    _, entry = recorded('mesh.vtu')
+    assert cache.prune() == 0
+    assert entry.is_file()
+    assert cache.record_path(entry).is_file()
+
+
+def test_prune_drops_entries_of_deleted_files(recorded):
+    """A file that has gone takes its preview and record with it."""
+    source, _ = recorded('mesh.vtu')
+    _, kept = recorded('other.vtu', '.png')
+    source.unlink()
+    assert cache.prune() == 1
+    assert sorted(p.name for p in config.CACHE_DIR.iterdir()) == sorted(
+        [kept.name, cache.record_path(kept).name]
+    )
+
+
+def test_prune_drops_entries_of_changed_files(recorded):
+    """A file edited since its preview was built has that preview dropped."""
+    source, entry = recorded('mesh.vtu', '.json')
+    source.write_text('a larger mesh')
+    assert cache.prune() == 1
+    assert not entry.exists()
+
+
+def test_prune_keeps_entries_it_cannot_check(recorded, monkeypatch):
+    """A file the service may not look at is given the benefit of the doubt."""
+    _, entry = recorded('mesh.vtu')
+
+    def denied(path):
+        raise PermissionError(path)
+
+    monkeypatch.setattr(cache, 'identity_of', denied)
+    assert cache.prune() == 0
+    assert entry.is_file()
+
+
+def test_prune_keeps_entries_on_unplugged_disks(recorded):
+    """A file on a volume that is not mounted may come back, so its preview stays."""
+    _, entry = recorded('mesh.vtu')
+    absent = '/Volumes/pvql-not-mounted-disk/mesh.vtu'
+    cache.record_path(entry).write_text(json.dumps({'path': absent, 'mtime': 1, 'size': 1}))
+    assert cache.unmounted(Path(absent))
+    assert not cache.unmounted(Path('/Volumes'))
+    assert cache.prune() == 0
+    assert entry.is_file()
+
+
+def test_prune_drops_unrecorded_entries_and_lone_records_once_settled(tmp_path, monkeypatch):
+    """Entries from before records were kept go, and so do records without an entry."""
+    monkeypatch.setattr(cache.config_mod, 'CACHE_DIR', tmp_path)
+    old = tmp_path / 'old.png'
+    old.write_bytes(b'x')
+    aged(old)
+    lone = tmp_path / 'gone.ply.src'
+    lone.write_text('{}')
+    aged(lone)
+    fresh = tmp_path / 'landing.ply'
+    fresh.write_bytes(b'x')
+    (tmp_path / '.warm').touch()
+    assert cache.prune() == 1
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['.warm', 'landing.ply']
+
+
+def test_discarding_an_old_scene_takes_its_record(tmp_path, monkeypatch):
+    """A scene from an older exporter is discarded along with its record."""
+    monkeypatch.setattr(cache.config_mod, 'CACHE_DIR', tmp_path)
+    (tmp_path / 'old-1.ply').write_bytes(b'x')
+    (tmp_path / 'old-1.ply.src').write_text('{}')
+    assert cache.discard_other_versions(convert.SCENE_VERSION) == 1
+    assert not list(tmp_path.iterdir())
+
+
+def test_clear_removes_records(tmp_path, monkeypatch):
+    """Clearing the cache leaves no records behind."""
+    monkeypatch.setattr(cache.config_mod, 'CACHE_DIR', tmp_path)
+    (tmp_path / 'a.png').write_bytes(b'x')
+    (tmp_path / 'a.png.src').write_text('{}')
+    assert cache.clear() == 1
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    ('minutes', 'last', 'now', 'due'),
+    [
+        (60, None, 0.0, True),
+        (60, 0.0, 3599.0, False),
+        (60, 0.0, 3600.0, True),
+        (0, None, 0.0, False),
+        (None, None, 0.0, False),
+    ],
+)
+def test_prune_is_due_on_the_configured_interval(minutes, last, now, due):
+    """The service checks at start and then every interval, and never when it is 0."""
+    assert daemon.prune_due({'cache_check_minutes': minutes}, last, now) is due
+
+
+def test_prune_interval_is_read_as_whole_minutes():
+    """The interval takes a whole number of minutes, where 0 turns pruning off."""
+    assert config.parse('cache_check_minutes', ['15']) == 15
+    assert config.parse('cache_check_minutes', ['0']) == 0
+    for bad in ('-1', '1.5', 'often'):
+        with pytest.raises(config.SettingError, match='whole number of minutes'):
+            config.parse('cache_check_minutes', [bad])
+
+
+def test_cache_prune_reports_what_went(capsys, monkeypatch, tmp_path):
+    """`pvql cache --prune` drops stale previews now and reports the count."""
+    monkeypatch.setattr(cli.config_mod, 'CACHE_DIR', tmp_path)
+    monkeypatch.setattr(cli.cache_mod, 'prune', lambda config: 3)
+    assert cli.cmd_cache(argparse.Namespace(clear=False, prune=True)) == 0
+    assert 'removed 3 cached entries' in capsys.readouterr().out
+
+
+def test_prune_drops_an_entry_whose_record_is_unreadable_and_logs_it(recorded, monkeypatch):
+    """A record that cannot be read vouches for nothing, and the removal is logged."""
+    _, entry = recorded('mesh.vtu')
+    cache.record_path(entry).write_text('not json')
+    logged = []
+    monkeypatch.setattr(cache, 'log', lambda config, message: logged.append(message))
+    assert cache.prune({'log': True}) == 1
+    assert logged == ['pruned 1 cached entries']
+
+
+def test_a_file_that_vanished_is_not_settled(tmp_path):
+    """A file removed between listing and looking is left to whoever removed it."""
+    assert not cache.settled(tmp_path / 'gone.png', time.time())

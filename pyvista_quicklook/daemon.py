@@ -42,6 +42,8 @@ EARLY_BYTES = 32 * 1024 * 1024
 STALE_SECONDS = 600
 # How much of the extension's wait for a reply is kept in hand.
 REPLY_MARGIN_SECONDS = 5
+# How often the pruner rereads its interval, so a change applies within the hour.
+PRUNE_POLL_SECONDS = 3600
 
 UNREADABLE_MESSAGE = """The render service could not read
 
@@ -467,6 +469,32 @@ def warm_in_background(config: dict[str, Any]) -> threading.Thread:
     return thread
 
 
+def prune_due(config: dict[str, Any], last: float | None, now: float) -> bool:
+    """Return whether the cache is due a check for files that have changed or gone."""
+    minutes = config.get('cache_check_minutes') or 0
+    return minutes > 0 and (last is None or now - last >= minutes * 60)
+
+
+def prune_periodically() -> None:
+    """Drop cached previews of changed or deleted files, as often as the config asks."""
+    last = None
+    while True:
+        config = config_mod.load()
+        if prune_due(config, last, time.monotonic()):
+            # A file that cannot be looked at blocks only this thread, never a preview.
+            with contextlib.suppress(Exception):
+                cache.prune(config)
+            last = time.monotonic()
+        time.sleep(PRUNE_POLL_SECONDS)
+
+
+def prune_in_background() -> threading.Thread:
+    """Start the thread that keeps the cache to files that still exist as they were."""
+    thread = threading.Thread(target=prune_periodically, daemon=True)
+    thread.start()
+    return thread
+
+
 def serve(poll: float = 0.05) -> int:
     """Answer preview requests until the process is stopped."""
     directory = drop_dir()
@@ -476,6 +504,7 @@ def serve(poll: float = 0.05) -> int:
     startup = config_mod.load()
     if startup.get('warm_on_start', True):
         warm_in_background(startup)
+    prune_in_background()
     last_sweep = time.monotonic()
     while True:
         for request in sorted(directory.glob(f'*{REQUEST_SUFFIX}')):

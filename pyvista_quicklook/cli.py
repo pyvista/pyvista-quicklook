@@ -263,10 +263,13 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 
 def cmd_cache(args: argparse.Namespace) -> int:
-    """Show or clear the preview cache."""
+    """Show, prune, or clear the preview cache."""
     if args.clear:
         print(f'removed {cache_mod.clear()} cached previews')
         return 0
+    if args.prune:
+        removed = cache_mod.prune(config_mod.load())
+        print(f'removed {removed} cached entries of files that have changed or gone')
     entries = cache_mod.entries()
     total = sum(entry.stat().st_size for entry in cache_mod.files())
     print(f'{config_mod.CACHE_DIR}\n{len(entries)} previews, {total / 1_000_000:.1f} MB')
@@ -549,8 +552,11 @@ def build_parser() -> argparse.ArgumentParser:
     config.add_argument('--helper', help='absolute path to the pvql executable')
     config.set_defaults(func=cmd_config)
 
-    cache = sub.add_parser('cache', help='show or clear the preview cache')
-    cache.add_argument('--clear', action='store_true')
+    cache = sub.add_parser('cache', help='show, prune, or clear the preview cache')
+    cache.add_argument('--clear', action='store_true', help='delete every cached preview')
+    cache.add_argument(
+        '--prune', action='store_true', help='delete previews of files that have changed or gone'
+    )
     cache.set_defaults(func=cmd_cache)
 
     finder = sub.add_parser('finder', help='say whether the Finder must restart to show previews')

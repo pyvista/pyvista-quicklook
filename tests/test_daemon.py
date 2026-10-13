@@ -171,6 +171,7 @@ def test_serve_answers_each_request_on_its_own_thread(tmp_path, monkeypatch):
     drop.mkdir()
     monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
     monkeypatch.setattr(daemon.cache, 'discard_other_versions', lambda version: 0)
+    monkeypatch.setattr(daemon, 'prune_in_background', lambda: None)
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': False})
     release, second = threading.Event(), threading.Event()
     released, finished = [], threading.Event()
@@ -205,6 +206,7 @@ def test_serve_leaves_a_request_another_service_took(tmp_path, monkeypatch):
     drop.mkdir()
     monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
     monkeypatch.setattr(daemon.cache, 'discard_other_versions', lambda version: 0)
+    monkeypatch.setattr(daemon, 'prune_in_background', lambda: None)
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': False})
     monkeypatch.setattr(daemon, 'handle', lambda request: pytest.fail('handled'))
 
@@ -226,11 +228,12 @@ class StopLoopError(Exception):
 
 
 def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
-    """The loop prepares its folder, warms up, answers each request, and sweeps each minute."""
+    """The loop prepares its folder, warms up, starts pruning, answers requests, and sweeps."""
     drop = tmp_path / 'container'
-    handled, swept, warmed = [], [], []
+    handled, swept, warmed, pruning = [], [], [], []
     monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
     monkeypatch.setattr(daemon.cache, 'discard_other_versions', lambda version: 0)
+    monkeypatch.setattr(daemon, 'prune_in_background', lambda: pruning.append(True))
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': True})
     monkeypatch.setattr(daemon, 'warm_in_background', warmed.append)
     monkeypatch.setattr(
@@ -262,6 +265,7 @@ def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
     assert list(drop.iterdir()) == []
     assert swept == [drop]
     assert warmed == [{'warm_on_start': True}]
+    assert pruning == [True]
 
 
 @pytest.fixture
@@ -426,3 +430,33 @@ def test_a_description_that_raises_does_not_stop_the_others(tmp_path, monkeypatc
     assert daemon.describe_later('/data/b.vtu', {}, ('b.json', 1, 2))
     daemon._descriptions.join()
     assert calls == ['/data/a.vtu', '/data/b.vtu']
+
+
+def test_pruner_rereads_its_interval_and_checks_when_due(monkeypatch):
+    """The pruner checks at start, then waits out the interval, rereading it each poll."""
+    settings = iter([{'cache_check_minutes': 2}] * 3 + [{'cache_check_minutes': 0}])
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: next(settings))
+    pruned = []
+    monkeypatch.setattr(daemon.cache, 'prune', pruned.append)
+    clock = iter([0.0, 0.0, 60.0, 120.0, 120.0, 180.0])
+    monkeypatch.setattr(daemon.time, 'monotonic', lambda: next(clock))
+    polls = []
+
+    def sleep(seconds):
+        polls.append(seconds)
+        if len(polls) == 4:
+            raise StopLoopError
+
+    monkeypatch.setattr(daemon.time, 'sleep', sleep)
+    with pytest.raises(StopLoopError):
+        daemon.prune_periodically()
+    assert len(pruned) == 2
+    assert polls == [daemon.PRUNE_POLL_SECONDS] * 4
+
+
+def test_pruner_runs_on_a_daemon_thread(monkeypatch):
+    """The pruner never keeps the service from stopping."""
+    monkeypatch.setattr(daemon, 'prune_periodically', lambda: None)
+    thread = daemon.prune_in_background()
+    thread.join(5)
+    assert thread.daemon

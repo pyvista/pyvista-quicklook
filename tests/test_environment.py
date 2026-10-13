@@ -45,7 +45,7 @@ def test_fill_rejects_an_empty_build(tmp_path):
     """A build that writes nothing is an error, and leaves nothing behind."""
     out = tmp_path / 'preview.png'
     with pytest.raises(environment.RenderError, match='Nothing was written'):
-        cache.fill(out, {}, 'mesh.vtu', lambda scratch: scratch.touch())
+        cache.fill(out, {}, 'mesh.vtu', lambda scratch: scratch.touch(), ('mesh.vtu', 1, 1))
     assert not list(tmp_path.iterdir())
 
 
