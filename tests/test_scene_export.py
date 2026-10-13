@@ -110,6 +110,18 @@ def test_cell_scalars_are_split_rather_than_averaged(tmp_path):
     assert out.n_points == mesh.n_cells * 3
 
 
+def test_faces_keep_their_own_cell_scalars_beside_points_and_lines(tmp_path):
+    """Loose points and lines are left out, and each face keeps its own value."""
+    points = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [2, 0, 0], [3, 0, 0], [2, 1, 0]], float)
+    mesh = pv.PolyData(points, verts=[1, 0], lines=[2, 0, 1], faces=[3, 0, 1, 2, 3, 3, 4, 5])
+    # Were the loose cells' value to reach the faces, the ramp would span 0 to 5.
+    mesh.cell_data['region'] = [5.0, 5.0, 0.0, 1.0]
+    mesh.set_active_scalars('region')
+    out = written(mesh, tmp_path)
+    colours = {tuple(rgb) for rgb in np.asarray(out['RGB'])}
+    assert colours == {tuple(export_mod.ramp()[0]), tuple(export_mod.ramp()[255])}
+
+
 def test_a_dataset_without_scalars_is_drawn_in_the_theme_colour(tmp_path):
     """A file that asks for no colour is drawn in the theme's colour, as pyvista plot draws it."""
     mesh = pv.Sphere(theta_resolution=8, phi_resolution=8)
@@ -487,7 +499,8 @@ def test_a_failure_is_reported_in_one_line(tmp_path, capsys, monkeypatch):
             '0',
         ],
     )
-    assert export_mod.main() == export_mod.NOT_A_MESH_STATUS
+    with pytest.warns(UserWarning, match='raised an error while reading'):
+        assert export_mod.main() == export_mod.NOT_A_MESH_STATUS
     reported = capsys.readouterr().err.strip()
     assert len(reported.splitlines()) == 1
     assert len(reported) <= 240
@@ -537,11 +550,14 @@ def test_text_that_is_not_a_mesh_is_shown_as_text(tmp_path):
     empty = tmp_path / 'empty.vtu'
     empty.write_text('<?xml version="1.0"?><VTKFile type="UnstructuredGrid"></VTKFile>')
     assert export_mod.looks_like_text(str(empty))
-    with pytest.raises(export_mod.NotAMeshError, match='no surface'):
+    # The readers say what they made of each file, which is what makes it text.
+    unreadable = 'raised an error while reading'
+    no_surface = pytest.raises(export_mod.NotAMeshError, match='no surface')
+    with pytest.warns(UserWarning, match=unreadable), no_surface:
         export_mod.export(str(empty), str(tmp_path / 'out.ply'), 0, 0)
     table = tmp_path / 'table.dat'
     table.write_text('x y z\n1 2 3\n')
-    with pytest.raises(export_mod.NotAMeshError):
+    with pytest.warns(UserWarning, match=unreadable), pytest.raises(export_mod.NotAMeshError):
         export_mod.export(str(table), str(tmp_path / 'out.ply'), 0, 0)
 
 

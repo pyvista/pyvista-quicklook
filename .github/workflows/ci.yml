@@ -15,6 +15,11 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Nothing in CI is a terminal, so tools have to be told to colour their output.
+  FORCE_COLOR: '1'
+  PY_COLORS: '1'
+
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
@@ -27,7 +32,7 @@ jobs:
       with:
         enable-cache: false
     - run: uv sync --group dev
-    - run: uv run pre-commit run --all-files --show-diff-on-failure
+    - run: uv run pre-commit run --all-files --show-diff-on-failure --color=always
       env:
           # This hook exists to stop *local* commits straight to main; it
           # would always fail here since CI checks out that branch/tag directly.
