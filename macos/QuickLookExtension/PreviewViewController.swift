@@ -55,6 +55,28 @@ final class LitSceneView: SCNView {
     }
 }
 
+/// A description fetched on another thread, waited for with a time limit.
+final class DescriptionWait: @unchecked Sendable {
+    private let done = DispatchSemaphore(value: 0)
+    private var info: [String: Any]?
+
+    /// Records the description, or nil when there is none, and wakes whoever waits.
+    func finish(_ info: [String: Any]?) {
+        self.info = info
+        done.signal()
+        done.signal()
+    }
+
+    /// Returns the description once it comes, or nil when there is none or it takes too long.
+    func wait(seconds: Double) -> [String: Any]? {
+        let deadline: DispatchTime = seconds.isFinite ? .now() + seconds : .distantFuture
+        guard done.wait(timeout: deadline) == .success else {
+            return nil
+        }
+        return info
+    }
+}
+
 /// Builds a view that lets the reader turn the mesh with the mouse.
 @MainActor
 func sceneView(for scene: SCNScene) -> SCNView {
@@ -577,12 +599,20 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         }
         // A current picture the file carries of itself is the preview, without the service.
         if shown == .still, let png = EmbeddedThumbnail.read(url, allowStale: false) {
+            // The description usually comes in a fraction of a second, and showing the picture
+            // without it first would shrink the picture when the details arrive beside or below it.
+            let described = DescriptionWait()
+            DispatchQueue.global(qos: .userInitiated).async {
+                described.finish(Helper.requestDescription(url))
+            }
+            let early = described.wait(seconds: 0.5)
             DispatchQueue.main.async {
-                present(pictureView(png) ?? messageView("Could not preview \(name)"), .still, nil)
+                let picture = pictureView(png) ?? messageView("Could not preview \(name)")
+                present(picture, .still, early.flatMap(MeshInfo.init))
                 completion.finish(nil)
                 pvqlLog("showing the picture \(name) carries as its preview")
             }
-            guard let info = Helper.requestDescription(url) else {
+            guard early == nil, let info = described.wait(seconds: .infinity) else {
                 return
             }
             DispatchQueue.main.async {
