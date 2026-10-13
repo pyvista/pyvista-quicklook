@@ -20,6 +20,7 @@ def cache_key(identity: tuple[str, int, int], config: dict[str, Any]) -> str:
         repr(config.get('window_size')),
         repr(config.get('background')),
         repr(config.get('extra_args')),
+        config_mod.theme_token(config),
     ]
     return cache.digest(identity, settings)
 
@@ -29,9 +30,14 @@ def preview_path(identity: tuple[str, int, int], config: dict[str, Any]) -> Path
     return config_mod.CACHE_DIR / f'{cache_key(identity, config)}.png'
 
 
+def window_size(config: dict[str, Any]) -> list[str]:
+    """Return the configured still size as command-line arguments."""
+    width, height = config.get('window_size') or config_mod.DEFAULTS['window_size']
+    return [str(int(width)), str(int(height))]
+
+
 def build_command(executable: str, path: Path, out: Path, config: dict[str, Any]) -> list[str]:
     """Return the ``pyvista plot`` command used to render a preview."""
-    width, height = config.get('window_size') or [1024, 1024]
     command = [
         executable,
         'plot',
@@ -41,11 +47,16 @@ def build_command(executable: str, path: Path, out: Path, config: dict[str, Any]
         '--screenshot',
         str(out),
         '--window-size',
-        str(int(width)),
-        str(int(height)),
+        *window_size(config),
     ]
     if config.get('background'):
         command += ['--background', str(config['background'])]
+    theme = config.get('theme')
+    if config_mod.saved_theme(config):
+        message = '`pyvista plot` takes a theme by name only, not a theme saved as JSON.'
+        raise environment.RenderError(message)
+    if theme:
+        command += ['--theme', str(theme)]
     command += [str(arg) for arg in config.get('extra_args') or []]
     return command
 

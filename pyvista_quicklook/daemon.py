@@ -24,7 +24,6 @@ from . import render as render_mod
 from . import warmup as warmup_mod
 from .environment import RenderError
 from .plist import APP_BUNDLE_ID
-from .plist import EXT_BUNDLE_ID
 from .plist import LEGACY_EXT_BUNDLE_ID
 
 if TYPE_CHECKING:
@@ -56,7 +55,7 @@ file elsewhere."""
 
 def drop_dir() -> Path:
     """Return the directory the extension and the daemon exchange files in."""
-    return Path.home() / 'Library' / 'Containers' / EXT_BUNDLE_ID / 'Data' / 'tmp'
+    return config_mod.MIRROR_PATH.parent
 
 
 def legacy_drop_dir() -> Path:
@@ -125,7 +124,7 @@ def cached_preview(identity: tuple[str, int, int] | None, config: dict[str, Any]
     """Return the cached preview a request asks for, or None when it must be built."""
     if identity is None or not config.get('cache', True):
         return None
-    if config.get('interactive', True):
+    if config.get('interactive', config_mod.DEFAULTS['interactive']):
         preview = convert_mod.scene_path(identity, config)
     else:
         preview = render_mod.preview_path(identity, config)
@@ -203,7 +202,7 @@ def one_at_a_time(identity: tuple[str, int, int] | None, config: dict[str, Any])
     if identity is None:
         yield
         return
-    key = (*identity, config.get('interactive', True))
+    key = (*identity, config.get('interactive', config_mod.DEFAULTS['interactive']))
     with _previewing_guard:
         entry = _previewing.setdefault(key, [threading.Lock(), 0])
         entry[1] += 1
@@ -244,7 +243,7 @@ def produce(
     identity: tuple[str, int, int] | None = None,
 ) -> Path:
     """Return a cached preview of a file: an interactive scene, or a still image if asked."""
-    if config.get('interactive', True):
+    if config.get('interactive', config_mod.DEFAULTS['interactive']):
         return convert_mod.scene(target, config, identity=identity)
     return render_mod.preview(target, config, identity=identity)
 
@@ -344,6 +343,17 @@ def handle(request: Path) -> None:
         respond(request, source, payload, asked)
 
 
+def description_only(
+    source: str, config: dict[str, Any], identity: tuple[str, int, int] | None
+) -> dict[str, Any] | None:
+    """Return a file's cached description, or what its header says, converting nothing."""
+    if not folder_is_reachable(source):
+        return None
+    return convert_mod.describe(source, config, identity, read=False) or convert_mod.header(
+        source, config
+    )
+
+
 def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -> None:
     """Answer a request for ``source``, given what it asked and when."""
     reply = request.with_suffix(REPLY_SUFFIX)
@@ -352,6 +362,15 @@ def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -
         identity = (source, int(payload['mtime']), int(payload['size']))
 
     config = config_mod.load()
+    if payload.get('describe') is True:
+        write_json(reply, {'ok': True, 'info': description_only(source, config, identity)})
+        return
+    if 'scene' in payload:
+        # A file with a picture of its own asks for the 3D view by its tab, whatever the settings.
+        config = {**config, 'interactive': payload['scene'] is True}
+    if config_mod.saved_theme(config):
+        # `pyvista plot` takes a theme by name only, so a saved theme is drawn in 3D.
+        config = {**config, 'interactive': True}
     ready = cached_preview(identity, config)
     if payload.get('force') is True or ready is not None:
         # Asked for whatever its size, or previewed already, so no step of it applies the limit.
@@ -507,6 +526,8 @@ def serve(poll: float = 0.05) -> int:
     prune_in_background()
     last_sweep = time.monotonic()
     while True:
+        # Settings edited by hand reach the extension before its next preview.
+        config_mod.mirror()
         for request in sorted(directory.glob(f'*{REQUEST_SUFFIX}')):
             taken = request.with_suffix(TAKEN_SUFFIX)
             try:
@@ -522,8 +543,8 @@ def serve(poll: float = 0.05) -> int:
         time.sleep(poll)
 
 
-def request_preview(source: str, timeout: float = 90) -> Path:
-    """Ask the daemon for a preview, for testing the service from the command line."""
+def request_preview(source: str, timeout: float = 90, scene: bool | None = None) -> Path:
+    """Ask the daemon for a preview, the picture or the 3D view when ``scene`` says which."""
     directory = drop_dir()
     directory.mkdir(parents=True, exist_ok=True)
     token = uuid.uuid4().hex
@@ -536,6 +557,7 @@ def request_preview(source: str, timeout: float = 90) -> Path:
             'path': str(resolved),
             'mtime': int(stat.st_mtime),
             'size': stat.st_size,
+            **({} if scene is None else {'scene': scene}),
         },
     )
 

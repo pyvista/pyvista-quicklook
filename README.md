@@ -179,8 +179,10 @@ for each claimed extension. When the Finder previews one of those files, the ext
 hands it to a background render service, which reads it with PyVista, extracts the
 surface, colours the vertices by the active scalars, and writes a PLY. The extension
 shows that PLY in a SceneKit view, which is what makes the preview turnable.
-A mesh without scalars is drawn in PyVista's theme colour, and the scene is lit by VTK's
-light kit, which turns with the camera, so its colours match PyVista's own renders.
+A mesh without scalars is drawn in the theme's colour, scalars in its colormap, and the
+scene is lit by VTK's light kit, which turns with the camera, so its colours match PyVista's
+own renders. The scene carries the theme's shading and its ambient, diffuse and specular
+lighting, which SceneKit follows; faces are drawn flat unless the theme shades smoothly.
 
 Point data is interpolated across each face. Cell data is drawn flat: the cells are
 split apart first, so each keeps its own colour. Lines are drawn as tubes and point
@@ -263,11 +265,37 @@ extension checks whether a folder holds DICOM files before it asks the render se
 it looks for the `DICM` marker in the first few entries, whatever they are named, and an
 ordinary folder shows its own details immediately, as the Finder would.
 
+### Pictures a file carries
+
+[pyvista-zstd](https://github.com/pyvista/pyvista-zstd) can embed a picture of the dataset
+in the `.pv` file it writes:
+
+```python
+import pyvista_zstd
+
+pyvista_zstd.write(mesh, 'mesh.pv', thumbnail=True)
+```
+
+`thumbnail=True` renders a 512 × 512 PNG with PyVista's default camera, in the global theme,
+cropped to the dataset on a transparent background; PNG bytes of your own are embedded as
+they are. The picture sits uncompressed at a fixed position near the start of the file,
+with a checksum of the file's index, so the extension reads it with a few small reads and no
+zstd, and can tell when the data was changed after the picture was taken. This needs a
+pyvista-zstd release with thumbnail support.
+
+A file with a current picture opens on it beside its details, at once and without reading
+the data, and uses it as its Finder icon. **Static** and **Interactive** tabs above the
+preview switch between the picture and a surface to turn and zoom, which opens on the same
+view. Every other file, and a `.pv` file whose picture is older than its data, goes straight
+to the turnable surface, without tabs. `pvql config set force_interactive true` opens every
+file that way, and a picture then only stands in while the surface loads. Opening a file
+with the app always shows it in 3D.
+
 ### Still images
 
-After `pvql config set interactive false`, every preview is a still image rendered by
-`pyvista plot --off-screen --screenshot` instead, which keeps the scalar bar and axes
-the interactive view leaves out.
+After `pvql config set interactive false`, every preview without a picture of its own is a
+still image rendered by `pyvista plot --off-screen --screenshot` instead, which keeps the
+scalar bar and axes the interactive view leaves out.
 
 ### The render service
 
@@ -306,13 +334,14 @@ pvql config get max_file_size_mb
 pvql config unset max_file_size_mb       # back to the default
 ```
 
-They are kept in `~/Library/Application Support/PyVistaQuickLook/config.json`.
+They are kept in `~/Library/Application Support/PyVistaQuickLook/config.json`; `pvql config` and the render service copy the file into the extension's container, the only place its sandbox lets it read.
 
 | Key | Default | Effect |
 | --- | --- | --- |
 | `python` | set at install | Interpreter of the PyVista environment |
 | `pvql` | discovered | Absolute path to the `pvql` helper |
 | `interactive` | `true` | Show a turnable surface; `false` renders a still image instead |
+| `force_interactive` | `false` | Open a `.pv` file on the surface even when it carries a picture, without the tabs |
 | `info_panel` | `automatic` | Where the dataset's details go: `side`, `below`, `compact`, `hidden`, or `automatic` to choose by the panel's size |
 | `max_scene_points` | `2000000` | Thin surfaces above this many points; `0` never does |
 | `max_glyph_points` | `20000` | Draw at most this many points of a point cloud; `0` draws all |
@@ -321,12 +350,32 @@ They are kept in `~/Library/Application Support/PyVistaQuickLook/config.json`.
 | `timeout` | `60` | Seconds before a conversion is abandoned |
 | `warm_on_start` | `true` | Load PyVista and VTK when the render service starts |
 | `window_size` | `1024 1024` | Still image size in pixels |
+| `theme` | PyVista's own | A PyVista theme by name, such as `document` or `paraview`, or the path of one saved with `Theme.save`; previews follow its colour, colormap, shading and lighting, and a saved theme always opens in 3D |
 | `background` | none | Background colour passed to `pyvista plot` |
 | `extra_args` | none | Extra arguments appended to `pyvista plot` |
 | `extensions.add`, `extensions.remove` | none | Extensions to claim or stop claiming, on the next install |
 | `cache` | `true` | Reuse previously built previews |
 | `cache_check_minutes` | `1440` (a day) | How often the service deletes previews of changed or deleted files; `0` never does |
 | `log` | `false` | Append activity to `pvql.log` beside the config file |
+
+A theme of your own is saved from PyVista and then named by its path; editing the file redraws
+previews on the next look:
+
+```python
+import pyvista as pv
+
+theme = pv.themes.DocumentTheme()
+theme.color = 'tan'
+theme.smooth_shading = True
+theme.lighting_params.specular = 0.4
+theme.save('mytheme.json')
+```
+
+```bash
+pvql config set theme mytheme.json
+```
+
+`pyvista plot`, which draws still images, takes a theme by name only.
 
 Changing `extensions` requires a reinstall, because the claimed types are baked into the
 app bundle. Every other key takes effect on the next preview.

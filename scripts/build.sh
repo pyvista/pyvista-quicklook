@@ -10,6 +10,8 @@ APP_NAME="PyVistaQuickLook"
 EXT_NAME="PyVistaQuickLookExtension"
 APP_ID="org.pyvista.PyVistaQuickLook"
 EXT_ID="$APP_ID.QuickLook"
+THUMB_NAME="PyVistaQuickLookThumbnail"
+THUMB_ID="$APP_ID.Thumbnail"
 DEPLOYMENT_TARGET="12.0"
 
 HELPER=""
@@ -32,6 +34,7 @@ fi
 
 APP="$BUILD/$BUNDLE_NAME.app"
 APPEX="$APP/Contents/PlugIns/$EXT_NAME.appex"
+THUMBEX="$APP/Contents/PlugIns/$THUMB_NAME.appex"
 TARGET="$(uname -m)-apple-macos$DEPLOYMENT_TARGET"
 
 # Compile one binary, for this machine or for both architectures at once.
@@ -53,19 +56,22 @@ compile() {
 
 echo "==> cleaning $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APPEX/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APPEX/Contents/MacOS" "$THUMBEX/Contents/MacOS"
 
 echo "==> generating Info.plist files (helper: $HELPER)"
 PYTHONPATH="$ROOT" python3 -m pyvista_quicklook plist \
   --app "$APP/Contents/Info.plist" \
   --extension "$APPEX/Contents/Info.plist" \
+  --thumbnail "$THUMBEX/Contents/Info.plist" \
   --helper "$HELPER" >/dev/null
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 printf 'XPC!????' > "$APPEX/Contents/PkgInfo"
+printf 'XPC!????' > "$THUMBEX/Contents/PkgInfo"
 
 echo "==> compiling $APP_NAME"
 compile "$APP/Contents/MacOS/$APP_NAME" -O \
   "$ROOT/macos/Shared/Helper.swift" \
+  "$ROOT/macos/Shared/EmbeddedThumbnail.swift" \
   "$ROOT/macos/Shared/Camera.swift" \
   "$ROOT/macos/QuickLookExtension/InfoPanel.swift" \
   "$ROOT/macos/QuickLookExtension/PreviewViewController.swift" \
@@ -83,15 +89,25 @@ compile "$BUILD/RenderScene" -O -parse-as-library \
 echo "==> compiling $EXT_NAME"
 compile "$APPEX/Contents/MacOS/$EXT_NAME" -O -parse-as-library \
   "$ROOT/macos/Shared/Helper.swift" \
+  "$ROOT/macos/Shared/EmbeddedThumbnail.swift" \
   "$ROOT/macos/Shared/Camera.swift" \
   "$ROOT/macos/QuickLookExtension/InfoPanel.swift" \
   "$ROOT/macos/QuickLookExtension/PreviewViewController.swift" \
   -framework QuickLookUI \
   -Xlinker -e -Xlinker _NSExtensionMain
 
+echo "==> compiling $THUMB_NAME"
+compile "$THUMBEX/Contents/MacOS/$THUMB_NAME" -O -parse-as-library \
+  "$ROOT/macos/Shared/EmbeddedThumbnail.swift" \
+  "$ROOT/macos/ThumbnailExtension/ThumbnailProvider.swift" \
+  -framework QuickLookThumbnailing \
+  -Xlinker -e -Xlinker _NSExtensionMain
+
 echo "==> signing"
 codesign --force --sign - --identifier "$EXT_ID" --timestamp=none \
   --entitlements "$ROOT/macos/QuickLookExtension/QuickLook.entitlements" "$APPEX"
+codesign --force --sign - --identifier "$THUMB_ID" --timestamp=none \
+  --entitlements "$ROOT/macos/QuickLookExtension/QuickLook.entitlements" "$THUMBEX"
 codesign --force --sign - --identifier "$APP_ID" --timestamp=none "$APP"
 codesign --verify --deep --strict "$APP"
 

@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 
 /// What to put in the panel once the render service has answered.
 enum Preview {
-    case scene(SCNScene, MeshInfo?)
+    case scene(SCNScene, Framing, MeshInfo?)
     case image(Data, MeshInfo?)
     case text(String)
     case details(URL)
@@ -43,20 +43,62 @@ func textContents(of url: URL) -> String? {
 final class LitSceneView: SCNView {
     /// Held here, since a view only keeps a weak reference to its delegate.
     var lights: LightsFollowCamera?
+    /// The camera the scene opens with, framed as the still is.
+    var framed: SCNNode?
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        // The still fits the shorter side, so the view angle spans that side until the scene is turned.
+        if let framed, pointOfView === framed {
+            framed.camera?.projectionDirection = newSize.width < newSize.height ? .horizontal : .vertical
+        }
+    }
+}
+
+/// A description fetched on another thread, which any number of waits can ask for.
+final class DescriptionWait: @unchecked Sendable {
+    private let done = DispatchGroup()
+    private var info: [String: Any]?
+
+    init(_ url: URL) {
+        done.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.info = Helper.requestDescription(url)
+            self.done.leave()
+        }
+    }
+
+    /// Returns the description once it comes, or nil when there is none or it takes too long.
+    func wait(seconds: Double = .infinity) -> [String: Any]? {
+        let deadline: DispatchTime = seconds.isFinite ? .now() + seconds : .distantFuture
+        guard done.wait(timeout: deadline) == .success else {
+            return nil
+        }
+        return info
+    }
 }
 
 /// Builds a view that lets the reader turn the mesh with the mouse.
 @MainActor
-func sceneView(for scene: SCNScene) -> SCNView {
+func sceneView(for scene: SCNScene, framing: Framing) -> SCNView {
     let view = LitSceneView()
     view.scene = scene
     view.allowsCameraControl = true
     view.antialiasingMode = .multisampling4X
     view.backgroundColor = .clear
 
-    view.pointOfView = previewCamera(for: scene)
+    view.pointOfView = framing.node
+    view.framed = framing.node
+    view.defaultCameraController.target = SCNVector3(framing.target)
     view.lights = LightsFollowCamera(lightLikePyVista(scene))
     view.delegate = view.lights
+    // Hidden, and drawn continuously, until a few frames are out: the first can show a blank.
+    view.alphaValue = 0
+    view.rendersContinuously = true
+    view.lights?.onReady = { [weak view] in
+        view?.alphaValue = 1
+        view?.rendersContinuously = false
+    }
     return view
 }
 
@@ -283,9 +325,130 @@ func progressView(_ text: String) -> NSView {
     return centred([spinner, infoLabel(text, color: .secondaryLabelColor)])
 }
 
+/// Returns a view showing a picture scaled to fit, or nil when the bytes are not an image.
+@MainActor
+func pictureView(_ png: Data?) -> NSImageView? {
+    guard let png, let image = NSImage(data: png) else {
+        return nil
+    }
+    let imageView = NSImageView()
+    imageView.imageScaling = .scaleProportionallyUpOrDown
+    imageView.image = image
+    // Without this the picture's own size wins over the panel's, and a small panel crops it.
+    for orientation in [NSLayoutConstraint.Orientation.horizontal, .vertical] {
+        imageView.setContentCompressionResistancePriority(.defaultLow, for: orientation)
+        imageView.setContentHuggingPriority(.defaultLow, for: orientation)
+    }
+    return imageView
+}
+
+/// Lays a small view over the bottom right corner of a larger one.
+@MainActor
+func overlaid(_ base: NSView, corner: NSView) -> NSView {
+    let container = NSView()
+    for part in [base, corner] {
+        part.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(part)
+    }
+    NSLayoutConstraint.activate([
+        base.topAnchor.constraint(equalTo: container.topAnchor),
+        base.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        base.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+        base.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+    ])
+    NSLayoutConstraint.activate([
+        corner.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+        corner.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
+        corner.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 12),
+    ])
+    return container
+}
+
+/// Puts the tabs in a strip of their own above a preview, so they never cover it.
+func belowTabs(_ content: NSView, _ tabs: NSView) -> NSView {
+    let container = NSView()
+    for part in [content, tabs] {
+        part.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(part)
+    }
+    NSLayoutConstraint.activate([
+        tabs.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+        tabs.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+        tabs.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -12),
+        content.topAnchor.constraint(equalTo: tabs.bottomAnchor, constant: 8),
+        content.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        content.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+        content.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+    ])
+    return container
+}
+
+/// What a mesh preview shows: a picture of it, or the surface to turn.
+enum PreviewMode: Int {
+    case still
+    case interactive
+}
+
+/// A file to preview, and the picture it carries of itself, read once per panel.
+struct Request {
+    let url: URL
+    let force: Bool
+    let carried: EmbeddedThumbnail.Picture?
+
+    /// Whether the settings let a file's own picture open first; false in the app.
+    let picturesFirst: Bool
+
+    var name: String { url.lastPathComponent }
+    /// Whether the file opens on its own picture, with a Static tab; a stale one is only a placeholder.
+    var hasPicture: Bool { picturesFirst && carried?.isStale == false }
+}
+
+/// The Static and Interactive tabs above a mesh preview.
+final class ModeTabs: NSSegmentedControl {
+    private var onSelect: ((PreviewMode) -> Void)?
+
+    convenience init(_ mode: PreviewMode, onSelect: @escaping (PreviewMode) -> Void) {
+        self.init(labels: ["Static", "Interactive"], trackingMode: .selectOne, target: nil, action: nil)
+        selectedSegment = mode.rawValue
+        controlSize = .small
+        self.onSelect = onSelect
+        target = self
+        action = #selector(selected)
+    }
+
+    @objc private func selected() {
+        onSelect?(PreviewMode(rawValue: selectedSegment) ?? .still)
+    }
+}
+
+/// Builds the stand-in for a render still being made: the file's own picture when it carries
+/// one, with a small spinner, or a spinner alone.
+@MainActor
+func placeholderView(_ name: String, _ thumbnail: Data?) -> NSView {
+    guard let picture = pictureView(thumbnail) else {
+        return progressView("Reading \(name)\u{2026}")
+    }
+    let spinner = NSProgressIndicator()
+    spinner.style = .spinning
+    spinner.controlSize = .small
+    spinner.startAnimation(nil)
+    return overlaid(picture, corner: spinner)
+}
+
+/// Builds the file's own picture with a note saying why it is all there is.
+@MainActor
+func pictureWithNote(_ picture: NSView, _ note: String) -> NSView {
+    let label = NSTextField(wrappingLabelWithString: note)
+    label.font = NSFont.systemFont(ofSize: 11)
+    label.textColor = .secondaryLabelColor
+    label.isSelectable = true
+    label.preferredMaxLayoutWidth = 360
+    return overlaid(picture, corner: label)
+}
+
 /// Builds the stand-in for a render of a file above the size limit, with a way to preview it anyway.
 @MainActor
-func largeFileView(_ message: String, onPreview: @escaping () -> Void) -> NSView {
+func largeFileView(_ message: String, thumbnail: Data? = nil, onPreview: @escaping () -> Void) -> NSView {
     // The service indents a command it suggests, which is set apart as code.
     let lines = message.components(separatedBy: "\n")
     let prose = lines.filter { !$0.hasPrefix("    ") }.joined(separator: "\n")
@@ -295,7 +458,14 @@ func largeFileView(_ message: String, onPreview: @escaping () -> Void) -> NSView
     label.isSelectable = true
     label.preferredMaxLayoutWidth = 420
     let commands = lines.filter { $0.hasPrefix("    ") }.map { codeBlock($0.trimmingCharacters(in: .whitespaces)) }
-    return centred([label] + commands + [ActionButton(title: "Preview Anyway", onPress: onPreview)])
+    var views: [NSView] = [label] + commands + [ActionButton(title: "Preview Anyway", onPress: onPreview)]
+    // The picture the file carries of itself is shown above, as it costs nothing to read.
+    if let picture = pictureView(thumbnail) {
+        picture.heightAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
+        picture.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        views.insert(picture, at: 0)
+    }
+    return centred(views)
 }
 
 /// A rounded, tinted panel behind a command, as a code block is shown.
@@ -356,8 +526,44 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         userInfo: [NSLocalizedDescriptionKey: ""]
     )
 
+    /// Whether a file's own picture is shown before its 3D view; false in the app.
+    var prefersPicture = true
+    /// Counts the loads asked for, so a slower earlier one does not replace a later one.
+    var generation = 0
+    /// What the info panel last showed and for which file, kept while the other tab loads.
+    var shownInfo: (url: URL, info: MeshInfo)?
+
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+    }
+
+    /// Adopts Quick Look's private protocol, through which Finder asks the questions below.
+    static let adoptsPrivateProtocol: Bool = {
+        guard let adopted = objc_getProtocol("QLPreviewingController_Private") else {
+            return false
+        }
+        return class_addProtocol(PVQLPreviewViewController.self, adopted)
+    }()
+
+    override init(nibName: NSNib.Name?, bundle: Bundle?) {
+        super.init(nibName: nibName, bundle: bundle)
+        _ = Self.adoptsPrivateProtocol
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not used")
+    }
+
+    /// Whether Finder should frame the preview in its pane; the system's own 3D preview goes without.
+    @objc func wantsBorder() -> Bool {
+        false
+    }
+
+    /// Whether a press here turns the scene rather than dragging the file out of Finder's pane.
+    @objc(mustHandleDragAtLocation:)
+    func mustHandleDrag(at point: NSPoint) -> Bool {
+        view.hitTest(point) is LitSceneView
     }
 
     /// Fills the panel with a view, pinned to every edge so it resizes with it.
@@ -391,35 +597,97 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 return
             }
 
-            self.load(url, force: false, handler: handler)
+            // False when unset, as config.py's DEFAULTS has it.
+            let forced = (Helper.configuration()?["force_interactive"] as? Bool) ?? false
+            let request = Request(url: url, force: false, carried: EmbeddedThumbnail.picture(url), picturesFirst: self.prefersPicture && !forced)
+            self.load(request, handler: handler)
         }
     }
 
-    /// Returns what pressing "Preview Anyway" does: load the file past its size limit.
-    func previewAnyway(_ url: URL, _ info: MeshInfo?) -> () -> Void {
-        { [weak self] in
-            guard let self else {
-                return
-            }
-            self.show(withInfo(progressView("Reading \(url.lastPathComponent)\u{2026}"), info))
-            DispatchQueue.global(qos: .userInitiated).async {
-                self.load(url, force: true, handler: nil)
-            }
+    /// Shows a mesh preview, with tabs when the file has a picture to switch to, unless a newer
+    /// load took the panel.
+    func present(_ content: NSView, _ mode: PreviewMode, _ info: MeshInfo?, _ request: Request, generation: Int) {
+        guard generation == self.generation else {
+            return
+        }
+        let kept = shownInfo?.url == request.url ? shownInfo?.info : nil
+        // What the header alone says has no bounds, so it never replaces what the values said.
+        if let info, info.bounds.isEmpty == false || kept?.bounds.isEmpty != false {
+            shownInfo = (request.url, info)
+        } else if kept == nil {
+            shownInfo = nil
+        }
+        let tabbed = request.hasPicture ? belowTabs(content, ModeTabs(mode, onSelect: switching(request))) : content
+        show(withInfo(tabbed, shownInfo?.info))
+    }
+
+    /// Returns what a control in the panel calls to load the file again on a tab.
+    func switching(_ request: Request) -> (PreviewMode) -> Void {
+        { [weak self] mode in self?.switchTo(mode, request) }
+    }
+
+    /// Loads a preview again from a panel already showing, setting aside whatever the last load
+    /// was still making.
+    func switchTo(_ mode: PreviewMode, _ request: Request) {
+        generation += 1
+        present(placeholderView(request.name, request.carried?.png), mode, nil, request, generation: generation)
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.load(request, mode: mode, handler: nil)
         }
     }
 
     /// Fetches a preview and shows it, showing what the header says first when that comes early.
     ///
     /// `handler` is Quick Look's, called once the panel has something to show; it is nil when a
-    /// file is loaded again from a panel already showing.
-    nonisolated func load(_ url: URL, force: Bool, handler: ((Error?) -> Void)?) {
-        let completion = DispatchQueue.main.sync { Completion(handler) }
-        let name = url.lastPathComponent
+    /// file is loaded again from a panel already showing. `mode` is the tab asked for; without
+    /// one, a file opens on its own picture when it has one, else on what the settings say.
+    nonisolated func load(_ request: Request, mode: PreviewMode? = nil, handler: ((Error?) -> Void)?) {
+        let (completion, generation) = DispatchQueue.main.sync {
+            (Completion(handler), self.generation)
+        }
+        let (url, name, thumbnail) = (request.url, request.name, request.carried?.png)
+        let shown = mode ?? (request.hasPicture ? .still : .interactive)
+        /// Shows a mesh preview with its tabs, for this load only.
+        let present: @MainActor (NSView, PreviewMode, MeshInfo?) -> Void = { content, mode, info in
+            self.present(content, mode, info, request, generation: generation)
+        }
+        let failed = { (message: String) in "Could not preview \(name)\n\n\(message)" }
+        // A current picture the file carries of itself is the preview, without the service.
+        if shown == .still, request.hasPicture, let png = thumbnail {
+            // The description comes in under a second, and a picture shown without it would move
+            // when the details arrive beside or below it.
+            let described = DescriptionWait(url)
+            let early = described.wait(seconds: 2)
+            DispatchQueue.main.async {
+                let picture = pictureView(png) ?? messageView(failed("Its picture could not be read."))
+                present(picture, .still, early.flatMap(MeshInfo.init))
+                completion.finish(nil)
+                pvqlLog("showing the picture \(name) carries as its preview")
+            }
+            guard early == nil, let info = described.wait() else {
+                return
+            }
+            DispatchQueue.main.async {
+                present(pictureView(png) ?? NSImageView(), .still, MeshInfo(info))
+            }
+            return
+        }
+        // A picture the file carries of itself is shown at once, before the service answers.
+        if thumbnail != nil {
+            pvqlLog("showing the picture \(name) carries")
+            DispatchQueue.main.async {
+                if completion.isPending {
+                    present(placeholderView(name, thumbnail), shown, nil)
+                    completion.finish(nil)
+                }
+            }
+        }
         let outcome: Preview
         do {
-            let reply = try Helper.requestPreview(url, force: force) { info in
+            // The Interactive tab asks for the 3D view; without tabs the settings choose.
+            let reply = try Helper.requestPreview(url, force: request.force, scene: request.hasPicture ? true : nil) { info in
                 DispatchQueue.main.async {
-                    self.show(withInfo(progressView("Reading \(name)\u{2026}"), MeshInfo(info)))
+                    present(placeholderView(name, thumbnail), shown, MeshInfo(info))
                     completion.finish(nil)
                 }
             }
@@ -427,9 +695,14 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             switch reply.payload {
             case let .scene(sceneURL):
                 defer { try? FileManager.default.removeItem(at: sceneURL) }
-                outcome = .scene(try SCNScene(url: sceneURL, options: nil), info)
+                let scene = try SCNScene(url: sceneURL, options: nil)
+                SceneStyle.read(sceneURL).apply(to: scene)
+                // Framing reads every vertex, so it is done here rather than on the main thread.
+                outcome = .scene(scene, previewCamera(for: scene), info)
             case let .image(png):
                 outcome = .image(png, info)
+            case nil:
+                throw Helper.Failure(message: "The render service sent no preview.")
             }
         } catch {
             let failure = error as? Helper.Failure
@@ -439,7 +712,18 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 outcome = .tooLarge(message, MeshInfo(failure?.info))
             } else if failure?.isNotMesh != true {
                 // The file may well be a mesh, so say what went wrong rather than show it as text.
-                outcome = .message("Could not preview \(name)\n\n\(message)")
+                outcome = .message(failed(message))
+                if let png = thumbnail {
+                    // The file's own picture is still worth showing, with why it is all there is.
+                    let what = shown == .still ? "A current picture" : "The interactive preview"
+                    let note = "\(what) could not be made: \(briefly(message))"
+                    DispatchQueue.main.async {
+                        let picture = pictureView(png).map { pictureWithNote($0, note) }
+                        present(picture ?? messageView(failed(message)), shown, nil)
+                        completion.finish(nil)
+                    }
+                    return
+                }
             } else if !isOwnType(url) {
                 // macOS has a preview of its own for this type; let it show that, if it still can.
                 pvqlLog("declining, not a mesh: \(briefly(message))")
@@ -447,7 +731,7 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                     if completion.isPending {
                         completion.finish(Self.noPreview)
                     } else {
-                        self.show(messageView("Could not preview \(name)\n\n\(message)"))
+                        self.show(messageView(failed(message)))
                     }
                 }
                 return
@@ -459,18 +743,21 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         }
 
         DispatchQueue.main.async {
+            defer { completion.finish(nil) }
+            guard generation == self.generation else {
+                return
+            }
             switch outcome {
-            case let .scene(scene, info):
-                self.show(withInfo(sceneView(for: scene), info))
+            case let .scene(scene, framing, info):
+                present(sceneView(for: scene, framing: framing), .interactive, info)
                 pvqlLog("showing an interactive scene in \(self.view.bounds.size)")
             case let .image(png, info):
-                let imageView = NSImageView()
-                imageView.imageScaling = .scaleProportionallyUpOrDown
-                imageView.image = NSImage(data: png)
-                self.show(withInfo(imageView, info))
+                present(pictureView(png) ?? NSImageView(), .still, info)
                 pvqlLog("showing a rendered image in \(self.view.bounds.size)")
             case let .tooLarge(message, info):
-                self.show(withInfo(largeFileView(message, onPreview: self.previewAnyway(url, info)), info))
+                let anyway = self.switching(Request(url: url, force: true, carried: request.carried, picturesFirst: request.picturesFirst))
+                let notice = largeFileView(message, thumbnail: thumbnail) { anyway(shown) }
+                present(notice, shown, info)
                 pvqlLog("showing a size notice")
             case let .text(text):
                 self.show(textView(text))
@@ -479,10 +766,10 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 self.show(detailsView(fileURL))
                 pvqlLog("showing file details")
             case let .message(text):
-                self.show(messageView(text))
+                // Still a mesh, so the other tab may well work.
+                present(messageView(text), shown, nil)
                 pvqlLog("showing a message: \(text.prefix(120))")
             }
-            completion.finish(nil)
         }
     }
 }

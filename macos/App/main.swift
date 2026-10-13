@@ -35,6 +35,8 @@ final class StatusController: NSObject, NSApplicationDelegate {
         openedFiles = true
         for url in urls {
             let controller = PVQLPreviewViewController()
+            // A file opened on purpose is shown in 3D, not as the picture it carries.
+            controller.prefersPicture = false
             let window = NSWindow(contentViewController: controller)
             window.title = url.lastPathComponent
             window.setContentSize(NSSize(width: 1100, height: 720))

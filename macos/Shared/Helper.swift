@@ -75,7 +75,8 @@ enum Helper {
 
     /// A preview and the service's description of the dataset, when it sent one.
     struct Reply {
-        let payload: Payload
+        /// Nil when only the description was asked for.
+        let payload: Payload?
         let info: [String: Any]?
     }
 
@@ -127,14 +128,19 @@ enum Helper {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    /// Returns the contents of the configuration file, if present.
+    /// Returns the settings: the copy the service keeps in the exchange folder, which the
+    /// sandbox lets the extension read, else the file itself.
     static func configuration() -> [String: Any]? {
-        let url = URL(fileURLWithPath: realHome())
+        let mirrored = URL(fileURLWithPath: exchangeDirectory()).appendingPathComponent("config.json")
+        let original = URL(fileURLWithPath: realHome())
             .appendingPathComponent("Library/Application Support/PyVistaQuickLook/config.json")
-        guard let data = try? Data(contentsOf: url) else {
-            return nil
+        for url in [mirrored, original] {
+            if let data = try? Data(contentsOf: url),
+               let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                return settings
+            }
         }
-        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return nil
     }
 
     /// Returns the `pvql` path recorded in the configuration file, if present.
@@ -145,13 +151,20 @@ enum Helper {
         return (path as NSString).expandingTildeInPath
     }
 
-    /// Returns the folder the service watches: the extension's container, found by the app
-    /// from the extension it embeds.
+    /// Returns the identifier of the Quick Look preview extension in a folder of plug-ins.
+    static func previewExtension(in plugIns: URL) -> String? {
+        let embedded = (try? FileManager.default.contentsOfDirectory(at: plugIns, includingPropertiesForKeys: nil)) ?? []
+        return embedded.lazy.compactMap(Bundle.init(url:)).first { bundle in
+            let point = (bundle.object(forInfoDictionaryKey: "NSExtension") as? [String: Any])?["NSExtensionPointIdentifier"]
+            return point as? String == "com.apple.quicklook.preview"
+        }?.bundleIdentifier
+    }
+
+    /// Returns the folder the service watches: the container of the preview extension the app embeds.
     static func exchangeDirectory() -> String {
         guard ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] == nil,
               let plugIns = Bundle.main.builtInPlugInsURL,
-              let embedded = try? FileManager.default.contentsOfDirectory(at: plugIns, includingPropertiesForKeys: nil),
-              let identifier = embedded.lazy.compactMap({ Bundle(url: $0)?.bundleIdentifier }).first
+              let identifier = previewExtension(in: plugIns)
         else {
             return NSTemporaryDirectory()
         }
@@ -242,10 +255,11 @@ enum Helper {
     static func requestPreview(
         _ url: URL,
         force: Bool = false,
+        scene: Bool? = nil,
         early: (([String: Any]) -> Void)? = nil
     ) throws -> Reply {
         do {
-            return try exchange(url, force: force, copy: nil, early: early)
+            return try exchange(url, force: force, copy: nil, early: early, scene: scene)
         } catch let failure as Failure where failure.needsCopy {
             let directory = exchangeDirectory() as NSString
             let stagingPath = directory.appendingPathComponent("\(UUID().uuidString).staging")
@@ -255,7 +269,7 @@ enum Helper {
             }
             pvqlLog("staged a copy the service can read")
             do {
-                let reply = try exchange(url, force: force, copy: copy, early: early)
+                let reply = try exchange(url, force: force, copy: copy, early: early, scene: scene)
                 try? FileManager.default.removeItem(atPath: stagingPath)
                 return reply
             } catch let underway as Failure where underway.isUnderway {
@@ -266,6 +280,11 @@ enum Helper {
                 throw error
             }
         }
+    }
+
+    /// Returns the service's description of a file without converting it, or nil.
+    static func requestDescription(_ url: URL) -> [String: Any]? {
+        (try? exchange(url, force: false, copy: nil, early: nil, describe: true))?.info
     }
 
     /// Copies a file where the service can read it, unless it is a folder or above the limit.
@@ -295,7 +314,9 @@ enum Helper {
         _ url: URL,
         force: Bool,
         copy: String?,
-        early: (([String: Any]) -> Void)?
+        early: (([String: Any]) -> Void)?,
+        scene: Bool? = nil,
+        describe: Bool = false
     ) throws -> Reply {
         let directory = exchangeDirectory() as NSString
         let token = UUID().uuidString
@@ -311,6 +332,13 @@ enum Helper {
         }
         if let copy {
             body["copy"] = copy
+        }
+        // Sent when a tab chose the view; otherwise the settings choose.
+        if let scene {
+            body["scene"] = scene
+        }
+        if describe {
+            body["describe"] = true
         }
         if let attributes = try? manager.attributesOfItem(atPath: url.path) {
             body["size"] = (attributes[.size] as? NSNumber)?.intValue ?? 0
@@ -349,6 +377,9 @@ enum Helper {
             }
             if json["ok"] as? Bool == true {
                 let info = json["info"] as? [String: Any]
+                if describe {
+                    return Reply(payload: nil, info: info)
+                }
                 if let scene = json["scene"] as? String {
                     pvqlLog("received a scene at \(scene)")
                     return Reply(payload: .scene(URL(fileURLWithPath: scene)), info: info)

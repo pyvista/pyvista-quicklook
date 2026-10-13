@@ -163,9 +163,9 @@ def test_types_all_lists_unclaimed_formats(capsys, monkeypatch):
 
 
 def test_plist_writes_nothing_without_targets(capsys, monkeypatch):
-    """Without ``--app`` or ``--extension`` no file is written."""
+    """Without ``--app``, ``--extension`` or ``--thumbnail`` no file is written."""
     monkeypatch.setattr(cli.config_mod, 'load', lambda: dict(config.DEFAULTS))
-    args = argparse.Namespace(app=None, extension=None, helper='/bin/pvql')
+    args = argparse.Namespace(app=None, extension=None, thumbnail=None, helper='/bin/pvql')
     assert cli.cmd_plist(args) == 0
     assert capsys.readouterr().out == ''
 
@@ -195,6 +195,7 @@ def test_config_lists_every_setting_and_marks_the_changed_ones(capsys, home):
         ('timeout', ['90'], 90, '90'),
         ('timeout', ['2.5'], 2.5, '2.5'),
         ('interactive', ['no'], False, 'false'),
+        ('force_interactive', ['yes'], True, 'true'),
         ('info_panel', ['side'], 'side', 'side'),
         ('window_size', ['1280', '720'], [1280, 720], '1280 720'),
         (
@@ -211,6 +212,7 @@ def test_config_set_stores_a_checked_value(capsys, home, key, values, stored, sh
     assert cli.cmd_config(config_args('set', key, *values)) == 0
     assert capsys.readouterr().out == f'{key} = {shown}\n'
     assert json.loads(config.CONFIG_PATH.read_text())[key] == stored
+    assert config.MIRROR_PATH.read_text() == config.CONFIG_PATH.read_text()
     assert config.load()[key] == stored
     cli.cmd_config(config_args('get', key))
     assert capsys.readouterr().out == f'{shown}\n'
@@ -226,6 +228,7 @@ def test_config_set_stores_a_checked_value(capsys, home, key, values, stored, sh
         ('timeout', ['nan'], 'number of seconds'),
         ('timeout', ['inf'], 'number of seconds'),
         ('interactive', ['maybe'], 'true or false'),
+        ('force_interactive', ['sometimes'], 'true or false'),
         ('info_panel', ['left'], 'automatic, side, below, compact, hidden'),
         ('window_size', ['1280'], 'width and a height'),
         ('python', ['/no/such/python'], 'not an executable'),
@@ -323,6 +326,16 @@ def test_config_parses_from_the_command_line(home, capsys):
     assert capsys.readouterr().out.endswith('800 600\n')
 
 
+def test_config_takes_a_theme_name_or_a_saved_theme(home, tmp_path):
+    """A theme is a name, kept as given, or a JSON file, kept as an absolute path."""
+    assert config.parse('theme', ['document']) == 'document'
+    saved = tmp_path / 'mine.json'
+    saved.write_text('{}')
+    assert config.parse('theme', [str(saved)]) == str(saved)
+    with pytest.raises(config.SettingError, match='theme name or a theme saved as JSON'):
+        config.parse('theme', [str(tmp_path / 'missing.json')])
+
+
 def test_run_and_succeeds_survive_a_missing_program(tmp_path):
     """A program that cannot be started gives no output and does not succeed."""
     missing = str(tmp_path / 'no-such-program')
@@ -371,13 +384,17 @@ def test_doctor_passes_a_healthy_installation(capsys, doctor, tmp_path):
 def test_doctor_notes_a_pyvista_command_that_does_not_run(capsys, doctor, tmp_path):
     """A pyvista command that fails to run only rules out still images."""
     rendered = tmp_path / 'smoke.ply'
-    rendered.write_bytes(b'x')
-    doctor(healthy=True, preview=lambda sample, timeout: rendered, pyvista_runs=False)
+
+    def preview(sample, timeout):
+        rendered.write_bytes(b'x')
+        return rendered
+
+    doctor(healthy=True, preview=preview, pyvista_runs=False)
     assert cli.cmd_doctor(argparse.Namespace()) == 0
     assert 'still images unavailable' in capsys.readouterr().out
 
 
-def test_doctor_reports_a_failed_render(capsys, doctor):
+def test_doctor_reports_a_failed_render(capsys, doctor, tmp_path):
     """A render that fails through the service is a problem, with the reason shown."""
 
     def preview(sample, timeout):
@@ -392,13 +409,14 @@ def test_doctor_reports_a_failed_render(capsys, doctor):
 
 
 def test_doctor_counts_every_missing_piece(capsys, doctor):
-    """Without an environment, app, extension or service, each is reported."""
+    """Without an environment, app, extensions or service, each is reported."""
     doctor(healthy=False, preview=lambda *a, **k: pytest.fail('rendered'))
     assert cli.cmd_doctor(argparse.Namespace()) == 1
     out = capsys.readouterr().out
     assert '(using defaults)' in out
     assert 'still images unavailable' in out
-    assert '4 problem(s) found' in out
+    assert 'thumbnails not registered' in out
+    assert '5 problem(s) found' in out
 
 
 def test_uninstall_asks_first_on_a_terminal(capsys, commands, home, monkeypatch):
@@ -505,10 +523,33 @@ def test_finder_command_says_whether_to_restart(capsys, monkeypatch, stale, said
 def test_doctor_reports_a_stale_finder(capsys, doctor, monkeypatch, tmp_path):
     """A Finder that still asks for the old extension is a problem, with the remedy."""
     rendered = tmp_path / 'smoke.ply'
-    rendered.write_bytes(b'x')
-    doctor(healthy=True, preview=lambda sample, timeout: rendered)
+
+    def preview(sample, timeout):
+        rendered.write_bytes(b'x')
+        return rendered
+
+    doctor(healthy=True, preview=preview)
     monkeypatch.setattr(cli, 'finder_is_stale', lambda: True)
     assert cli.cmd_doctor(argparse.Namespace()) == 1
     out = capsys.readouterr().out
     assert 'run "killall Finder"' in out
     assert '1 problem(s) found' in out
+
+
+def test_mirror_copies_nothing_until_settings_exist(home):
+    """Without a settings file there is nothing to put where the extension reads."""
+    config.mirror()
+    assert not config.MIRROR_PATH.exists()
+    config.save({'timeout': 5})
+    assert json.loads(config.MIRROR_PATH.read_text()) == {'timeout': 5}
+
+
+def test_mirror_follows_a_hand_edited_or_removed_file(home):
+    """Settings edited outside pvql reach the extension's copy, and a removed file removes it."""
+    config.save({'timeout': 5})
+    config.CONFIG_PATH.write_text(json.dumps({'force_interactive': True}))
+    config.mirror()
+    assert json.loads(config.MIRROR_PATH.read_text()) == {'force_interactive': True}
+    config.CONFIG_PATH.unlink()
+    config.mirror()
+    assert not config.MIRROR_PATH.exists()

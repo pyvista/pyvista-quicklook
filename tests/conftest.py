@@ -16,6 +16,7 @@ def home(tmp_path, monkeypatch):
     support = tmp_path / 'support'
     monkeypatch.setattr(config, 'APP_SUPPORT', support)
     monkeypatch.setattr(config, 'CONFIG_PATH', support / 'config.json')
+    monkeypatch.setattr(config, 'MIRROR_PATH', tmp_path / 'container' / 'config.json')
     monkeypatch.setattr(config, 'LOG_PATH', support / 'pvql.log')
     monkeypatch.setattr(config, 'CACHE_DIR', tmp_path / 'cache')
     monkeypatch.setattr(cli, 'APP_DIRS', (tmp_path / 'Applications',))

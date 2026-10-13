@@ -6,6 +6,7 @@ import SceneKit
 /// Renders a scene file off screen with the same camera the panel uses.
 func render(_ input: URL, to output: URL, size: CGFloat) throws {
     let scene = try SCNScene(url: input, options: nil)
+    SceneStyle.read(input).apply(to: scene)
 
     // SCNScene reports an unreadable file by handing back an empty scene.
     var geometries = 0
@@ -32,7 +33,7 @@ func render(_ input: URL, to output: URL, size: CGFloat) throws {
 
     let renderer = SCNRenderer(device: device, options: nil)
     renderer.scene = scene
-    let camera = previewCamera(for: scene)
+    let camera = previewCamera(for: scene).node
     lightLikePyVista(scene).simdWorldOrientation = camera.simdWorldOrientation
     renderer.pointOfView = camera
 

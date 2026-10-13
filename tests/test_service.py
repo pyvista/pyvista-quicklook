@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 
+import numpy as np
 import pytest
 import pyvista as pv
 
@@ -63,7 +64,7 @@ def test_handle_answers_with_a_scene_for_a_real_file(tmp_path, env, monkeypatch)
     source = tmp_path / 'sphere.vtp'
     pv.Sphere().save(source)
     request = tmp_path / 'token.pvqlreq'
-    request.write_text(json.dumps({'path': str(source), 'mtime': 1, 'size': 2}))
+    request.write_text(json.dumps({'path': str(source), 'mtime': 1, 'size': 2, 'scene': True}))
     daemon.handle(request)
     reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
     assert reply['ok'] is True
@@ -115,17 +116,53 @@ def test_warm_runs_the_warmer_and_leaves_a_stamp(env):
 
 @pytest.mark.skipif(sys.platform != 'darwin', reason='rendering needs a display server on Linux')
 def test_still_images_come_from_the_pyvista_command(tmp_path, env, monkeypatch):
-    """The environment can render a still image, which is what non-interactive mode shows."""
+    """The environment renders a still image with ``pyvista plot``, on the background asked for."""
     source = tmp_path / 'sphere.vtp'
     pv.Sphere().save(source)
-    png = render.preview(source, env)
-    assert png.suffix == '.png'
-    assert png.stat().st_size > 0
-    assert daemon.produce(source, {**env, 'interactive': False}) == png
+    png = render.preview(source, {**env, 'window_size': [64, 64], 'background': 'white'})
+    drawn = pixels(png)
+    assert drawn.shape[:2] == (64, 64)
+    assert (drawn[0, 0, :3] == 255).all()
+    assert (
+        daemon.produce(
+            source, {**env, 'interactive': False, 'window_size': [64, 64], 'background': 'white'}
+        )
+        == png
+    )
     assert convert.describe(source, env)['type'] == 'PolyData'
     # The description belongs to the file, so other render settings do not read it again.
     monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: pytest.fail('read again'))
-    assert convert.describe(source, {**env, 'window_size': [64, 64]})['type'] == 'PolyData'
+    assert convert.describe(source, {**env, 'window_size': [32, 32]})['type'] == 'PolyData'
+
+
+def pixels(png):
+    """Return a PNG's pixels as rows, top row first."""
+    picture = pv.read(png)
+    width, height = picture.dimensions[:2]
+    return np.flipud(np.asarray(picture.active_scalars).reshape(height, width, -1))
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='rendering needs a display server on Linux')
+def test_a_saved_theme_colours_the_scene(tmp_path, env):
+    """A theme saved as JSON reaches the exporter."""
+    theme = pv.themes.DocumentTheme()
+    theme.color = 'red'
+    theme.save(tmp_path / 'theme.json')
+    settings = {**env, 'theme': str(tmp_path / 'theme.json')}
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    assert (pv.read(convert.scene(source, settings))['RGB'] == (255, 0, 0)).all()
+
+
+@pytest.mark.parametrize('name', ['dark', 'paraview'])
+def test_a_named_theme_reaches_pyvista_plot(tmp_path, env, name):
+    """``pyvista plot`` draws with the theme it is given by name."""
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    png = render.preview(
+        source, {**env, 'window_size': [32, 32], 'background': 'white', 'theme': name}
+    )
+    assert pixels(png).shape[:2] == (32, 32)
 
 
 def test_header_is_read_by_the_exporter_without_the_values(tmp_path, env):
