@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 
 /// What to put in the panel once the render service has answered.
 enum Preview {
-    case scene(SCNScene, MeshInfo?)
+    case scene(SCNScene, Framing, MeshInfo?)
     case image(Data, MeshInfo?)
     case text(String)
     case details(URL)
@@ -79,17 +79,16 @@ final class DescriptionWait: @unchecked Sendable {
 
 /// Builds a view that lets the reader turn the mesh with the mouse.
 @MainActor
-func sceneView(for scene: SCNScene) -> SCNView {
+func sceneView(for scene: SCNScene, framing: Framing) -> SCNView {
     let view = LitSceneView()
     view.scene = scene
     view.allowsCameraControl = true
     view.antialiasingMode = .multisampling4X
     view.backgroundColor = .clear
 
-    let (camera, target) = previewCamera(for: scene)
-    view.pointOfView = camera
-    view.framed = camera
-    view.defaultCameraController.target = SCNVector3(target)
+    view.pointOfView = framing.node
+    view.framed = framing.node
+    view.defaultCameraController.target = SCNVector3(framing.target)
     view.lights = LightsFollowCamera(lightLikePyVista(scene))
     view.delegate = view.lights
     return view
@@ -337,7 +336,7 @@ func pictureView(_ png: Data?) -> NSImageView? {
 
 /// Lays a small view over the bottom right corner of a larger one.
 @MainActor
-func overlaid(_ base: NSView, corner: NSView, topLeading: Bool = false) -> NSView {
+func overlaid(_ base: NSView, corner: NSView) -> NSView {
     let container = NSView()
     for part in [base, corner] {
         part.translatesAutoresizingMaskIntoConstraints = false
@@ -349,18 +348,30 @@ func overlaid(_ base: NSView, corner: NSView, topLeading: Bool = false) -> NSVie
         base.leadingAnchor.constraint(equalTo: container.leadingAnchor),
         base.trailingAnchor.constraint(equalTo: container.trailingAnchor),
     ])
-    if topLeading {
-        NSLayoutConstraint.activate([
-            corner.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
-            corner.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-        ])
-    } else {
-        NSLayoutConstraint.activate([
-            corner.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
-            corner.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
-            corner.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 12),
-        ])
+    NSLayoutConstraint.activate([
+        corner.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+        corner.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
+        corner.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 12),
+    ])
+    return container
+}
+
+/// Puts the tabs in a strip of their own above a preview, so they never cover it.
+func belowTabs(_ content: NSView, _ tabs: NSView) -> NSView {
+    let container = NSView()
+    for part in [content, tabs] {
+        part.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(part)
     }
+    NSLayoutConstraint.activate([
+        tabs.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+        tabs.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+        tabs.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -12),
+        content.topAnchor.constraint(equalTo: tabs.bottomAnchor, constant: 8),
+        content.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        content.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+        content.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+    ])
     return container
 }
 
@@ -568,7 +579,7 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         let tabs = ModeTabs(mode) { [weak self] chosen in
             self?.switchTo(chosen, url, force: force)
         }
-        show(withInfo(overlaid(content, corner: tabs, topLeading: true), shownInfo?.info))
+        show(withInfo(belowTabs(content, tabs), shownInfo?.info))
     }
 
     /// Shows the other kind of preview, setting aside whatever the last one was still loading.
@@ -591,14 +602,16 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             (Completion(handler), self.generation, self.prefersPicture)
         }
         let name = url.lastPathComponent
+        // False when unset, as config.py's DEFAULTS has it.
         let startsInteractive = (Helper.configuration()?["interactive"] as? Bool) ?? false
         let shown = mode ?? (prefersPicture && !startsInteractive ? .still : .interactive)
         /// Shows a mesh preview with its tabs, for this load only.
         let present: @MainActor (NSView, PreviewMode, MeshInfo?) -> Void = { content, mode, info in
             self.present(content, mode, info, url, force: force, generation: generation)
         }
+        let carried = EmbeddedThumbnail.picture(url, checkingStaleness: shown == .still)
         // A current picture the file carries of itself is the preview, without the service.
-        if shown == .still, let png = EmbeddedThumbnail.read(url, allowStale: false) {
+        if shown == .still, let png = carried?.png, carried?.isStale == false {
             // The description usually comes in a fraction of a second, and showing the picture
             // without it first would shrink the picture when the details arrive beside or below it.
             let described = DescriptionWait()
@@ -621,7 +634,7 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             return
         }
         // A picture the file carries of itself is shown at once, before the service answers.
-        let thumbnail = EmbeddedThumbnail.read(url)
+        let thumbnail = carried?.png
         if thumbnail != nil {
             pvqlLog("showing the picture \(name) carries")
             DispatchQueue.main.async {
@@ -643,7 +656,9 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             switch reply.payload {
             case let .scene(sceneURL):
                 defer { try? FileManager.default.removeItem(at: sceneURL) }
-                outcome = .scene(try SCNScene(url: sceneURL, options: nil), info)
+                let scene = try SCNScene(url: sceneURL, options: nil)
+                // Framing reads every vertex, so it is done here rather than on the main thread.
+                outcome = .scene(scene, previewCamera(for: scene), info)
             case let .image(png):
                 outcome = .image(png, info)
             case nil:
@@ -695,8 +710,8 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 return
             }
             switch outcome {
-            case let .scene(scene, info):
-                present(sceneView(for: scene), .interactive, info)
+            case let .scene(scene, framing, info):
+                present(sceneView(for: scene, framing: framing), .interactive, info)
                 pvqlLog("showing an interactive scene in \(self.view.bounds.size)")
             case let .image(png, info):
                 present(pictureView(png) ?? NSImageView(), .still, info)

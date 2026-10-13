@@ -11,6 +11,7 @@ import pytest
 import pyvista as pv
 
 from pyvista_quicklook import _scene_export as export_mod
+from pyvista_quicklook import _still as still_mod
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOL = ROOT / 'build' / 'RenderScene'
@@ -169,6 +170,26 @@ def test_the_light_falls_where_pyvista_puts_it(tmp_path):
     expected = plotter.screenshot(return_img=True)[..., :3]
     plotter.close()
     assert np.allclose(highlight(rendered(sphere, tmp_path)), highlight(expected), atol=0.15)
+
+
+def outline(covered_pixels):
+    """Return the top, bottom, left and right of what was drawn, as shares of the frame."""
+    rows, columns = np.nonzero(covered_pixels)
+    side = covered_pixels.shape[0]
+    return np.array([rows.min(), rows.max(), columns.min(), columns.max()]) / side
+
+
+@pytest.mark.usefixtures('warmed_up')
+def test_the_scene_opens_framed_as_the_still_is(tmp_path):
+    """An off-centre shape sits in the same place in the 3D view as in its still."""
+    bracket = pv.Box(bounds=(0, 3, 0, 1, 0, 0.3)).merge(pv.Box(bounds=(0, 0.3, 0, 1, 0, 2)))
+    bracket = bracket.extract_surface(algorithm='dataset_surface').triangulate()
+    source = tmp_path / 'bracket.vtk'
+    bracket.save(source)
+    picture = still_mod.render(str(source), 192, 192)
+    scene = rendered(bracket, tmp_path, name='bracket')
+    expected = outline(picture[..., 3] > 0)
+    assert np.allclose(outline(scene.astype(int).sum(axis=2) > 30), expected, atol=0.03)
 
 
 def test_a_point_cloud_is_drawn(tmp_path):

@@ -6,8 +6,11 @@ import SceneKit
 let viewDirection = simd_normalize(SIMD3<Float>(1, 1, 1))
 /// PyVista's default view angle, in degrees.
 let viewAngle: Float = 30
-/// Space left around the scene's outline, as a share of the picture's side, as stills leave it.
+/// Space left around the scene's outline, as a share of its side; `_still.py`'s MARGIN matches.
 let frameMargin: Float = 0.05
+
+/// A camera framing a scene, and the point it turns about.
+typealias Framing = (node: SCNNode, target: SIMD3<Float>)
 
 /// Returns every vertex in the scene, in world coordinates.
 func worldVertices(_ scene: SCNScene) -> [SIMD3<Float>] {
@@ -43,7 +46,7 @@ func worldVertices(_ scene: SCNScene) -> [SIMD3<Float>] {
 ///
 /// The camera is aimed through the middle of the scene's outline and its view angle narrowed
 /// until the outline fills it less a margin, as a still is cropped to the dataset.
-func previewCamera(for scene: SCNScene) -> (node: SCNNode, target: SIMD3<Float>) {
+func previewCamera(for scene: SCNScene) -> Framing {
     let (center, radius) = scene.rootNode.boundingSphere
     let middle = SIMD3<Float>(Float(center.x), Float(center.y), Float(center.z))
     let halfAngle = viewAngle / 2 * .pi / 180
