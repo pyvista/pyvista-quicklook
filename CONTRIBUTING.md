@@ -56,7 +56,10 @@ Releases are published by CI: push a `v*` tag and the `publish` job uploads the 
 to PyPI through trusted publishing from the `release` environment, while the `release`
 job creates the tag's GitHub release if there is none and attaches the built app to it,
 which is what the installer downloads. The two jobs are independent, so check both.
-Between the tag and the end of that job the release has no app attached; the installer,
-fetched from `main` rather than from a release, passes such a release over, and any
-pre-release, for the newest release that has it. The release also carries the
-`install.sh` it was tested with.
+
+The one-line installer downloads `install.sh` from whichever release is the latest, so a
+release must not be published before its assets are on it. Push the tag and let CI create
+the release. To write the notes by hand, save the release as a draft: CI attaches the
+assets and then publishes it. Should a release be published without its app all the
+same, the installer passes it over, and any pre-release, for the newest release that has
+one.

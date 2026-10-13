@@ -124,8 +124,7 @@ jobs:
     - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33   # release/v1
 
   release:
-      # Attaches the built app to the tag's release, so installing needs no compiler, with the
-      # installer that release was tested with.
+      # Attaches the built app and install.sh to the tag's release, so installing needs no compiler.
     needs: [app, build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -141,8 +140,14 @@ jobs:
     - env:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ github.ref_name }}
-      # Pushing the tag is enough: the release is created here unless one already exists.
+      # Pushing the tag is enough. The installer downloads from the latest release, so a release
+      # becomes the latest only with its assets on it: one created here carries them from the
+      # start, and a draft made by hand is published once they are attached.
       run: |
-        gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-          || gh release create "$TAG" --verify-tag --generate-notes --repo "$GITHUB_REPOSITORY"
-        gh release upload "$TAG" PyVistaQuickLook.zip install.sh --clobber --repo "$GITHUB_REPOSITORY"
+        if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          gh release upload "$TAG" PyVistaQuickLook.zip install.sh --clobber --repo "$GITHUB_REPOSITORY"
+          gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
+        else
+          gh release create "$TAG" PyVistaQuickLook.zip install.sh --verify-tag --generate-notes \
+            --repo "$GITHUB_REPOSITORY"
+        fi
