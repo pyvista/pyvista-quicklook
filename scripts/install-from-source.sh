@@ -178,6 +178,18 @@ echo "==> retiring registrations of other copies"
       /usr/bin/pluginkit -r "$other" >/dev/null 2>&1 || true
     done || true
 
+for folder in "$HOME/Applications" "/Applications"; do
+  for name in "$BUNDLE_NAME" "$LEGACY_BUNDLE_NAME"; do
+    other="$folder/$name.app"
+    if [[ -d "$other" && "$other" != "$APP" ]]; then
+      echo "note: Launch Services will find $other again; remove it if this copy should answer" >&2
+    fi
+  done
+done
+if [[ ! -d "$PLUGINS" ]]; then
+  echo "warning: $APP does not hold its extensions in $HOLDER_BUNDLE_NAME.app; a bundle built before 0.9 will not be registered" >&2
+fi
+
 echo "==> registering with Launch Services and Quick Look"
 "$LSREGISTER" -f -R -trusted "$APP"
 /usr/bin/pluginkit -a "$PLUGINS/$EXT_NAME.appex" 2>/dev/null || true
