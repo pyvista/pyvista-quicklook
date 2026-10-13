@@ -52,14 +52,26 @@ that registered it, and the next build's service does not start.
 
 `main` is protected by a pre-commit hook, so work on a branch.
 
-Releases are published by CI: push a `v*` tag and the `publish` job uploads the helper
-to PyPI through trusted publishing from the `release` environment, while the `release`
-job creates the tag's GitHub release if there is none and attaches the built app to it,
-which is what the installer downloads. The two jobs are independent, so check both.
+A release is a tag. With `main` merged and up to date, tag it with the version behind a
+`v` and push the tag:
 
-The one-line installer downloads `install.sh` from whichever release is the latest, so a
-release must not be published before its assets are on it. Push the tag and let CI create
-the release. To write the notes by hand, save the release as a draft: CI attaches the
-assets and then publishes it. Should a release be published without its app all the
-same, the installer passes it over, and any pre-release, for the newest release that has
-one.
+```bash
+git tag v0.9.1 main
+git push origin v0.9.1
+```
+
+That is all. CI runs on the tag: the `release` job builds the app and creates the
+GitHub release with `PyVistaQuickLook.zip` and `install.sh` already attached and the
+notes generated from the merged pull requests, and the `publish` job uploads the helper
+to PyPI through trusted publishing from the `release` environment. The two jobs are
+independent, so check that both went green, then run the install one-liner from the
+README once. The version comes from the tag alone, through setuptools-scm, so nothing
+in the repository is edited for a release. PyPI never reuses a version, so a release
+that was yanked or deleted needs the next number.
+
+To write the notes by hand, edit them on the release once CI has created it. Do not
+publish a release by hand before its assets are on it: the one-line installer downloads
+`install.sh` from whichever release is the latest. A draft saved by hand is fine, as CI
+attaches the assets and then publishes it. Should a release be published without its
+app all the same, the installer passes it over, and any pre-release, for the newest
+release that has one.
