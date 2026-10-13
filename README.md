@@ -81,7 +81,9 @@ theme by name only; a saved theme file always draws the turnable view.
 ### The dataset panel
 
 The panel listing the dataset's type, points, cells, arrays and bounds sits beside or
-below the preview as the panel's size allows. `pvql config set info_panel below` fixes
+below the preview as the panel's size allows. Drag the line between them to resize it,
+and click the button on that line to fold the panel away and back, to the line alone
+beside the preview or to one line below it; the preview remembers both. `pvql config set info_panel below` fixes
 it below, `side` beside, `compact` keeps one line, and `hidden` leaves it out.
 
 ### Every setting

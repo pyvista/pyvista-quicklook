@@ -8,13 +8,32 @@ enum InfoProbe {
     static func main() throws {
         _ = NSApplication.shared
         let arguments = CommandLine.arguments
-        guard arguments.count == 5,
+        guard arguments.count >= 5,
               let width = Double(arguments[2]),
               let height = Double(arguments[3]),
               let arrangement = InfoArrangement(rawValue: arguments[4])
         else {
-            FileHandle.standardError.write(Data("usage: InfoProbe <info.json> <width> <height> <arrangement>\n".utf8))
+            FileHandle.standardError.write(Data("usage: InfoProbe <info.json> <width> <height> <arrangement> [key=value ...]\n".utf8))
             exit(2)
+        }
+        // What the reader last left the panel at, kept out of the real defaults.
+        let memory = UserDefaults(suiteName: "org.pyvista.PyVistaQuickLook.InfoProbe")!
+        memory.removePersistentDomain(forName: "org.pyvista.PyVistaQuickLook.InfoProbe")
+        InfoPanelMemory.defaults = memory
+        for setting in arguments.dropFirst(5) {
+            let parts = setting.split(separator: "=", maxSplits: 1).map(String.init)
+            guard parts.count == 2, let value = Double(parts[1]) else {
+                FileHandle.standardError.write(Data("bad setting \(setting)\n".utf8))
+                exit(2)
+            }
+            switch parts[0] {
+            case "collapsed": InfoPanelMemory.collapsed = value != 0
+            case "side_width": InfoPanelMemory.sideWidth = value
+            case "below_height": InfoPanelMemory.belowHeight = value
+            default:
+                FileHandle.standardError.write(Data("unknown setting \(parts[0])\n".utf8))
+                exit(2)
+            }
         }
         let json = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: arguments[1])))
         guard let info = MeshInfo(json as? [String: Any]) else {
@@ -70,7 +89,14 @@ enum InfoProbe {
             node.subviews.forEach(walk)
         }
         walk(view)
-        let report: [String: Any] = ["arrangement": view.resolved.rawValue, "empty": info.isEmpty, "labels": labels]
+        let report: [String: Any] = [
+            "arrangement": view.resolved.rawValue,
+            "empty": info.isEmpty,
+            "labels": labels,
+            "folded": view.isFolded,
+            "info_width": view.infoFrame.width,
+            "info_height": view.infoFrame.height,
+        ]
         let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         FileHandle.standardOutput.write(data)
     }

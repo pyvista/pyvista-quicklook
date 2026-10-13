@@ -575,10 +575,12 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         false
     }
 
-    /// Whether a press here turns the scene rather than dragging the file out of Finder's pane.
+    /// Whether a press here turns the scene or resizes the info, rather than dragging the
+    /// file out of Finder's pane.
     @objc(mustHandleDragAtLocation:)
     func mustHandleDrag(at point: NSPoint) -> Bool {
-        view.hitTest(point) is LitSceneView
+        let hit = view.hitTest(point)
+        return hit is LitSceneView || hit is InfoDivider || hit?.superview is InfoDivider
     }
 
     /// Fills the panel with a view, pinned to every edge so it resizes with it.
