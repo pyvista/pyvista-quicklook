@@ -91,6 +91,13 @@ func sceneView(for scene: SCNScene, framing: Framing) -> SCNView {
     view.defaultCameraController.target = SCNVector3(framing.target)
     view.lights = LightsFollowCamera(lightLikePyVista(scene))
     view.delegate = view.lights
+    // Hidden, and drawn continuously, until a few frames are out: the first can show a blank.
+    view.alphaValue = 0
+    view.rendersContinuously = true
+    view.lights?.onFirstFrame = { [weak view] in
+        view?.alphaValue = 1
+        view?.rendersContinuously = false
+    }
     return view
 }
 

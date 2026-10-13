@@ -157,6 +157,10 @@ func lightLikePyVista(_ scene: SCNScene) -> SCNNode {
 /// stay behind.
 final class LightsFollowCamera: NSObject, SCNSceneRendererDelegate {
     let rig: SCNNode
+    /// Called on the main thread once the first few frames have been drawn.
+    var onFirstFrame: (() -> Void)?
+    /// Frames drawn so far; the first can come out before the scene is ready.
+    private var framesDrawn = 0
 
     init(_ rig: SCNNode) {
         self.rig = rig
@@ -166,5 +170,14 @@ final class LightsFollowCamera: NSObject, SCNSceneRendererDelegate {
         if let camera = renderer.pointOfView {
             rig.simdWorldOrientation = camera.simdWorldOrientation
         }
+    }
+
+    func renderer(_ renderer: SCNSceneRenderer, didRenderScene scene: SCNScene, atTime time: TimeInterval) {
+        framesDrawn += 1
+        guard framesDrawn >= 3, let shown = onFirstFrame else {
+            return
+        }
+        onFirstFrame = nil
+        DispatchQueue.main.async(execute: shown)
     }
 }
