@@ -45,7 +45,7 @@ No system Python and no existing environment is used or changed.
 | --- | --- | --- |
 | `~/Library/Application Support/PyVistaQuickLook/venv` | The PyVista environment | 370 MB |
 | `~/Library/Application Support/PyVistaQuickLook/config.json` | Configuration | 4 KB |
-| `~/Applications/PyVista Quick Look.app` | The app and its Quick Look extension | 500 KB |
+| `~/Applications/PyVista Quick Look.app` | The app, with its Quick Look extensions in a nested `PyVista Quick Look Extensions.app` that is never launched | 500 KB |
 | `~/Library/Application Support/uv/tools/pyvista-quicklook` | The `pvql` helper | 400 KB |
 | `~/.local/bin/pvql`, `~/.local/bin/pyvista-quicklook` | Links to the helper | |
 | `~/Library/LaunchAgents/org.pyvista.pvqld.plist` | The render service | 4 KB |

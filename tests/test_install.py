@@ -229,3 +229,74 @@ def test_upgrades_from_before_0_7_are_retired_by_python_3_17():
         '  test_exchange_locations_are_in_the_extension_containers\n'
         '- tests/conftest.py: the legacy_agent_path and legacy_drop_dir stand-ins'
     )
+
+
+def sed_expression(producer):
+    """Return the sed expression the installer applies to a command's listing."""
+    pattern = re.escape(producer) + r".*?\n?\s*\|\s*sed -n '([^']+)'"
+    return re.search(pattern, SCRIPT, re.DOTALL).group(1)
+
+
+def extracted(producer, listing):
+    """Return the paths the installer's sed expression picks out of a listing."""
+    result = subprocess.run(
+        ['sed', '-n', sed_expression(producer)],
+        input=listing,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.splitlines()
+
+
+def test_the_installer_picks_app_records_out_of_the_launch_services_dump():
+    """Only this app's bundles, by their exact names, are read from lsregister's listing."""
+    listing = (
+        '\tpath:                       /Users/x/Applications/PyVista Quick Look.app (0x2b28)\n'
+        '\tpath:                       /Users/x/Applications/PyVista Quick Look.app'
+        '/Contents/Library/PyVista Quick Look Extensions.app (0x2b30)\n'
+        '\tpath:                       /Users/x/src/build/PyVista Quick Look.app (0x2c00)\n'
+        '\tpath:                       /Users/x/PyVista Quick Look notes/Other.app (0x2d00)\n'
+        '\tpath:                       /Users/x/Applications/PyVista Quick Look.app'
+        '/Contents/PlugIns/PyVistaQuickLookExtension.appex (0x2b2c)\n'
+    )
+    app = '/Users/x/Applications/PyVista Quick Look.app'
+    assert extracted('"$LSREGISTER" -dump', listing) == [
+        app,
+        f'{app}/Contents/Library/PyVista Quick Look Extensions.app',
+        '/Users/x/src/build/PyVista Quick Look.app',
+    ]
+
+
+def test_the_installer_picks_extension_records_out_of_the_pluginkit_listing():
+    """Every registered copy of the extensions is read from pluginkit's listing."""
+    listing = (
+        '+    org.pyvista.PyVistaQuickLook.QuickLook(0.9.0)\n'
+        '\t            Path = /Users/x/Applications/PyVista Quick Look.app'
+        '/Contents/PlugIns/PyVistaQuickLookExtension.appex\n'
+        '\t            UUID = 00523111-4007-42E5-B23E-BBD5C7E2EF9D\n'
+        '+    org.pyvista.PyVistaQuickLook.Thumbnail(0.9.0)\n'
+        '\t            Path = /Users/x/build/PyVista Quick Look.app/Contents/Library'
+        '/PyVista Quick Look Extensions.app/Contents/PlugIns/PyVistaQuickLookThumbnail.appex\n'
+        '\t            Path = /Applications/GarageBand.app/Contents/PlugIns/GarageBandQL.appex\n'
+    )
+    installed = '/Users/x/Applications/PyVista Quick Look.app/Contents/PlugIns'
+    built = '/Users/x/build/PyVista Quick Look.app/Contents/Library/PyVista Quick Look Extensions'
+    assert extracted('/usr/bin/pluginkit -mAvvv', listing) == [
+        f'{installed}/PyVistaQuickLookExtension.appex',
+        f'{built}.app/Contents/PlugIns/PyVistaQuickLookThumbnail.appex',
+    ]
+
+
+def test_every_part_names_the_extensions_app_as_plist_does():
+    """The Swift helper and both scripts find the extensions where plist.py puts them."""
+    from pyvista_quicklook import plist
+
+    for source in (
+        ROOT / 'macos' / 'Shared' / 'Helper.swift',
+        ROOT / 'scripts' / 'build.sh',
+        INSTALLER,
+    ):
+        assert plist.HOLDER_BUNDLE in source.read_text() or (
+            '$BUNDLE_NAME Extensions' in source.read_text()
+        ), source.name

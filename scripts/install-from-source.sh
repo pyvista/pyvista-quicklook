@@ -10,6 +10,7 @@ EXT_NAME="PyVistaQuickLookExtension"
 EXT_ID="org.pyvista.PyVistaQuickLook.QuickLook"
 THUMB_NAME="PyVistaQuickLookThumbnail"
 THUMB_ID="org.pyvista.PyVistaQuickLook.Thumbnail"
+HOLDER_BUNDLE_NAME="$BUNDLE_NAME Extensions"
 SUPPORT="$HOME/Library/Application Support/PyVistaQuickLook"
 VENV="$SUPPORT/venv"
 DEST="$HOME/Applications"
@@ -156,18 +157,52 @@ if [[ -d "$LEGACY_APP" ]]; then
   rm -rf "$LEGACY_APP"
 fi
 
-echo "==> registering with Launch Services and Quick Look"
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+# The extensions are held by a nested app that is never launched, so the re-registration
+# macOS gives an app without a Developer ID on every launch leaves them alone.
+PLUGINS="$APP/Contents/Library/$HOLDER_BUNDLE_NAME.app/Contents/PlugIns"
+echo "==> retiring registrations of other copies"
+# A record of a copy that was removed or lives elsewhere, the build folder's included, keeps
+# Quick Look from starting the extension at all.
+"$LSREGISTER" -dump 2>/dev/null \
+  | sed -n 's/^[[:space:]]*path:[[:space:]]*\(.*\/PyVista Quick Look\( Extensions\)\{0,1\}\.app\) (0x.*/\1/p' | sort -u \
+  | while IFS= read -r other; do
+      [[ "$other" == "$APP" || "$other" == "$APP/"* ]] && continue
+      "$LSREGISTER" -u "$other" >/dev/null 2>&1 || true
+    done || true
+# Including the records of an earlier layout of this very copy, under Contents/PlugIns.
+/usr/bin/pluginkit -mAvvv 2>/dev/null \
+  | sed -n 's/^[[:space:]]*Path = \(.*\/PyVistaQuickLook[A-Za-z]*\.appex\)$/\1/p' \
+  | while IFS= read -r other; do
+      [[ "$other" == "$PLUGINS/"* ]] && continue
+      /usr/bin/pluginkit -r "$other" >/dev/null 2>&1 || true
+    done || true
+
+for folder in "$HOME/Applications" "/Applications"; do
+  for name in "$BUNDLE_NAME" "$LEGACY_BUNDLE_NAME"; do
+    other="$folder/$name.app"
+    if [[ -d "$other" && "$other" != "$APP" ]]; then
+      echo "note: Launch Services will find $other again; remove it if this copy should answer" >&2
+    fi
+  done
+done
+if [[ ! -d "$PLUGINS" ]]; then
+  echo "warning: $APP does not hold its extensions in $HOLDER_BUNDLE_NAME.app; a bundle built before 0.9 will not be registered" >&2
+fi
+
+echo "==> registering with Launch Services and Quick Look"
 "$LSREGISTER" -f -R -trusted "$APP"
-/usr/bin/pluginkit -a "$APP/Contents/PlugIns/$EXT_NAME.appex" 2>/dev/null || true
+/usr/bin/pluginkit -a "$PLUGINS/$EXT_NAME.appex" 2>/dev/null || true
 /usr/bin/pluginkit -e use -i "$EXT_ID" 2>/dev/null || true
-/usr/bin/pluginkit -a "$APP/Contents/PlugIns/$THUMB_NAME.appex" 2>/dev/null || true
+/usr/bin/pluginkit -a "$PLUGINS/$THUMB_NAME.appex" 2>/dev/null || true
 /usr/bin/pluginkit -e use -i "$THUMB_ID" 2>/dev/null || true
 /usr/bin/qlmanage -r >/dev/null 2>&1 || true
 /usr/bin/qlmanage -r cache >/dev/null 2>&1 || true
 # Quick Look keeps the extension running between previews, and would go on using the
 # copy that was replaced; it starts the new one on the next preview.
 /usr/bin/pkill -x "$EXT_NAME" 2>/dev/null || true
+# Quick Look's own service caches which extension answers; it restarts on the next preview.
+/usr/bin/killall QuickLookUIService 2>/dev/null || true
 
 # After the app, so macOS lists the service under the app's name.
 echo "==> installing the render service"

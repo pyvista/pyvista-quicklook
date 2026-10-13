@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build PyVistaQuickLook.app with its Quick Look extension embedded.
+# Build PyVistaQuickLook.app with its Quick Look extensions in a nested, never-launched app.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -12,6 +12,9 @@ APP_ID="org.pyvista.PyVistaQuickLook"
 EXT_ID="$APP_ID.QuickLook"
 THUMB_NAME="PyVistaQuickLookThumbnail"
 THUMB_ID="$APP_ID.Thumbnail"
+HOLDER_BUNDLE_NAME="$BUNDLE_NAME Extensions"
+HOLDER_NAME="PyVistaQuickLookExtensions"
+HOLDER_ID="$APP_ID.Extensions"
 DEPLOYMENT_TARGET="12.0"
 
 HELPER=""
@@ -33,8 +36,11 @@ if [[ -z "$HELPER" ]]; then
 fi
 
 APP="$BUILD/$BUNDLE_NAME.app"
-APPEX="$APP/Contents/PlugIns/$EXT_NAME.appex"
-THUMBEX="$APP/Contents/PlugIns/$THUMB_NAME.appex"
+# macOS re-registers an app without a Developer ID signature, and the extensions it embeds,
+# on every launch; held by an app that is never launched, the extensions stay registered.
+HOLDER="$APP/Contents/Library/$HOLDER_BUNDLE_NAME.app"
+APPEX="$HOLDER/Contents/PlugIns/$EXT_NAME.appex"
+THUMBEX="$HOLDER/Contents/PlugIns/$THUMB_NAME.appex"
 TARGET="$(uname -m)-apple-macos$DEPLOYMENT_TARGET"
 
 # Compile one binary, for this machine or for both architectures at once.
@@ -56,15 +62,18 @@ compile() {
 
 echo "==> cleaning $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APPEX/Contents/MacOS" "$THUMBEX/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$HOLDER/Contents/MacOS" \
+  "$APPEX/Contents/MacOS" "$THUMBEX/Contents/MacOS"
 
 echo "==> generating Info.plist files (helper: $HELPER)"
 PYTHONPATH="$ROOT" python3 -m pyvista_quicklook plist \
   --app "$APP/Contents/Info.plist" \
   --extension "$APPEX/Contents/Info.plist" \
   --thumbnail "$THUMBEX/Contents/Info.plist" \
+  --holder "$HOLDER/Contents/Info.plist" \
   --helper "$HELPER" >/dev/null
 printf 'APPL????' > "$APP/Contents/PkgInfo"
+printf 'APPL????' > "$HOLDER/Contents/PkgInfo"
 printf 'XPC!????' > "$APPEX/Contents/PkgInfo"
 printf 'XPC!????' > "$THUMBEX/Contents/PkgInfo"
 
@@ -96,6 +105,9 @@ compile "$APPEX/Contents/MacOS/$EXT_NAME" -O -parse-as-library \
   -framework QuickLookUI \
   -Xlinker -e -Xlinker _NSExtensionMain
 
+echo "==> compiling $HOLDER_NAME"
+compile "$HOLDER/Contents/MacOS/$HOLDER_NAME" -O "$ROOT/macos/Holder/main.swift"
+
 echo "==> compiling $THUMB_NAME"
 compile "$THUMBEX/Contents/MacOS/$THUMB_NAME" -O -parse-as-library \
   "$ROOT/macos/Shared/EmbeddedThumbnail.swift" \
@@ -108,6 +120,7 @@ codesign --force --sign - --identifier "$EXT_ID" --timestamp=none \
   --entitlements "$ROOT/macos/QuickLookExtension/QuickLook.entitlements" "$APPEX"
 codesign --force --sign - --identifier "$THUMB_ID" --timestamp=none \
   --entitlements "$ROOT/macos/QuickLookExtension/QuickLook.entitlements" "$THUMBEX"
+codesign --force --sign - --identifier "$HOLDER_ID" --timestamp=none "$HOLDER"
 codesign --force --sign - --identifier "$APP_ID" --timestamp=none "$APP"
 codesign --verify --deep --strict "$APP"
 
