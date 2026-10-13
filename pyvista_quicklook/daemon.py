@@ -25,15 +25,16 @@ from . import environment
 from . import preload as preload_mod
 from . import render as render_mod
 from .environment import RenderError
+from .plist import APP_BUNDLE_ID
 from .plist import LEGACY_EXT_BUNDLE_ID
 from .plist import SERVICE_EXECUTABLE
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-# A new label for the agent the app carries: macOS keys background items by label, and the
-# record an unbundled agent left under the old one keeps the new agent from registering.
-LABEL = 'org.pyvista.PyVistaQuickLook.Service'
+# macOS keys background items by label, and a record left under UNBUNDLED_LABEL blocks
+# registration, so the bundled agent has a label of its own.
+LABEL = f'{APP_BUNDLE_ID}.Service'
 UNBUNDLED_LABEL = 'org.pyvista.pvqld'
 LEGACY_LABEL = 'io.github.user27182.pvqld'
 REQUEST_SUFFIX = '.pvqlreq'
@@ -89,7 +90,8 @@ def reply_seconds(config: dict[str, Any]) -> float:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     """Write JSON to a path, renaming it into place so readers never see a partial file."""
-    scratch = cache.scratch_path(path)
+    # Not under the path's own suffix, which the service would take as a finished request.
+    scratch = cache.scratch_path(path, '.json')
     scratch.write_text(json.dumps(payload))
     scratch.replace(path)
 
@@ -705,7 +707,7 @@ def request_preview(source: str, timeout: float = 90, scene: bool | None = None)
     raise RenderError(message)
 
 
-def agent_path() -> Path:
+def unbundled_agent_path() -> Path:
     """Return where installs before the bundled agent wrote the launch agent."""
     return Path.home() / 'Library' / 'LaunchAgents' / f'{UNBUNDLED_LABEL}.plist'
 

@@ -22,7 +22,12 @@ func fail(_ message: String) -> Never {
 
 switch CommandLine.arguments.dropFirst().first {
 case "register":
-    // A service registered by an earlier copy of the app is replaced, not kept.
+    // Left alone when switched off in System Settings, which is the reader's choice.
+    if service.status == .requiresApproval {
+        print(describe(service.status))
+        exit(0)
+    }
+    // Registered afresh, since macOS runs only the build of the program it registered.
     try? service.unregister()
     do {
         try service.register()

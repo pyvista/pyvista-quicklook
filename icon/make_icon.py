@@ -2,7 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["numpy", "pillow"]
 # ///
-"""Draw AppIcon.png and AppIcon.icns: a magnifier over "Vista" from the PyVista logo.
+"""Draw AppIcon.icns: a magnifier over "Vista" from the PyVista logo.
 
 Run ``uv run icon/make_icon.py``; ``--logo pyvista/logo/pyvista_sq.png`` re-cuts vista.png.
 """
@@ -24,6 +24,10 @@ from PIL import ImageFilter
 
 HERE = Path(__file__).resolve().parent
 VISTA = HERE / 'vista.png'
+# vista.png is kept about as wide as the lettering is drawn.
+VISTA_WIDTH = 1100
+# Pictures this wide or wider are stored with a 256-colour palette, which keeps the .icns small.
+PALETTE_FROM = 512
 
 # Drawn at twice the largest size, then scaled down, so every edge is antialiased.
 S = 2048
@@ -82,7 +86,10 @@ def cut_vista(logo_path: Path) -> Image.Image:
     gold = (logo[..., 0] > logo[..., 2] + 25) & (cols < V_END * width)
     logo[gold, 3] = 0
     image = Image.fromarray(logo.astype(np.uint8))
-    return image.crop(image.getbbox())
+    image = image.crop(image.getbbox())
+    return image.resize(
+        (VISTA_WIDTH, round(image.height * VISTA_WIDTH / image.width)), Image.LANCZOS
+    )
 
 
 def vertical_gradient(top: tuple[int, ...], bottom: tuple[int, ...]) -> Image.Image:
@@ -328,7 +335,10 @@ def write_icns(icon: Image.Image, destination: Path) -> None:
         iconset = Path(tmp) / 'AppIcon.iconset'
         iconset.mkdir()
         for name, size in ICONSET:
-            icon.resize((size, size), Image.LANCZOS).save(iconset / name)
+            picture = icon.resize((size, size), Image.LANCZOS)
+            if size >= PALETTE_FROM:
+                picture = picture.quantize(256, method=Image.Quantize.FASTOCTREE)
+            picture.save(iconset / name, optimize=True)
         subprocess.run(
             ['iconutil', '--convert', 'icns', '--output', str(destination), str(iconset)],
             check=True,
@@ -336,14 +346,13 @@ def write_icns(icon: Image.Image, destination: Path) -> None:
 
 
 def main() -> None:
-    """Cut the lettering if asked, then write the PNG and the .icns beside this script."""
+    """Cut the lettering if asked, then write the .icns beside this script."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--logo', type=Path, help='PyVista logo to cut vista.png from')
     args = parser.parse_args()
     if args.logo:
         cut_vista(args.logo).save(VISTA, optimize=True)
     icon = draw_icon(Image.open(VISTA).convert('RGBA'))
-    icon.resize((1024, 1024), Image.LANCZOS).save(HERE / 'AppIcon.png', optimize=True)
     if shutil.which('iconutil') is None:
         msg = 'iconutil not found; the .icns can only be built on macOS'
         raise SystemExit(msg)

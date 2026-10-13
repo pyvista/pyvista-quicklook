@@ -16,6 +16,8 @@ THUMB_ID="$APP_ID.Thumbnail"
 HOLDER_BUNDLE_NAME="$BUNDLE_NAME"
 HOLDER_NAME="PyVistaQuickLookExtensions"
 SERVICE_NAME="pvqld"
+# The render service agent the nested app carries, as daemon.LABEL.
+SERVICE_LABEL="$APP_ID.Service"
 HOLDER_ID="$APP_ID.Extensions"
 # The oldest macOS CI builds and tests on, as plist.MIN_MACOS.
 DEPLOYMENT_TARGET="15.0"
@@ -93,7 +95,7 @@ echo "==> generating Info.plist files (helper: $HELPER)"
   --extension "$APPEX/Contents/Info.plist" \
   --thumbnail "$THUMBEX/Contents/Info.plist" \
   --holder "$HOLDER/Contents/Info.plist" \
-  --agent "$HOLDER/Contents/Library/LaunchAgents/$APP_ID.Service.plist" \
+  --agent "$HOLDER/Contents/Library/LaunchAgents/$SERVICE_LABEL.plist" \
   --helper "$BAKED_HELPER" >/dev/null
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 printf 'APPL????' > "$HOLDER/Contents/PkgInfo"
@@ -149,8 +151,7 @@ compile "$THUMBEX/Contents/MacOS/$THUMB_NAME" -O -parse-as-library \
 echo "==> signing"
 codesign --force --sign - --identifier "$EXT_ID" --timestamp=none --entitlements "$ENTITLEMENTS" "$APPEX"
 codesign --force --sign - --identifier "$THUMB_ID" --timestamp=none --entitlements "$ENTITLEMENTS" "$THUMBEX"
-# Signed as the nested app, whose agent runs it.
-codesign --force --sign - --identifier "$HOLDER_ID" --timestamp=none \
+codesign --force --sign - --identifier "$HOLDER_ID.Service" --timestamp=none \
   "$HOLDER/Contents/MacOS/$SERVICE_NAME"
 codesign --force --sign - --identifier "$HOLDER_ID" --timestamp=none "$HOLDER"
 codesign --force --sign - --identifier "$APP_ID" --timestamp=none "$APP"

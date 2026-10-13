@@ -97,7 +97,7 @@ def unload_service(label: str = daemon_mod.LABEL) -> None:
 def retire_legacy_service() -> None:
     """Stop and remove the agents earlier installs wrote to ~/Library/LaunchAgents."""
     unload_service(daemon_mod.UNBUNDLED_LABEL)
-    daemon_mod.agent_path().unlink(missing_ok=True)
+    daemon_mod.unbundled_agent_path().unlink(missing_ok=True)
     unload_service(daemon_mod.LEGACY_LABEL)
     daemon_mod.legacy_agent_path().unlink(missing_ok=True)
     shutil.rmtree(daemon_mod.legacy_drop_dir(), ignore_errors=True)
@@ -105,8 +105,7 @@ def retire_legacy_service() -> None:
 
 def service_app(args: argparse.Namespace) -> Path | None:
     """Return the app whose service to manage: the one named, else the first installed."""
-    named = getattr(args, 'app', None)
-    return Path(named) if named else next(iter(installed_apps()), None)
+    return Path(args.app) if args.app else next(iter(installed_apps()), None)
 
 
 def registrar(app: Path | None) -> Path | None:
@@ -115,6 +114,19 @@ def registrar(app: Path | None) -> Path | None:
         return None
     program = plist_mod.service_registrar(app)
     return program if program.is_file() else None
+
+
+# How the registrar reports a service switched off in System Settings.
+SWITCHED_OFF = 'requires approval'
+SWITCHED_OFF_HINT = (
+    'switched off; turn on PyVista Quick Look in System Settings, '
+    'General, Login Items & Extensions'
+)
+
+
+def service_loaded() -> bool:
+    """Return whether launchd has the render service loaded in this user's session."""
+    return _succeeds(['/bin/launchctl', 'print', service_target()])
 
 
 def service_status(app: Path | None) -> str:
@@ -137,16 +149,19 @@ def cmd_service(args: argparse.Namespace) -> int:
         return 0
 
     if args.install:
-        retire_legacy_service()
         if program is None:
             print(f'no app carries {label}; reinstall PyVista Quick Look', file=sys.stderr)
             return 1
+        retire_legacy_service()
         registered = subprocess.run(
             [str(program), 'register'], capture_output=True, text=True, check=False
         )
         if registered.returncode != 0:
             reason = (registered.stderr or registered.stdout).strip()
             print(f'could not register {label}: {reason}', file=sys.stderr)
+            return 1
+        if registered.stdout.strip() == SWITCHED_OFF:
+            print(f'{label} is {SWITCHED_OFF_HINT}', file=sys.stderr)
             return 1
         subprocess.run(
             ['/bin/launchctl', 'kickstart', '-k', service_target()],
@@ -156,7 +171,10 @@ def cmd_service(args: argparse.Namespace) -> int:
         print(f'registered {label} with {app}')
         return 0
 
-    print(_run(['/bin/launchctl', 'print', service_target()]) or f'{label} is not loaded')
+    if service_loaded():
+        print(_run(['/bin/launchctl', 'print', service_target()]))
+    else:
+        print(f'{label} is not loaded')
     status = service_status(app)
     if status:
         print(f'System Settings: {status}')
@@ -420,14 +438,11 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     else:
         print('✓ finder     asks for the current extension')
 
-    if _run(['/bin/launchctl', 'print', service_target()]):
+    if service_loaded():
         print(f'✓ service    {daemon_mod.LABEL} loaded')
-    elif service_status(next(iter(installed_apps()), None)) == 'requires approval':
+    elif service_status(next(iter(installed_apps()), None)) == SWITCHED_OFF:
         problems += 1
-        print(
-            '✗ service    switched off; turn on PyVista Quick Look in System Settings, '
-            'General, Login Items & Extensions'
-        )
+        print(f'✗ service    {SWITCHED_OFF_HINT}')
     else:
         problems += 1
         print('✗ service    not loaded; run "pvql service --install"')
@@ -464,7 +479,7 @@ def uninstall_targets(everything: bool) -> list[Path]:
     support = config_mod.APP_SUPPORT
     candidates = [
         *installed_apps(),
-        daemon_mod.agent_path(),
+        daemon_mod.unbundled_agent_path(),
         daemon_mod.legacy_agent_path(),
         config_mod.CACHE_DIR,
         support / 'venv',
@@ -522,7 +537,8 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         program = registrar(app)
         if program:
             subprocess.run([str(program), 'unregister'], capture_output=True, check=False)
-        # Versions before 0.9 embedded the extensions in the app itself.
+        # Where this layout keeps the extensions, where development builds of 0.9 kept
+        # them, and where 0.8 and earlier did.
         legacy_folder = plist_mod.plugins_folder(app, plist_mod.LEGACY_HOLDER_BUNDLE)
         for folder in (plist_mod.plugins_folder(app), legacy_folder, app / 'Contents' / 'PlugIns'):
             for executable in (plist_mod.EXT_EXECUTABLE, plist_mod.THUMB_EXECUTABLE):

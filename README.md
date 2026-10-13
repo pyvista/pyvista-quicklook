@@ -331,7 +331,9 @@ container so that the service can convert it anyway.
 A dataset that points at neighbouring files — `.pvd`, `.vtm`, `.case`, `.foam`, `.xdmf`,
 `.xmf` — needs those neighbours, which the copy does not include. Keep such datasets
 outside those three folders, or grant the render service Full Disk Access in System
-Settings under Privacy & Security.
+Settings under Privacy & Security. The service runs from the app nested at
+`~/Applications/PyVista Quick Look.app/Contents/Library/PyVista Quick Look.app`; in the
+file picker that opens from the + button, press Cmd-Shift-G and paste that path.
 
 ## Troubleshooting
 
@@ -374,7 +376,7 @@ pvql uninstall        # remove everything, asking first
 ## What the installer does
 
 1. Downloads the latest release: the installer scripts, about 1 MB, and the prebuilt
-   app, a 200 KB zip.
+   app, a 2 MB zip.
 2. Installs [uv](https://docs.astral.sh/uv/) if it is missing or updates it if it is too
    old, then a Python 3.14 if uv finds none on the machine.
 3. Installs the `pvql` helper as a uv tool.
@@ -397,7 +399,7 @@ No system Python and no existing environment is used or changed.
 | --- | --- | --- |
 | `~/Library/Application Support/PyVistaQuickLook/venv` | The PyVista environment | 370 MB |
 | `~/Library/Application Support/PyVistaQuickLook/config.json` | Configuration | 4 KB |
-| `~/Applications/PyVista Quick Look.app` | The app, with its Quick Look extensions and the render service in a nested `PyVista Quick Look.app` that is never launched | 500 KB |
+| `~/Applications/PyVista Quick Look.app` | The app, with its Quick Look extensions and the render service in a nested `PyVista Quick Look.app` that is never launched | 4 MB |
 | `~/Library/Application Support/uv/tools/pyvista-quicklook` | The `pvql` helper | 400 KB |
 | `~/.local/bin/pvql`, `~/.local/bin/pyvista-quicklook` | Links to the helper | |
 | `~/Library/Logs/pvqld.log` | The service's output | grows slowly |
@@ -406,7 +408,7 @@ No system Python and no existing environment is used or changed.
 | `~/.local/bin/uv`, `~/Library/Application Support/uv` | uv, and Python 3.14 if uv had to fetch one | 45 MB, plus Python |
 | `~/.cache/uv` | uv's download cache; the environment's files are clones of it, not copies | shared |
 
-About 395 MB in total, or 440 MB when uv is installed too. The environment is the bulk
+About 400 MB in total, or 445 MB when uv is installed too. The environment is the bulk
 of it:
 
 - [cvista](https://github.com/pyvista/cvista)`[all]`, a VTK fork used in place of

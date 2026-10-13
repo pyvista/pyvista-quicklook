@@ -32,6 +32,18 @@ def test_write_json_is_atomic(tmp_path):
     assert list(tmp_path.iterdir()) == [target]
 
 
+def test_a_request_being_written_is_not_one_the_service_picks_up(tmp_path, monkeypatch):
+    """Until it is renamed into place, a request's file does not end in the request suffix."""
+    written = []
+    write_text = Path.write_text
+    monkeypatch.setattr(
+        Path, 'write_text', lambda self, text: written.append(self) or write_text(self, text)
+    )
+    daemon.write_json(tmp_path / f'token{daemon.REQUEST_SUFFIX}', {'path': 'mesh.vtu'})
+    assert written
+    assert not any(path.name.endswith(daemon.REQUEST_SUFFIX) for path in written)
+
+
 def test_handle_reports_a_malformed_request(tmp_path):
     """A request that is not valid JSON produces an error reply and is taken away."""
     asked = tmp_path / 'token.pvqlreq'
