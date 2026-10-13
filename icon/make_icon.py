@@ -6,7 +6,7 @@
 
 From 128 px up the lens holds "PyVista"; below that it holds "Vista" alone, which stays
 legible where the icon is small. Run ``uv run icon/make_icon.py``;
-``--logo pyvista/logo/pyvista_sq.png`` re-cuts pyvista.png and vista.png from the logo.
+``--logo pyvista/logo/pyvista_sq.png`` re-cuts pyvista.png from the logo.
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ from PIL import ImageFilter
 
 HERE = Path(__file__).resolve().parent
 PYVISTA = HERE / 'pyvista.png'
-VISTA = HERE / 'vista.png'
 # The lettering is kept about as wide as it is drawn.
 LETTERING_WIDTH = 1100
 # Pictures this wide or wider are stored with a 256-colour palette, which keeps the .icns small.
@@ -34,18 +33,18 @@ PALETTE_FROM = 512
 
 # Drawn at twice the largest size, then scaled down, so every edge is antialiased.
 S = 2048
-# Where "Vista" starts and the V ends, as fractions of the 4375 px square logo.
-V_START = 1653 / 4375
-V_END = 2600 / 4375
+# Where "Vista" starts and the V ends, as fractions of the lettering's width.
+V_START = 1526 / 4116
+V_END = 2473 / 4116
 
 RIM_WIDTH = 0.036
 HANDLE_ANGLE = 45
-# The two designs: which lettering, the lens centre and glass radius as fractions of the
-# canvas, the grip's length, the lettering's width as a share of the glass, the zoom at the
-# centre of the glass, and the share of the radius magnified evenly before the zoom eases
-# to 1x at the rim (0 bulges all the way from the centre).
+# The two designs: whether the lettering keeps the Py, the lens centre and glass radius as
+# fractions of the canvas, the grip's length, the lettering's width as a share of the glass,
+# the zoom at the centre of the glass, and the share of the radius magnified evenly before
+# the zoom eases to 1x at the rim (0 bulges all the way from the centre).
 LARGE = {
-    'lettering': PYVISTA,
+    'py': True,
     'centre': (0.43, 0.43),
     'radius': 0.29,
     'grip': 0.216,
@@ -54,7 +53,7 @@ LARGE = {
     'flat': 0.5,
 }
 SMALL = {
-    'lettering': VISTA,
+    'py': False,
     'centre': (0.46, 0.46),
     'radius': 0.3,
     'grip': 0.12,
@@ -97,21 +96,26 @@ ICONSET = [
 ]
 
 
-def cut_lettering(logo_path: Path, keep_py: bool) -> Image.Image:
-    """Return the lettering from the PyVista logo, with or without the P and the y."""
-    logo = np.array(Image.open(logo_path).convert('RGBA')).astype(int)
-    if not keep_py:
-        width = logo.shape[1]
-        cols = np.arange(width)[None, :]
-        logo[..., 3] = np.where(cols < V_START * width, 0, logo[..., 3])
-        # The gold y reaches under the V, so it is dropped by colour where they overlap.
-        gold = (logo[..., 0] > logo[..., 2] + 25) & (cols < V_END * width)
-        logo[gold, 3] = 0
-    image = Image.fromarray(logo.astype(np.uint8))
+def cut_lettering(logo_path: Path) -> Image.Image:
+    """Return the lettering from the PyVista logo, cropped to it."""
+    image = Image.open(logo_path).convert('RGBA')
     image = image.crop(image.getbbox())
     return image.resize(
         (LETTERING_WIDTH, round(image.height * LETTERING_WIDTH / image.width)), Image.LANCZOS
     )
+
+
+def without_py(lettering: Image.Image) -> Image.Image:
+    """Return the lettering without the P and the y, cropped to what is left."""
+    pixels = np.array(lettering).astype(int)
+    width = pixels.shape[1]
+    cols = np.arange(width)[None, :]
+    pixels[..., 3] = np.where(cols < V_START * width, 0, pixels[..., 3])
+    # The gold y reaches under the V, so it is dropped by colour where they overlap.
+    gold = (pixels[..., 0] > pixels[..., 2] + 25) & (cols < V_END * width)
+    pixels[gold, 3] = 0
+    image = Image.fromarray(pixels.astype(np.uint8))
+    return image.crop(image.getbbox())
 
 
 def vertical_gradient(top: tuple[int, ...], bottom: tuple[int, ...]) -> Image.Image:
@@ -311,7 +315,9 @@ def draw_icon(design: dict) -> Image.Image:
     radius = S * design['radius']
     width = S * RIM_WIDTH
 
-    lettering = Image.open(design['lettering']).convert('RGBA')
+    lettering = Image.open(PYVISTA).convert('RGBA')
+    if not design['py']:
+        lettering = without_py(lettering)
     letters = Image.new('RGBA', (S, S), (0, 0, 0, 0))
     lw = int(2 * radius * design['fill'])
     lh = int(lettering.height * lw / lettering.width)
@@ -372,17 +378,17 @@ def write_icns(large: Image.Image, small: Image.Image, destination: Path) -> Non
 
 
 def main() -> None:
-    """Cut the lettering if asked, then write the .icns beside this script."""
+    """Cut the lettering if asked, then write the .icns, beside this script by default."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--logo', type=Path, help='PyVista logo to cut the lettering from')
+    parser.add_argument('--output', type=Path, default=HERE / 'AppIcon.icns')
     args = parser.parse_args()
     if args.logo:
-        cut_lettering(args.logo, keep_py=True).save(PYVISTA, optimize=True)
-        cut_lettering(args.logo, keep_py=False).save(VISTA, optimize=True)
+        cut_lettering(args.logo).save(PYVISTA, optimize=True)
     if shutil.which('iconutil') is None:
         msg = 'iconutil not found; the .icns can only be built on macOS'
         raise SystemExit(msg)
-    write_icns(draw_icon(LARGE), draw_icon(SMALL), HERE / 'AppIcon.icns')
+    write_icns(draw_icon(LARGE), draw_icon(SMALL), args.output)
 
 
 if __name__ == '__main__':
