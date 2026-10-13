@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import json
+import math
 import os
 from pathlib import Path
 import queue
@@ -41,6 +42,18 @@ EARLY_BYTES = 32 * 1024 * 1024
 STALE_SECONDS = 600
 # How much of the extension's wait for a reply is kept in hand.
 REPLY_MARGIN_SECONDS = 5
+# The longest the pruner waits before rereading its interval.
+PRUNE_POLL_SECONDS = 3600
+# Folders macOS asks the reader about before the service may look in them: iCloud Drive,
+# cloud storage providers, and other apps' data among them.
+PRIVATE_FOLDERS = (
+    'Desktop',
+    'Documents',
+    'Downloads',
+    'Library/Mobile Documents',
+    'Library/CloudStorage',
+    'Library/Containers',
+)
 
 UNREADABLE_MESSAGE = """The render service could not read
 
@@ -49,6 +62,10 @@ UNREADABLE_MESSAGE = """The render service could not read
 macOS keeps the Desktop, Documents, and Downloads folders private to each program.
 Grant the service access in System Settings under Privacy & Security, or move the
 file elsewhere."""
+
+
+class NeedsCopyError(Exception):
+    """Raised when a file the service cannot read must be copied by the extension first."""
 
 
 def drop_dir() -> Path:
@@ -407,10 +424,17 @@ def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -
             done.set()
             write_json(reply, message)
 
-    try:
+    def find_or_build() -> tuple[Path, dict[str, Any] | None]:
+        """Return the preview and its description, building the preview if it is not cached."""
+        nonlocal target
         # Quick Look asks for each file twice; the second request reuses the first's preview.
         with one_at_a_time(identity, config):
             ready = cached_preview(identity, config)
+            if ready is None and target == source and not reachable:
+                # Found cached at first and pruned since, so the file must be read after all.
+                target = payload.get('copy') or ''
+                if not target:
+                    raise NeedsCopyError
             # A cached preview is only copied, so it never waits for memory.
             budget = CONVERTING.reserve(conversion_memory(target, identity), memory_budget(config))
             with contextlib.nullcontext() if ready is not None else budget:
@@ -423,8 +447,22 @@ def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -
                     left = reply_seconds(config) - REPLY_MARGIN_SECONDS - (time.time() - asked)
                     if left > 1:
                         info = convert_mod.describe(target, config, identity, timeout=left)
+        return built, info
+
+    try:
+        built, info = find_or_build()
         delivered = reply.with_suffix(built.suffix)
-        shutil.copyfile(built, delivered)
+        try:
+            shutil.copyfile(built, delivered)
+        except FileNotFoundError:
+            # Pruned between being found and being copied, so it is found or built again.
+            built, info = find_or_build()
+            delivered = reply.with_suffix(built.suffix)
+            shutil.copyfile(built, delivered)
+    except NeedsCopyError:
+        message = UNREADABLE_MESSAGE.format(path=source)
+        answer_with({'ok': False, 'error': message, 'needs_copy': True})
+        return
     except environment.NotAMeshError as error:
         # Only then does the extension show the file as text or as its icon instead.
         answer_with({'ok': False, 'error': str(error), 'not_a_mesh': True})
@@ -486,6 +524,78 @@ def warm_in_background(config: dict[str, Any]) -> threading.Thread:
     return thread
 
 
+def check_minutes(config: dict[str, Any]) -> float:
+    """Return the minutes between checks of the cache, where 0 means never.
+
+    A value written by hand that is not a number falls back to the default, and a check
+    is never more often than once a minute.
+    """
+    default = config_mod.DEFAULTS['cache_check_minutes']
+    value = config.get('cache_check_minutes')
+    try:
+        minutes = default if value is None or isinstance(value, bool) else float(value)
+    except TypeError, ValueError:
+        minutes = default
+    if not math.isfinite(minutes):
+        minutes = default
+    return 0 if minutes <= 0 else max(minutes, 1)
+
+
+def prune_due(minutes: float, last: float | None, now: float) -> bool:
+    """Return whether the cache is due a check for files that have changed or gone."""
+    return minutes > 0 and (last is None or now - last >= minutes * 60)
+
+
+def private_root(source: Path) -> Path | None:
+    """Return the private folder or volume holding a file, which macOS grants as a whole."""
+    for folder in (Path.home() / name for name in PRIVATE_FOLDERS):
+        if source.is_relative_to(folder):
+            return folder
+    parts = source.parts
+    return Path(*parts[:3]) if len(parts) > 2 and parts[1] == 'Volumes' else None
+
+
+def may_look(source: Path) -> bool:
+    """Return whether the pruner may look at a file without macOS asking the reader first.
+
+    A file in a private folder or on another volume is looked at only once a preview has
+    found a folder in it readable.
+    """
+    root = private_root(source)
+    if root is None:
+        return True
+    # A copy, since request threads add to it while this runs.
+    remembered = dict(_reachable_folders)
+    return any(
+        readable and Path(folder).is_relative_to(root)
+        for folder, (_, readable) in remembered.items()
+    )
+
+
+def prune_periodically() -> None:
+    """Drop cached previews of changed or deleted files, as often as the config asks."""
+    last = None
+    while True:
+        config = config_mod.load()
+        minutes = check_minutes(config)
+        # The wall clock, so a Mac that sleeps overnight still checks once a day.
+        if prune_due(minutes, last, time.time()):
+            # A file that cannot be looked at blocks only this thread, never a preview.
+            try:
+                cache.prune(config, may_look)
+            except Exception as error:  # noqa: BLE001
+                environment.log(config, f'prune failed: {type(error).__name__}: {error}')
+            last = time.time()
+        time.sleep(min(PRUNE_POLL_SECONDS, minutes * 60) if minutes else PRUNE_POLL_SECONDS)
+
+
+def prune_in_background() -> threading.Thread:
+    """Start the thread that keeps the cache to files that still exist as they were."""
+    thread = threading.Thread(target=prune_periodically, daemon=True)
+    thread.start()
+    return thread
+
+
 def serve(poll: float = 0.05) -> int:
     """Answer preview requests until the process is stopped."""
     directory = drop_dir()
@@ -495,6 +605,7 @@ def serve(poll: float = 0.05) -> int:
     startup = config_mod.load()
     if startup.get('warm_on_start', True):
         warm_in_background(startup)
+    prune_in_background()
     last_sweep = time.monotonic()
     while True:
         # Settings edited by hand reach the extension before its next preview.

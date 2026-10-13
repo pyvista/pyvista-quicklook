@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 from pathlib import Path
 import plistlib
@@ -269,12 +270,19 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 
 def cmd_cache(args: argparse.Namespace) -> int:
-    """Show or clear the preview cache."""
+    """Show, prune, or clear the preview cache."""
     if args.clear:
         print(f'removed {cache_mod.clear()} cached previews')
         return 0
+    if args.prune:
+        removed = cache_mod.prune(config_mod.load())
+        print(f'removed {removed} cached previews and descriptions of changed or deleted files')
     entries = cache_mod.entries()
-    total = sum(entry.stat().st_size for entry in cache_mod.files())
+    total = 0
+    for entry in cache_mod.files():
+        # The service may prune or land a file while this adds them up.
+        with contextlib.suppress(OSError):
+            total += entry.stat().st_size
     print(f'{config_mod.CACHE_DIR}\n{len(entries)} previews, {total / 1_000_000:.1f} MB')
     return 0
 
@@ -569,8 +577,12 @@ def build_parser() -> argparse.ArgumentParser:
     config.add_argument('--helper', help='absolute path to the pvql executable')
     config.set_defaults(func=cmd_config)
 
-    cache = sub.add_parser('cache', help='show or clear the preview cache')
-    cache.add_argument('--clear', action='store_true')
+    cache = sub.add_parser('cache', help='show, prune, or clear the preview cache')
+    clearing = cache.add_mutually_exclusive_group()
+    clearing.add_argument('--clear', action='store_true', help='delete every cached preview')
+    clearing.add_argument(
+        '--prune', action='store_true', help='delete previews of files that have changed or gone'
+    )
     cache.set_defaults(func=cmd_cache)
 
     finder = sub.add_parser('finder', help='say whether the Finder must restart to show previews')

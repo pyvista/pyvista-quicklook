@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import faulthandler
 import json
 import os
@@ -234,6 +235,7 @@ def test_serve_answers_each_request_on_its_own_thread(tmp_path, monkeypatch):
     drop.mkdir()
     monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
     monkeypatch.setattr(daemon.cache, 'discard_other_versions', lambda version: 0)
+    monkeypatch.setattr(daemon, 'prune_in_background', lambda: None)
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': False})
     release, second = threading.Event(), threading.Event()
     released, finished = [], threading.Event()
@@ -268,6 +270,7 @@ def test_serve_leaves_a_request_another_service_took(tmp_path, monkeypatch):
     drop.mkdir()
     monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
     monkeypatch.setattr(daemon.cache, 'discard_other_versions', lambda version: 0)
+    monkeypatch.setattr(daemon, 'prune_in_background', lambda: None)
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': False})
     monkeypatch.setattr(daemon, 'handle', lambda request: pytest.fail('handled'))
 
@@ -289,11 +292,12 @@ class StopLoopError(Exception):
 
 
 def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
-    """The loop prepares its folder, warms up, answers each request, and sweeps each minute."""
+    """The loop prepares its folder, warms up, starts pruning, answers requests, and sweeps."""
     drop = tmp_path / 'container'
-    handled, swept, warmed = [], [], []
+    handled, swept, warmed, pruning = [], [], [], []
     monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
     monkeypatch.setattr(daemon.cache, 'discard_other_versions', lambda version: 0)
+    monkeypatch.setattr(daemon, 'prune_in_background', lambda: pruning.append(True))
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': True})
     monkeypatch.setattr(daemon.config_mod, 'mirror', lambda: warmed.append('mirrored'))
     monkeypatch.setattr(daemon, 'warm_in_background', warmed.append)
@@ -326,6 +330,7 @@ def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
     assert list(drop.iterdir()) == []
     assert swept == [drop]
     assert warmed == [{'warm_on_start': True}, 'mirrored', 'mirrored', 'mirrored']
+    assert pruning == [True]
 
 
 @pytest.fixture
@@ -502,3 +507,150 @@ def test_a_description_that_raises_does_not_stop_the_others(tmp_path, monkeypatc
     assert daemon.describe_later('/data/b.vtu', {}, ('b.json', 1, 2))
     daemon._descriptions.join()
     assert calls == ['/data/a.vtu', '/data/b.vtu']
+
+
+def test_pruner_rereads_its_interval_and_checks_when_due(monkeypatch):
+    """The pruner checks at start, then once the interval is up, rereading it each time."""
+    settings = iter([{'cache_check_minutes': 2}] * 3 + [{'cache_check_minutes': 0}])
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: next(settings))
+    pruned = []
+    monkeypatch.setattr(daemon.cache, 'prune', lambda config, may_look: pruned.append(config))
+    # Under the first interval the last tick would be due, so only a reread 0 skips it.
+    clock = iter([0.0, 0.0, 60.0, 120.0, 120.0, 240.0])
+    monkeypatch.setattr(daemon.time, 'time', lambda: next(clock))
+    polls = []
+
+    def sleep(seconds):
+        polls.append(seconds)
+        if len(polls) == 4:
+            raise StopLoopError
+
+    monkeypatch.setattr(daemon.time, 'sleep', sleep)
+    with pytest.raises(StopLoopError):
+        daemon.prune_periodically()
+    assert len(pruned) == 2
+    # It waits no longer than the interval, so a short one is honoured.
+    assert polls == [120, 120, 120, daemon.PRUNE_POLL_SECONDS]
+
+
+def test_a_failed_prune_is_logged_and_the_pruner_goes_on(monkeypatch):
+    """An error in one check is logged, and the next check still happens."""
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'cache_check_minutes': 1})
+
+    def broken(config, may_look):
+        message = 'disk on fire'
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(daemon.cache, 'prune', broken)
+    logged = []
+    monkeypatch.setattr(daemon.environment, 'log', lambda config, text: logged.append(text))
+    clock = iter([0.0, 0.0, 60.0, 60.0])
+    monkeypatch.setattr(daemon.time, 'time', lambda: next(clock))
+    polls = []
+
+    def sleep(seconds):
+        polls.append(seconds)
+        if len(polls) == 2:
+            raise StopLoopError
+
+    monkeypatch.setattr(daemon.time, 'sleep', sleep)
+    with pytest.raises(StopLoopError):
+        daemon.prune_periodically()
+    assert logged == ['prune failed: RuntimeError: disk on fire'] * 2
+
+
+def test_the_pruner_looks_in_private_folders_only_once_a_preview_has(tmp_path, monkeypatch):
+    """Private folders and other volumes wait until a preview has read somewhere in them."""
+    monkeypatch.setattr(daemon.Path, 'home', lambda: tmp_path)
+    monkeypatch.setattr(daemon, '_reachable_folders', {})
+    desktop = tmp_path / 'Desktop' / 'unzipped' / 'mesh.vtu'
+    assert daemon.may_look(tmp_path / 'projects' / 'mesh.vtu')
+    for private in (
+        desktop,
+        tmp_path / 'Library' / 'CloudStorage' / 'Dropbox' / 'mesh.vtu',
+        tmp_path / 'Library' / 'Containers' / 'com.example' / 'mesh.vtu',
+        Path('/Volumes/disk/mesh.vtu'),
+    ):
+        assert not daemon.may_look(private)
+    daemon._reachable_folders[str(tmp_path / 'Desktop' / 'other')] = (0.0, False)
+    assert not daemon.may_look(desktop)
+    # macOS grants the Desktop as a whole, so any folder in it read once vouches for all.
+    daemon._reachable_folders[str(tmp_path / 'Desktop' / 'other')] = (0.0, True)
+    assert daemon.may_look(desktop)
+    assert not daemon.may_look(tmp_path / 'Documents' / 'mesh.vtu')
+    daemon._reachable_folders['/Volumes/disk/a'] = (0.0, True)
+    assert daemon.may_look(Path('/Volumes/disk/b/mesh.vtu'))
+    assert not daemon.may_look(Path('/Volumes/other/mesh.vtu'))
+
+
+@pytest.fixture
+def vanishing(tmp_path, monkeypatch):
+    """Serve a request whose cached preview is pruned before it is copied; record builds."""
+    png = tmp_path / 'built.png'
+    png.write_bytes(b'png')
+    found = iter([tmp_path / 'gone.png', tmp_path / 'gone.png', None])
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: next(found))
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
+    monkeypatch.setattr(daemon, 'describe_later', lambda *args: None)
+    built, locked = [], []
+    held = threading.local()
+    original = daemon.one_at_a_time
+
+    @contextlib.contextmanager
+    def watched(identity, config):
+        with original(identity, config):
+            held.inside = True
+            try:
+                yield
+            finally:
+                held.inside = False
+
+    def produce(target, config, identity):
+        built.append(target)
+        locked.append(getattr(held, 'inside', False))
+        return png
+
+    monkeypatch.setattr(daemon, 'one_at_a_time', watched)
+    monkeypatch.setattr(daemon, 'produce', produce)
+
+    def ask(*, reachable, **extra):
+        monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: reachable)
+        request = tmp_path / 'token.pvqlreq'
+        payload = {'path': str(tmp_path / 'mesh.vtu'), 'mtime': 1, 'size': 2, **extra}
+        request.write_text(json.dumps(payload))
+        daemon.handle(request)
+        return json.loads((tmp_path / 'token.pvqlrep').read_text())
+
+    return SimpleNamespace(ask=ask, built=built, locked=locked)
+
+
+def test_a_preview_pruned_before_it_is_copied_is_built_again(vanishing, tmp_path):
+    """A cached preview that goes before it is copied is rebuilt, under the per-file lock."""
+    reply = vanishing.ask(reachable=True)
+    assert Path(reply['png']).read_bytes() == b'png'
+    assert vanishing.built == [str(tmp_path / 'mesh.vtu')]
+    assert vanishing.locked == [True]
+
+
+def test_a_pruned_preview_of_an_unreadable_file_is_built_from_the_copy(vanishing, tmp_path):
+    """An unreadable file is never read for a rebuild; the extension's copy is."""
+    copy = str(tmp_path / 'staged' / 'mesh.vtu')
+    reply = vanishing.ask(reachable=False, copy=copy)
+    assert reply['ok'] is True
+    assert vanishing.built == [copy]
+
+
+def test_a_pruned_preview_of_an_unreadable_file_asks_for_a_copy(vanishing):
+    """Without a copy, the extension is asked for one rather than the file being read."""
+    reply = vanishing.ask(reachable=False)
+    assert reply['needs_copy'] is True
+    assert vanishing.built == []
+
+
+def test_pruner_runs_on_a_daemon_thread(monkeypatch):
+    """The pruner never keeps the service from stopping."""
+    monkeypatch.setattr(daemon, 'prune_periodically', lambda: None)
+    thread = daemon.prune_in_background()
+    thread.join(5)
+    assert thread.daemon
