@@ -13,8 +13,10 @@ from . import environment
 if TYPE_CHECKING:
     import os
 
-# Draws a still as pyvista-zstd draws the picture a .pv file carries.
+# Draws a still on a transparent background, cropped to the dataset.
 STILL = Path(__file__).with_name('_still.py')
+# Part of every still's cache key; raise it when _still.py draws differently.
+STILL_VERSION = '1'
 
 
 def cache_key(identity: tuple[str, int, int], config: dict[str, Any]) -> str:
@@ -23,7 +25,7 @@ def cache_key(identity: tuple[str, int, int], config: dict[str, Any]) -> str:
         repr(config.get('window_size')),
         repr(config.get('background')),
         repr(config.get('extra_args')),
-        'transparent',
+        STILL_VERSION,
     ]
     return cache.digest(identity, settings)
 
@@ -40,13 +42,13 @@ def uses_pyvista_plot(config: dict[str, Any]) -> bool:
 
 def still_command(interpreter: str, path: Path, out: Path, config: dict[str, Any]) -> list[str]:
     """Return the command that draws a still on a transparent background."""
-    width, height = config.get('window_size') or [1024, 1024]
+    width, height = config.get('window_size') or config_mod.DEFAULTS['window_size']
     return [interpreter, str(STILL), str(path), str(out), str(int(width)), str(int(height))]
 
 
 def build_command(executable: str, path: Path, out: Path, config: dict[str, Any]) -> list[str]:
     """Return the ``pyvista plot`` command used to render a preview."""
-    width, height = config.get('window_size') or [1024, 1024]
+    width, height = config.get('window_size') or config_mod.DEFAULTS['window_size']
     command = [
         executable,
         'plot',

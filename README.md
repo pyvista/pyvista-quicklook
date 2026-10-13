@@ -259,9 +259,10 @@ ordinary folder shows its own details immediately, as the Finder would.
 
 Pressing space shows a picture of the dataset beside its details, with **Static** and
 **Interactive** tabs to switch between the picture and a surface to turn and zoom. Both
-open on the same view. A `.pv` file that carries a picture of itself shows that one at once,
-without reading the data; any other file is drawn by the render service, on a transparent
-background, as pyvista-zstd draws its pictures. After `pvql config set interactive true`,
+open on the same view. A `.pv` file that carries a picture of itself, which needs a
+pyvista-zstd release with thumbnail support to write, shows it at once without reading the
+data and uses it as its Finder icon. Any other file is drawn by the render service, on a
+transparent background, as pyvista-zstd draws its pictures. After `pvql config set interactive true`,
 every preview starts on the Interactive tab instead. Opening a file with the app always
 shows it in 3D.
 
@@ -316,7 +317,7 @@ They are kept in `~/Library/Application Support/PyVistaQuickLook/config.json`.
 | `max_conversion_memory_mb` | half the memory | Memory previews may use while built side by side; `0` for no limit |
 | `timeout` | `60` | Seconds before a conversion is abandoned |
 | `warm_on_start` | `true` | Load PyVista and VTK when the render service starts |
-| `window_size` | `1024 1024` | Size the still is drawn at, in pixels, before it is cropped to the dataset |
+| `window_size` | `1024 1024` | Size the still is drawn at, in pixels; without `background` or `extra_args` it is then cropped to the dataset |
 | `background` | none | Draw stills with `pyvista plot` on this background colour instead of a transparent one |
 | `extra_args` | none | Draw stills with `pyvista plot`, appending these arguments |
 | `extensions.add`, `extensions.remove` | none | Extensions to claim or stop claiming, on the next install |

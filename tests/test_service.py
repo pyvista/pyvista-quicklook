@@ -121,8 +121,14 @@ def test_still_images_are_drawn_on_a_transparent_background(tmp_path, env, monke
     pv.Sphere().save(source)
     png = render.preview(source, {**env, 'window_size': [128, 128]})
     alpha = pixels(png)[..., 3]
+    side = alpha.shape[0]
+    assert alpha.shape == (side, side)
+    assert alpha[side // 2, side // 2] == 255
+    # Cropped to the sphere, which then touches the margin on at least one pair of sides.
+    rows, columns = np.nonzero(alpha)
+    gaps = [rows.min(), side - 1 - rows.max(), columns.min(), side - 1 - columns.max()]
+    assert min(gaps) <= np.ceil(0.05 * side) + 1
     assert alpha[0, 0] == 0
-    assert alpha[alpha.shape[0] // 2, alpha.shape[1] // 2] == 255
     png = render.preview(source, env)
     assert daemon.produce(source, {**env, 'interactive': False}) == png
     assert convert.describe(source, env)['type'] == 'PolyData'
@@ -223,6 +229,8 @@ def test_a_file_without_a_mesh_is_told_apart_from_a_failure(tmp_path, env):
     notes.write_text('a table of numbers\n1 2 3\n')
     with pytest.raises(environment.NotAMeshError):
         convert.scene(notes, env)
+    with pytest.raises(environment.NotAMeshError, match='no surface to show'):
+        render.preview(notes, env)
     with pytest.raises(environment.RenderError) as raised:
         environment.run(env, [sys.executable, '-c', 'raise SystemExit(1)'], task='Failing')
     assert not isinstance(raised.value, environment.NotAMeshError)
