@@ -98,9 +98,9 @@ def test_only_a_cached_description_is_given_without_reading(tmp_path, env, monke
     """Asked not to read, describe returns what is cached and starts nothing."""
     source = tmp_path / 'sphere.vtp'
     pv.Sphere().save(source)
-    monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: pytest.fail('read'))
-    assert convert.describe(source, env, read=False) is None
-    monkeypatch.undo()
+    with monkeypatch.context() as patch:
+        patch.setattr(environment, 'run', lambda *args, **kwargs: pytest.fail('read'))
+        assert convert.describe(source, env, read=False) is None
     assert convert.describe(source, env)['type'] == 'PolyData'
     assert convert.describe(source, env, read=False)['type'] == 'PolyData'
 
