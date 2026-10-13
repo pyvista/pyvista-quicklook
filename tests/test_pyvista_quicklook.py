@@ -853,7 +853,14 @@ def test_uninstall_removes_everything_but_the_config(installation, capsys):
         'Contents/PlugIns/PyVistaQuickLookExtension.appex' in c and 'Extensions.app' not in c
         for c in removed
     )
-    assert any('lsregister -u' in c for c in joined)
+    unregistered = [c for c in joined if 'lsregister -u' in c]
+    assert any(
+        c.endswith(
+            str(plist.plugins_folder(tmp_path / 'Applications' / plist.APP_BUNDLE).parents[1])
+        )
+        for c in unregistered
+    )
+    assert any(c.endswith(f'Applications/{plist.APP_BUNDLE}') for c in unregistered)
     assert any('launchctl bootout' in c for c in joined)
     assert any(c.endswith('uv tool uninstall pyvista-quicklook') for c in joined)
     assert 'keeps' in capsys.readouterr().out

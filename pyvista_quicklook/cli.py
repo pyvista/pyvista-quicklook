@@ -475,14 +475,15 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     for executable in (plist_mod.EXT_EXECUTABLE, plist_mod.THUMB_EXECUTABLE):
         subprocess.run(['/usr/bin/pkill', '-x', executable], capture_output=True, check=False)
     for app in installed_apps():
-        # Versions before 0.10 embedded the extensions in the app itself.
+        # Versions before 0.9 embedded the extensions in the app itself.
         for folder in (plist_mod.plugins_folder(app), app / 'Contents' / 'PlugIns'):
             for executable in (plist_mod.EXT_EXECUTABLE, plist_mod.THUMB_EXECUTABLE):
                 appex = folder / f'{executable}.appex'
                 subprocess.run(
                     ['/usr/bin/pluginkit', '-r', str(appex)], capture_output=True, check=False
                 )
-        subprocess.run([LSREGISTER, '-u', str(app)], capture_output=True, check=False)
+        for bundle in (app, plist_mod.plugins_folder(app).parents[1]):
+            subprocess.run([LSREGISTER, '-u', str(bundle)], capture_output=True, check=False)
     target = f'gui/{os.getuid()}/{daemon_mod.LABEL}'
     subprocess.run(['/bin/launchctl', 'bootout', target], capture_output=True, check=False)
     retire_legacy_service()

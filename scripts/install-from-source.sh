@@ -158,26 +158,28 @@ if [[ -d "$LEGACY_APP" ]]; then
 fi
 
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+# The extensions are held by a nested app that is never launched, so the re-registration
+# macOS gives an app without a Developer ID on every launch leaves them alone.
+PLUGINS="$APP/Contents/Library/$HOLDER_BUNDLE_NAME.app/Contents/PlugIns"
 echo "==> retiring registrations of other copies"
 # A record of a copy that was removed or lives elsewhere, the build folder's included, keeps
 # Quick Look from starting the extension at all.
 "$LSREGISTER" -dump 2>/dev/null \
-  | sed -n 's/^ *path: *\(.*PyVista Quick Look[^(]*\.app\) (0x.*/\1/p' | sort -u \
+  | sed -n 's/^[[:space:]]*path:[[:space:]]*\(.*\/PyVista Quick Look\( Extensions\)\{0,1\}\.app\) (0x.*/\1/p' | sort -u \
   | while IFS= read -r other; do
       [[ "$other" == "$APP" || "$other" == "$APP/"* ]] && continue
       "$LSREGISTER" -u "$other" >/dev/null 2>&1 || true
-    done
-/usr/bin/pluginkit -mAvvv 2>/dev/null | sed -n 's/^[[:space:]]*Path = \(.*PyVistaQuickLook[A-Za-z]*\.appex\)$/\1/p' \
+    done || true
+# Including the records of an earlier layout of this very copy, under Contents/PlugIns.
+/usr/bin/pluginkit -mAvvv 2>/dev/null \
+  | sed -n 's/^[[:space:]]*Path = \(.*\/PyVistaQuickLook[A-Za-z]*\.appex\)$/\1/p' \
   | while IFS= read -r other; do
-      [[ "$other" == "$APP/"* ]] && continue
+      [[ "$other" == "$PLUGINS/"* ]] && continue
       /usr/bin/pluginkit -r "$other" >/dev/null 2>&1 || true
-    done
+    done || true
 
 echo "==> registering with Launch Services and Quick Look"
 "$LSREGISTER" -f -R -trusted "$APP"
-# The extensions are held by a nested app that is never launched, so the re-registration
-# macOS gives an app without a Developer ID on every launch leaves them alone.
-PLUGINS="$APP/Contents/Library/$HOLDER_BUNDLE_NAME.app/Contents/PlugIns"
 /usr/bin/pluginkit -a "$PLUGINS/$EXT_NAME.appex" 2>/dev/null || true
 /usr/bin/pluginkit -e use -i "$EXT_ID" 2>/dev/null || true
 /usr/bin/pluginkit -a "$PLUGINS/$THUMB_NAME.appex" 2>/dev/null || true
