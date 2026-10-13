@@ -146,13 +146,20 @@ enum Helper {
         return (path as NSString).expandingTildeInPath
     }
 
-    /// Returns the folder the service watches: the extension's container, found by the app
-    /// from the extension it embeds.
+    /// Returns the identifier of the Quick Look preview extension in a folder of plug-ins.
+    static func previewExtension(in plugIns: URL) -> String? {
+        let embedded = (try? FileManager.default.contentsOfDirectory(at: plugIns, includingPropertiesForKeys: nil)) ?? []
+        return embedded.lazy.compactMap(Bundle.init(url:)).first { bundle in
+            let point = (bundle.object(forInfoDictionaryKey: "NSExtension") as? [String: Any])?["NSExtensionPointIdentifier"]
+            return point as? String == "com.apple.quicklook.preview"
+        }?.bundleIdentifier
+    }
+
+    /// Returns the folder the service watches: the container of the preview extension the app embeds.
     static func exchangeDirectory() -> String {
         guard ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] == nil,
               let plugIns = Bundle.main.builtInPlugInsURL,
-              let embedded = try? FileManager.default.contentsOfDirectory(at: plugIns, includingPropertiesForKeys: nil),
-              let identifier = embedded.lazy.compactMap({ Bundle(url: $0)?.bundleIdentifier }).first
+              let identifier = previewExtension(in: plugIns)
         else {
             return NSTemporaryDirectory()
         }
