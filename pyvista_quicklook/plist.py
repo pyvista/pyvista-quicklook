@@ -34,6 +34,8 @@ THUMB_PRINCIPAL_CLASS = 'PVQLThumbnailProvider'
 HOLDER_BUNDLE = f'{APP_NAME} Extensions.app'
 HOLDER_BUNDLE_ID = f'{APP_BUNDLE_ID}.Extensions'
 HOLDER_EXECUTABLE = 'PyVistaQuickLookExtensions'
+# AppIcon.icns, which the build copies from icon/ into both apps' Resources.
+ICON_FILE = 'AppIcon'
 # Only these formats can carry a picture of themselves.
 THUMBNAIL_EXTENSIONS = ('.pv',)
 
@@ -84,6 +86,7 @@ def app_plist(extensions: list[str], helper: str | None = None) -> dict[str, Any
         'CFBundleDisplayName': APP_NAME,
         'CFBundleIdentifier': APP_BUNDLE_ID,
         'CFBundleExecutable': APP_EXECUTABLE,
+        'CFBundleIconFile': ICON_FILE,
         'CFBundlePackageType': 'APPL',
         'CFBundleInfoDictionaryVersion': '6.0',
         'CFBundleDevelopmentRegion': 'en',
@@ -142,6 +145,7 @@ def holder_plist() -> dict[str, Any]:
         'CFBundleDisplayName': f'{APP_NAME} Extensions',
         'CFBundleIdentifier': HOLDER_BUNDLE_ID,
         'CFBundleExecutable': HOLDER_EXECUTABLE,
+        'CFBundleIconFile': ICON_FILE,
         'CFBundlePackageType': 'APPL',
         'CFBundleInfoDictionaryVersion': '6.0',
         'CFBundleDevelopmentRegion': 'en',

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import plistlib
 
 from pyvista_quicklook import formats
@@ -32,6 +33,13 @@ def test_scenes_blend_colours_as_vtk_does():
     """The app and the extension both turn off SceneKit's linear-light rendering."""
     assert plist.app_plist(['.vtu'])['SCNDisableLinearSpaceRendering'] is True
     assert plist.extension_plist(['.vtu'])['SCNDisableLinearSpaceRendering'] is True
+
+
+def test_both_apps_name_the_icon_the_repo_ships():
+    """The app and the extensions' holder name an icon that exists in icon/."""
+    root = Path(__file__).resolve().parents[1]
+    for info in (plist.app_plist(['.vtu']), plist.holder_plist()):
+        assert (root / 'icon' / f'{info["CFBundleIconFile"]}.icns').is_file()
 
 
 def test_thumbnail_plist_covers_only_types_that_carry_a_picture():

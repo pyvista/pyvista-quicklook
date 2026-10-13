@@ -79,7 +79,9 @@ compile() {
 echo "==> cleaning $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$HOLDER/Contents/MacOS" \
-  "$APPEX/Contents/MacOS" "$THUMBEX/Contents/MacOS"
+  "$HOLDER/Contents/Resources" "$APPEX/Contents/MacOS" "$THUMBEX/Contents/MacOS"
+cp "$ROOT/icon/AppIcon.icns" "$APP/Contents/Resources/"
+cp "$ROOT/icon/AppIcon.icns" "$HOLDER/Contents/Resources/"
 
 echo "==> generating Info.plist files (helper: $HELPER)"
 "${PLIST_COMMAND[@]}" plist \
