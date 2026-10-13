@@ -32,7 +32,6 @@ def probe(tmp_path_factory):
     subprocess.run(
         [
             'swiftc',
-            '-O',
             '-parse-as-library',
             str(ROOT / 'macos' / 'QuickLookExtension' / 'InfoPanel.swift'),
             str(ROOT / 'macos' / 'Tools' / 'InfoProbe.swift'),
