@@ -155,12 +155,14 @@ def test_a_description_alone_converts_nothing(tmp_path, monkeypatch, cached, rea
         ({}, {'scene': False}, False),
         ({'interactive': False}, {}, False),
         ({'interactive': False}, {'scene': True}, True),
+        ({'interactive': False, 'theme': '/themes/mine.json'}, {}, True),
+        ({'theme': '/themes/mine.json'}, {'scene': False}, True),
     ],
 )
 def test_previews_follow_the_settings_unless_a_tab_asks_otherwise(
     tmp_path, monkeypatch, settings, payload, interactive
 ):
-    """A preview follows the settings, unless a request says which view its tab asked for."""
+    """A preview follows the settings or the tab asked for, but a saved theme is drawn in 3D."""
     asked = []
 
     def produce(target, config, identity):
@@ -323,7 +325,7 @@ def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
     assert handled == ['a.pvqltaken', 'b.pvqltaken']
     assert list(drop.iterdir()) == []
     assert swept == [drop]
-    assert warmed == ['mirrored', {'warm_on_start': True}]
+    assert warmed == [{'warm_on_start': True}, 'mirrored', 'mirrored', 'mirrored']
 
 
 @pytest.fixture

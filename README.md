@@ -342,7 +342,7 @@ They are kept in `~/Library/Application Support/PyVistaQuickLook/config.json`; `
 | `timeout` | `60` | Seconds before a conversion is abandoned |
 | `warm_on_start` | `true` | Load PyVista and VTK when the render service starts |
 | `window_size` | `1024 1024` | Still image size in pixels |
-| `theme` | PyVista's own | A PyVista theme by name, such as `document` or `paraview`, or the path of one saved with `Theme.save`; previews follow its colour, colormap, shading and lighting |
+| `theme` | PyVista's own | A PyVista theme by name, such as `document` or `paraview`, or the path of one saved with `Theme.save`; previews follow its colour, colormap, shading and lighting, and a saved theme always opens in 3D |
 | `background` | none | Background colour passed to `pyvista plot` |
 | `extra_args` | none | Extra arguments appended to `pyvista plot` |
 | `extensions.add`, `extensions.remove` | none | Extensions to claim or stop claiming, on the next install |

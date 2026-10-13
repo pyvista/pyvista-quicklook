@@ -9,7 +9,7 @@ final class ThumbnailProvider: QLThumbnailProvider {
         for request: QLFileThumbnailRequest,
         _ handler: @escaping (QLThumbnailReply?, Error?) -> Void
     ) {
-        guard let png = EmbeddedThumbnail.read(request.fileURL, allowStale: false),
+        guard let png = EmbeddedThumbnail.current(request.fileURL),
               let image = NSImage(data: png), image.size.width > 0, image.size.height > 0
         else {
             handler(nil, CocoaError(.fileReadCorruptFile))

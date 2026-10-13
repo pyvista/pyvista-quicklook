@@ -542,3 +542,14 @@ def test_mirror_copies_nothing_until_settings_exist(home):
     assert not config.MIRROR_PATH.exists()
     config.save({'timeout': 5})
     assert json.loads(config.MIRROR_PATH.read_text()) == {'timeout': 5}
+
+
+def test_mirror_follows_a_hand_edited_or_removed_file(home):
+    """Settings edited outside pvql reach the extension's copy, and a removed file removes it."""
+    config.save({'timeout': 5})
+    config.CONFIG_PATH.write_text(json.dumps({'force_interactive': True}))
+    config.mirror()
+    assert json.loads(config.MIRROR_PATH.read_text()) == {'force_interactive': True}
+    config.CONFIG_PATH.unlink()
+    config.mirror()
+    assert not config.MIRROR_PATH.exists()

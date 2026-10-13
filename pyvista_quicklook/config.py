@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -229,11 +230,22 @@ def save(config: dict[str, Any]) -> Path:
 
 
 def mirror() -> None:
-    """Copy the stored settings where the extension can read them, if a file exists."""
-    if not CONFIG_PATH.is_file():
+    """Keep the extension's copy of the settings the same as the file, or gone without one."""
+    try:
+        settings = CONFIG_PATH.read_bytes()
+    except OSError:
+        MIRROR_PATH.unlink(missing_ok=True)
         return
+    with contextlib.suppress(OSError):
+        if MIRROR_PATH.read_bytes() == settings:
+            return
     MIRROR_PATH.parent.mkdir(parents=True, exist_ok=True)
-    MIRROR_PATH.write_text(CONFIG_PATH.read_text())
+    MIRROR_PATH.write_bytes(settings)
+
+
+def saved_theme(config: dict[str, Any]) -> bool:
+    """Return whether the theme is one saved as JSON, which only the 3D view can follow."""
+    return bool(config.get('theme')) and os.path.isabs(config['theme'])
 
 
 def executable(path: str | os.PathLike[str] | None) -> str | None:

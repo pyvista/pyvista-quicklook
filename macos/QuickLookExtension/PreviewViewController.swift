@@ -555,8 +555,6 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         fatalError("init(coder:) is not used")
     }
 
-    /// Asked by Finder before it drags the file from its preview column: a press on the 3D view
-    /// turns the scene instead.
     /// Whether Finder should frame the preview in its pane; the system's own 3D preview goes without.
     @objc func wantsBorder() -> Bool {
         false
@@ -654,12 +652,12 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             self.present(content, mode, info, request, generation: generation)
         }
         let failed = { (message: String) in "Could not preview \(name)\n\n\(message)" }
-        // The description comes in under a second, and a picture shown without it would move
-        // when the details arrive beside or below it.
-        let described = thumbnail == nil ? nil : DescriptionWait(url)
-        let early = described?.wait(seconds: 2)
         // A current picture the file carries of itself is the preview, without the service.
-        if shown == .still, let png = thumbnail, let described, request.hasPicture {
+        if shown == .still, request.hasPicture, let png = thumbnail {
+            // The description comes in under a second, and a picture shown without it would move
+            // when the details arrive beside or below it.
+            let described = DescriptionWait(url)
+            let early = described.wait(seconds: 2)
             DispatchQueue.main.async {
                 let picture = pictureView(png) ?? messageView(failed("Its picture could not be read."))
                 present(picture, .still, early.flatMap(MeshInfo.init))
@@ -679,16 +677,15 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             pvqlLog("showing the picture \(name) carries")
             DispatchQueue.main.async {
                 if completion.isPending {
-                    present(placeholderView(name, thumbnail), shown, early.flatMap(MeshInfo.init))
+                    present(placeholderView(name, thumbnail), shown, nil)
                     completion.finish(nil)
                 }
             }
         }
         let outcome: Preview
         do {
-            // Only a tab asks for one view over the other; without tabs the settings choose.
-            let asked: Bool? = request.hasPicture ? shown == .interactive : nil
-            let reply = try Helper.requestPreview(url, force: request.force, scene: asked) { info in
+            // The Interactive tab asks for the 3D view; without tabs the settings choose.
+            let reply = try Helper.requestPreview(url, force: request.force, scene: request.hasPicture ? true : nil) { info in
                 DispatchQueue.main.async {
                     present(placeholderView(name, thumbnail), shown, MeshInfo(info))
                     completion.finish(nil)

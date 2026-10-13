@@ -24,16 +24,13 @@ enum EmbeddedThumbnail {
     /// A picture a file carries of itself.
     struct Picture {
         let png: Data
-        let width: Int
-        let height: Int
         /// Whether the data changed after the picture was taken.
         let isStale: Bool
     }
 
-    /// Returns the PNG a file carries of itself, or nil when it has none, or only a stale one
-    /// and `allowStale` is false.
-    static func read(_ url: URL, allowStale: Bool = true) -> Data? {
-        guard let picture = picture(url), allowStale || !picture.isStale else {
+    /// Returns the PNG a file carries of itself, or nil when it has none or only a stale one.
+    static func current(_ url: URL) -> Data? {
+        guard let picture = picture(url), !picture.isStale else {
             return nil
         }
         return picture.png
@@ -70,8 +67,6 @@ enum EmbeddedThumbnail {
         }
         return Picture(
             png: png,
-            width: Int(uint32(head, recordOffset + 16)),
-            height: Int(uint32(head, recordOffset + 20)),
             isStale: !matchesData(handle, crc: uint32(head, recordOffset + 28))
         )
     }

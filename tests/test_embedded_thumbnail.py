@@ -29,11 +29,11 @@ MAIN = """
 import Foundation
 let url = URL(fileURLWithPath: CommandLine.arguments[1])
 if let picture = EmbeddedThumbnail.picture(url) {
-    print("\\(picture.png.count) \\(picture.width)x\\(picture.height) stale=\\(picture.isStale)")
+    print("\\(picture.png.count) stale=\\(picture.isStale)")
 } else {
     print("none")
 }
-print(EmbeddedThumbnail.read(url, allowStale: false) == nil ? "declined" : "current")
+print(EmbeddedThumbnail.current(url) == nil ? "declined" : "current")
 """
 
 
@@ -69,7 +69,7 @@ def pv_file(path, *, index=b'i' * 64, crc_of=None, record_extra=0, png=PNG):
 def test_a_current_picture_is_found(reader, tmp_path):
     """The picture, its size, and a matching checksum are read from where the format puts them."""
     found, current = reader(pv_file(tmp_path / 'mesh.pv'))
-    assert found == f'{len(PNG)} 64x48 stale=false'
+    assert found == f'{len(PNG)} stale=false'
     assert current == 'current'
 
 

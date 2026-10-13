@@ -366,6 +366,9 @@ def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -
     if 'scene' in payload:
         # A file with a picture of its own asks for the 3D view by its tab, whatever the settings.
         config = {**config, 'interactive': payload['scene'] is True}
+    if config_mod.saved_theme(config):
+        # `pyvista plot` takes a theme by name only, so a saved theme is drawn in 3D.
+        config = {**config, 'interactive': True}
     ready = cached_preview(identity, config)
     if payload.get('force') is True or ready is not None:
         # Asked for whatever its size, or previewed already, so no step of it applies the limit.
@@ -489,12 +492,13 @@ def serve(poll: float = 0.05) -> int:
     directory.mkdir(parents=True, exist_ok=True)
     cache.discard_other_versions(convert_mod.SCENE_VERSION)
     cache.discard_scratch(STALE_SECONDS)
-    config_mod.mirror()
     startup = config_mod.load()
     if startup.get('warm_on_start', True):
         warm_in_background(startup)
     last_sweep = time.monotonic()
     while True:
+        # Settings edited by hand reach the extension before its next preview.
+        config_mod.mirror()
         for request in sorted(directory.glob(f'*{REQUEST_SUFFIX}')):
             taken = request.with_suffix(TAKEN_SUFFIX)
             try:

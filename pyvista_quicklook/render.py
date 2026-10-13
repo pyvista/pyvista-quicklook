@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING
 from typing import Any
 
@@ -11,6 +10,7 @@ from . import config as config_mod
 from . import environment
 
 if TYPE_CHECKING:
+    import os
     from pathlib import Path
 
 
@@ -52,7 +52,7 @@ def build_command(executable: str, path: Path, out: Path, config: dict[str, Any]
     if config.get('background'):
         command += ['--background', str(config['background'])]
     theme = config.get('theme')
-    if theme and os.path.isabs(theme):
+    if config_mod.saved_theme(config):
         message = '`pyvista plot` takes a theme by name only, not a theme saved as JSON.'
         raise environment.RenderError(message)
     if theme:
