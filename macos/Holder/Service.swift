@@ -19,7 +19,7 @@ enum ServiceLauncher {
             sleep(60)
             exit(1)
         }
-        let arguments = [helper, "daemon"].map { strdup($0) } + [nil]
+        let arguments: [UnsafeMutablePointer<CChar>?] = [strdup(helper), strdup("daemon"), nil]
         execv(helper, arguments)
         FileHandle.standardError.write(Data("could not start \(helper): \(String(cString: strerror(errno)))\n".utf8))
         sleep(60)
