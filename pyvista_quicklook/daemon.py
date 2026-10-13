@@ -41,8 +41,10 @@ EARLY_BYTES = 32 * 1024 * 1024
 STALE_SECONDS = 600
 # How much of the extension's wait for a reply is kept in hand.
 REPLY_MARGIN_SECONDS = 5
-# How often the pruner rereads its interval, so a change applies within the hour.
+# The longest the pruner waits before rereading its interval.
 PRUNE_POLL_SECONDS = 3600
+# Folders macOS asks the reader about before the service may look in them.
+PRIVATE_FOLDERS = ('Desktop', 'Documents', 'Downloads', 'Library/Mobile Documents')
 
 UNREADABLE_MESSAGE = """The render service could not read
 
@@ -426,7 +428,12 @@ def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -
                     if left > 1:
                         info = convert_mod.describe(target, config, identity, timeout=left)
         delivered = reply.with_suffix(built.suffix)
-        shutil.copyfile(built, delivered)
+        try:
+            shutil.copyfile(built, delivered)
+        except FileNotFoundError:
+            # Pruned between being found and being copied, so it is built again.
+            built = produce(target, config, identity)
+            shutil.copyfile(built, delivered)
     except environment.NotAMeshError as error:
         # Only then does the extension show the file as text or as its icon instead.
         answer_with({'ok': False, 'error': str(error), 'not_a_mesh': True})
@@ -488,10 +495,31 @@ def warm_in_background(config: dict[str, Any]) -> threading.Thread:
     return thread
 
 
-def prune_due(config: dict[str, Any], last: float | None, now: float) -> bool:
+def check_minutes(config: dict[str, Any]) -> float:
+    """Return the minutes between checks of the cache, where 0 means never."""
+    try:
+        minutes = float(config.get('cache_check_minutes') or 0)
+    except TypeError, ValueError:
+        minutes = config_mod.DEFAULTS['cache_check_minutes']
+    return max(minutes, 0)
+
+
+def prune_due(minutes: float, last: float | None, now: float) -> bool:
     """Return whether the cache is due a check for files that have changed or gone."""
-    minutes = config.get('cache_check_minutes') or 0
     return minutes > 0 and (last is None or now - last >= minutes * 60)
+
+
+def may_look(source: Path) -> bool:
+    """Return whether the pruner may look at a file without macOS asking the reader first.
+
+    A file in a private folder or on another volume is looked at only once a preview has
+    found its folder readable.
+    """
+    private = [Path.home() / folder for folder in PRIVATE_FOLDERS]
+    if not any(source.is_relative_to(folder) for folder in [Path('/Volumes'), *private]):
+        return True
+    remembered = _reachable_folders.get(str(source.parent))
+    return remembered is not None and remembered[1]
 
 
 def prune_periodically() -> None:
@@ -499,12 +527,16 @@ def prune_periodically() -> None:
     last = None
     while True:
         config = config_mod.load()
-        if prune_due(config, last, time.monotonic()):
+        minutes = check_minutes(config)
+        # The wall clock, so a Mac that sleeps overnight still checks once a day.
+        if prune_due(minutes, last, time.time()):
             # A file that cannot be looked at blocks only this thread, never a preview.
-            with contextlib.suppress(Exception):
-                cache.prune(config)
-            last = time.monotonic()
-        time.sleep(PRUNE_POLL_SECONDS)
+            try:
+                cache.prune(config, may_look)
+            except Exception as error:  # noqa: BLE001
+                environment.log(config, f'prune failed: {type(error).__name__}: {error}')
+            last = time.time()
+        time.sleep(min(PRUNE_POLL_SECONDS, minutes * 60) if minutes else PRUNE_POLL_SECONDS)
 
 
 def prune_in_background() -> threading.Thread:

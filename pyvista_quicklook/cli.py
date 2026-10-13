@@ -272,7 +272,7 @@ def cmd_cache(args: argparse.Namespace) -> int:
         return 0
     if args.prune:
         removed = cache_mod.prune(config_mod.load())
-        print(f'removed {removed} cached entries of files that have changed or gone')
+        print(f'removed {removed} cached previews and descriptions of changed or deleted files')
     entries = cache_mod.entries()
     total = sum(entry.stat().st_size for entry in cache_mod.files())
     print(f'{config_mod.CACHE_DIR}\n{len(entries)} previews, {total / 1_000_000:.1f} MB')
@@ -566,8 +566,9 @@ def build_parser() -> argparse.ArgumentParser:
     config.set_defaults(func=cmd_config)
 
     cache = sub.add_parser('cache', help='show, prune, or clear the preview cache')
-    cache.add_argument('--clear', action='store_true', help='delete every cached preview')
-    cache.add_argument(
+    clearing = cache.add_mutually_exclusive_group()
+    clearing.add_argument('--clear', action='store_true', help='delete every cached preview')
+    clearing.add_argument(
         '--prune', action='store_true', help='delete previews of files that have changed or gone'
     )
     cache.set_defaults(func=cmd_cache)

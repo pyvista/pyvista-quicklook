@@ -35,6 +35,12 @@ def test_scene_is_built_by_the_exporter_and_cached(tmp_path, env, monkeypatch):
     assert out.name.startswith(f'{convert.SCENE_VERSION}-')
     assert pv.read(out).n_faces > 0
     assert not list(config.CACHE_DIR.glob('*.tmp*'))
+    # The scene and the description read with it each record the file, so pruning keeps them.
+    identity = cache.identity_of(source.resolve())
+    for entry in (out, convert.info_path(identity)):
+        record = json.loads(cache.record_path(entry).read_text())
+        assert (record['path'], record['mtime'], record['size']) == identity
+    assert cache.prune() == 0
 
     def never(*args, **kwargs):
         pytest.fail('a cached scene must not be built again')
@@ -84,6 +90,7 @@ def test_a_scene_cached_without_its_description_is_described(tmp_path, env):
     assert convert.describe(source, hidden) is None
     assert convert.describe(source, env)['type'] == 'PolyData'
     assert convert.info_path(identity).is_file()
+    assert cache.record_path(convert.info_path(identity)).is_file()
     assert not list(config.CACHE_DIR.glob('*.tmp*'))
 
 

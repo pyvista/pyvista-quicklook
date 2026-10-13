@@ -509,13 +509,14 @@ def test_a_description_that_raises_does_not_stop_the_others(tmp_path, monkeypatc
 
 
 def test_pruner_rereads_its_interval_and_checks_when_due(monkeypatch):
-    """The pruner checks at start, then waits out the interval, rereading it each poll."""
+    """The pruner checks at start, then once the interval is up, rereading it each time."""
     settings = iter([{'cache_check_minutes': 2}] * 3 + [{'cache_check_minutes': 0}])
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: next(settings))
     pruned = []
-    monkeypatch.setattr(daemon.cache, 'prune', pruned.append)
-    clock = iter([0.0, 0.0, 60.0, 120.0, 120.0, 180.0])
-    monkeypatch.setattr(daemon.time, 'monotonic', lambda: next(clock))
+    monkeypatch.setattr(daemon.cache, 'prune', lambda config, may_look: pruned.append(config))
+    # Under the first interval the last tick would be due, so only a reread 0 skips it.
+    clock = iter([0.0, 0.0, 60.0, 120.0, 120.0, 240.0])
+    monkeypatch.setattr(daemon.time, 'time', lambda: next(clock))
     polls = []
 
     def sleep(seconds):
@@ -527,7 +528,66 @@ def test_pruner_rereads_its_interval_and_checks_when_due(monkeypatch):
     with pytest.raises(StopLoopError):
         daemon.prune_periodically()
     assert len(pruned) == 2
-    assert polls == [daemon.PRUNE_POLL_SECONDS] * 4
+    # It waits no longer than the interval, so a short one is honoured.
+    assert polls == [120, 120, 120, daemon.PRUNE_POLL_SECONDS]
+
+
+def test_a_failed_prune_is_logged_and_the_pruner_goes_on(monkeypatch):
+    """An error in one check is logged, and the next check still happens."""
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'cache_check_minutes': 1})
+
+    def broken(config, may_look):
+        message = 'disk on fire'
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(daemon.cache, 'prune', broken)
+    logged = []
+    monkeypatch.setattr(daemon.environment, 'log', lambda config, text: logged.append(text))
+    clock = iter([0.0, 0.0, 60.0, 60.0])
+    monkeypatch.setattr(daemon.time, 'time', lambda: next(clock))
+    polls = []
+
+    def sleep(seconds):
+        polls.append(seconds)
+        if len(polls) == 2:
+            raise StopLoopError
+
+    monkeypatch.setattr(daemon.time, 'sleep', sleep)
+    with pytest.raises(StopLoopError):
+        daemon.prune_periodically()
+    assert logged == ['prune failed: RuntimeError: disk on fire'] * 2
+
+
+def test_the_pruner_looks_in_private_folders_only_once_a_preview_has(tmp_path, monkeypatch):
+    """Private folders and other volumes wait for a preview to have read them first."""
+    monkeypatch.setattr(daemon.Path, 'home', lambda: tmp_path)
+    monkeypatch.setattr(daemon, '_reachable_folders', {})
+    desktop = tmp_path / 'Desktop' / 'mesh.vtu'
+    assert daemon.may_look(tmp_path / 'projects' / 'mesh.vtu')
+    assert not daemon.may_look(desktop)
+    assert not daemon.may_look(Path('/Volumes/disk/mesh.vtu'))
+    daemon._reachable_folders[str(desktop.parent)] = (0.0, False)
+    assert not daemon.may_look(desktop)
+    daemon._reachable_folders[str(desktop.parent)] = (0.0, True)
+    assert daemon.may_look(desktop)
+
+
+def test_a_preview_pruned_before_it_is_copied_is_built_again(tmp_path, monkeypatch):
+    """A cached preview that goes between being found and being copied is rebuilt."""
+    png = tmp_path / 'built.png'
+    png.write_bytes(b'png')
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: tmp_path / 'gone.png')
+    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
+    monkeypatch.setattr(daemon, 'describe_later', lambda *args: None)
+    request = tmp_path / 'token.pvqlreq'
+    payload = {'path': str(tmp_path / 'mesh.vtu'), 'mtime': 1, 'size': 2}
+    request.write_text(json.dumps(payload))
+    daemon.handle(request)
+    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert Path(reply['png']).read_bytes() == b'png'
 
 
 def test_pruner_runs_on_a_daemon_thread(monkeypatch):

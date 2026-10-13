@@ -1483,24 +1483,53 @@ def test_prune_drops_entries_of_deleted_files(recorded):
     )
 
 
-def test_prune_drops_entries_of_changed_files(recorded):
-    """A file edited since its preview was built has that preview dropped."""
+@pytest.mark.parametrize('edit', ['a larger mesh', 'MESH'])
+def test_prune_drops_entries_of_changed_files(recorded, edit):
+    """A file edited since its preview was built has that preview dropped, same size or not."""
     source, entry = recorded('mesh.vtu', '.json')
-    source.write_text('a larger mesh')
+    stamp = source.stat().st_mtime
+    source.write_text(edit)
+    if len(edit) == len('mesh'):
+        os.utime(source, (stamp + 5, stamp + 5))
     assert cache.prune() == 1
     assert not entry.exists()
 
 
-def test_prune_keeps_entries_it_cannot_check(recorded, monkeypatch):
-    """A file the service may not look at is given the benefit of the doubt."""
-    _, entry = recorded('mesh.vtu')
-
-    def denied(path):
-        raise PermissionError(path)
-
-    monkeypatch.setattr(cache, 'identity_of', denied)
+def test_prune_compares_a_link_itself_not_its_target(recorded, tmp_path):
+    """A symbolic link is recorded by the extension as itself, and compared the same way."""
+    _, entry = recorded('target.vtu')
+    link = tmp_path / 'link.vtu'
+    link.symlink_to(tmp_path / 'target.vtu')
+    os.utime(link, (1, 1), follow_symlinks=False)
+    stat = link.lstat()
+    record = {'path': str(link), 'mtime': int(stat.st_mtime), 'size': stat.st_size}
+    cache.record_path(entry).write_text(json.dumps(record))
     assert cache.prune() == 0
     assert entry.is_file()
+
+
+def test_prune_keeps_entries_it_cannot_check(recorded, tmp_path):
+    """A file in a folder that cannot be looked in is given the benefit of the doubt."""
+    _, entry = recorded('mesh.vtu')
+    locked = tmp_path / 'locked'
+    locked.mkdir()
+    record = {'path': str(locked / 'mesh.vtu'), 'mtime': 1, 'size': 1}
+    cache.record_path(entry).write_text(json.dumps(record))
+    locked.chmod(0)
+    try:
+        assert cache.prune() == 0
+    finally:
+        locked.chmod(0o755)
+    assert entry.is_file()
+
+
+def test_prune_leaves_files_it_is_told_not_to_look_at(recorded):
+    """A file the caller says not to look at keeps its preview, even once it has gone."""
+    source, entry = recorded('mesh.vtu')
+    source.unlink()
+    assert cache.prune(may_look=lambda path: False) == 0
+    assert entry.is_file()
+    assert cache.prune(may_look=lambda path: True) == 1
 
 
 def test_prune_keeps_entries_on_unplugged_disks(recorded):
@@ -1508,10 +1537,23 @@ def test_prune_keeps_entries_on_unplugged_disks(recorded):
     _, entry = recorded('mesh.vtu')
     absent = '/Volumes/pvql-not-mounted-disk/mesh.vtu'
     cache.record_path(entry).write_text(json.dumps({'path': absent, 'mtime': 1, 'size': 1}))
-    assert cache.unmounted(Path(absent))
-    assert not cache.unmounted(Path('/Volumes'))
     assert cache.prune() == 0
     assert entry.is_file()
+
+
+@pytest.mark.parametrize(
+    ('path', 'reach'),
+    [
+        ('/Volumes/pvql-not-mounted-disk/mesh.vtu', True),
+        ('/net/server/mesh.vtu', True),
+        ('/Network/Servers/server/mesh.vtu', True),
+        ('/Volumes', False),
+        ('/Users/mesh.vtu', False),
+    ],
+)
+def test_paths_that_would_mount_or_miss_a_disk_are_out_of_reach(path, reach):
+    """Unplugged disks and automounted shares are not looked at."""
+    assert cache.out_of_reach(Path(path)) is reach
 
 
 def test_prune_drops_unrecorded_entries_and_lone_records_once_settled(tmp_path, monkeypatch):
@@ -1525,9 +1567,21 @@ def test_prune_drops_unrecorded_entries_and_lone_records_once_settled(tmp_path, 
     aged(lone)
     fresh = tmp_path / 'landing.ply'
     fresh.write_bytes(b'x')
+    arriving = tmp_path / 'arriving.ply.src'
+    arriving.write_text('{}')
+    building = [
+        tmp_path / 'a.1.2.tmp.json',
+        tmp_path / 'b.1.2.tmp.ply',
+        tmp_path / 'c.1.2.tmp.src',
+    ]
+    for path in building:
+        path.write_text('x')
+        aged(path, 120)
     (tmp_path / '.warm').touch()
     assert cache.prune() == 1
-    assert sorted(p.name for p in tmp_path.iterdir()) == ['.warm', 'landing.ply']
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        ['.warm', 'landing.ply', 'arriving.ply.src', *(p.name for p in building)]
+    )
 
 
 def test_discarding_an_old_scene_takes_its_record(tmp_path, monkeypatch):
@@ -1555,12 +1609,20 @@ def test_clear_removes_records(tmp_path, monkeypatch):
         (60, 0.0, 3599.0, False),
         (60, 0.0, 3600.0, True),
         (0, None, 0.0, False),
-        (None, None, 0.0, False),
     ],
 )
 def test_prune_is_due_on_the_configured_interval(minutes, last, now, due):
     """The service checks at start and then every interval, and never when it is 0."""
-    assert daemon.prune_due({'cache_check_minutes': minutes}, last, now) is due
+    assert daemon.prune_due(minutes, last, now) is due
+
+
+@pytest.mark.parametrize(
+    ('value', 'minutes'),
+    [(15, 15), (0, 0), (None, 0), (-5, 0), ('30', 30), ('often', 1440), ([1], 1440)],
+)
+def test_a_hand_edited_interval_is_read_or_defaulted(value, minutes):
+    """A value written by hand is read when it can be and defaulted when not."""
+    assert daemon.check_minutes({'cache_check_minutes': value}) == minutes
 
 
 def test_prune_interval_is_read_as_whole_minutes():
@@ -1572,12 +1634,19 @@ def test_prune_interval_is_read_as_whole_minutes():
             config.parse('cache_check_minutes', [bad])
 
 
+def test_cache_prune_and_clear_cannot_be_combined(capsys):
+    """Asking to prune and to clear at once is refused rather than half done."""
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(['cache', '--prune', '--clear'])
+    assert 'not allowed with' in capsys.readouterr().err
+
+
 def test_cache_prune_reports_what_went(capsys, monkeypatch, tmp_path):
     """`pvql cache --prune` drops stale previews now and reports the count."""
     monkeypatch.setattr(cli.config_mod, 'CACHE_DIR', tmp_path)
     monkeypatch.setattr(cli.cache_mod, 'prune', lambda config: 3)
     assert cli.cmd_cache(argparse.Namespace(clear=False, prune=True)) == 0
-    assert 'removed 3 cached entries' in capsys.readouterr().out
+    assert 'removed 3 cached previews and descriptions' in capsys.readouterr().out
 
 
 def test_prune_drops_an_entry_whose_record_is_unreadable_and_logs_it(recorded, monkeypatch):
@@ -1587,7 +1656,22 @@ def test_prune_drops_an_entry_whose_record_is_unreadable_and_logs_it(recorded, m
     logged = []
     monkeypatch.setattr(cache, 'log', lambda config, message: logged.append(message))
     assert cache.prune({'log': True}) == 1
-    assert logged == ['pruned 1 cached entries']
+    assert logged == ['pruned 1 previews and descriptions of changed or deleted files']
+
+
+def test_a_record_that_cannot_be_written_leaves_nothing(tmp_path, monkeypatch):
+    """A failed record write removes its scratch and the build's, and lands no entry."""
+    monkeypatch.setattr(cache.config_mod, 'CACHE_DIR', tmp_path)
+
+    def full(self, text):
+        Path.touch(self)
+        raise OSError(28, 'No space left on device')
+
+    out = tmp_path / 'preview.png'
+    monkeypatch.setattr(Path, 'write_text', full)
+    with pytest.raises(OSError, match='No space'):
+        cache.fill(out, {}, 'mesh.vtu', lambda scratch: scratch.write_bytes(b'x'), ('m', 1, 1))
+    assert not list(tmp_path.iterdir())
 
 
 def test_a_file_that_vanished_is_not_settled(tmp_path):

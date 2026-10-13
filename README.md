@@ -198,10 +198,15 @@ version of the converter, so an update rebuilds them rather than serving old one
 An edited file gets a new preview, but the old one stays on disk, as does the preview of
 a file that has been deleted. The render service clears these out when it starts and
 then once a day: each preview has a small `.src` record of the file it was built from,
-and a preview whose file has gone or changed is deleted. `pvql config set
-cache_check_minutes 60` checks hourly, `0` never checks, and `pvql cache --prune`
-checks now. A preview is kept whenever the service cannot tell: its file is on a disk
-that is not plugged in, or in a folder macOS keeps the service from looking in.
+and a preview whose file has gone or changed is deleted. Previews made before these
+records were kept are cleared once, the first time. `pvql config set cache_check_minutes
+60` checks hourly, `0` never checks, and `pvql cache --prune` checks now.
+
+A preview is kept whenever the service cannot tell, or would have to ask: its file is
+on a disk that is not plugged in or a share that is not mounted, or in a folder macOS
+keeps private. The service looks in Desktop, Documents, Downloads, iCloud Drive, and other volumes only
+once a preview has found that folder readable since the service started, so a check
+never raises a permission prompt of its own.
 
 The service loads PyVista and VTK in the background when it starts, which is at login
 and whenever it is reinstalled, so the first preview does not wait for them. `pvql
