@@ -17,12 +17,15 @@ from typing import Any
 
 import numpy as np
 import pyvista as pv
+from pyvista import _vtk
 
 if __package__:
     from . import _dataset_info
 else:
     import _dataset_info
 
+# Opens the PLY comment saying how faces are shaded; Camera.swift's drawsFlat reads it.
+SHADING_COMMENT = 'pvql shading'
 # Readers tried in turn for extensions two formats share; None is PyVista's own choice.
 ATTEMPTS = {'.inp': (None, 'abaqus'), '.msh': (None, 'ansys')}
 
@@ -423,18 +426,22 @@ def export(
     surface['RGB'] = colours
     if is_open:
         surface = both_sides(surface)
-    surface.save(destination, texture='RGB')
-    mark_shading(destination)
+    save_scene(surface, destination)
 
 
-def mark_shading(destination: str) -> None:
-    """Note in a PLY's header whether the theme shades smoothly, for the 3D view to follow."""
-    path = Path(destination)
-    data = path.read_bytes()
-    style = b'smooth' if pv.global_theme.smooth_shading else b'flat'
-    # After the 'ply' and 'format' lines, where a reader expects comments.
-    at = data.index(b'\n', data.index(b'\n') + 1) + 1
-    path.write_bytes(data[:at] + b'comment pvql shading ' + style + b'\n' + data[at:])
+def save_scene(surface: pv.PolyData, destination: str) -> None:
+    """Write a binary PLY coloured by its ``RGB`` array, noting how the theme shades faces."""
+    writer = _vtk.vtkPLYWriter()
+    writer.SetFileName(destination)
+    writer.SetInputData(surface)
+    writer.SetFileTypeToBinary()
+    writer.SetArrayName('RGB')
+    # The service's theme is fixed, so the scene cache key need not hold it.
+    style = 'smooth' if pv.global_theme.smooth_shading else 'flat'
+    writer.AddComment(f'{SHADING_COMMENT} {style}')
+    if not writer.Write():
+        message = f'could not write {destination}'
+        raise OSError(message)
 
 
 def summary(error: BaseException) -> str:

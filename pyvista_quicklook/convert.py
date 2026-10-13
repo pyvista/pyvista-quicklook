@@ -21,13 +21,13 @@ DESCRIBER = Path(__file__).with_name('_dataset_info.py')
 HEADER_SECONDS = 20
 
 
-def converter_version(exporter: Path = EXPORTER, describer: Path = DESCRIBER) -> str:
-    """Return a short digest of the exporter and describer, which changes with their output."""
-    return hashlib.sha256(exporter.read_bytes() + describer.read_bytes()).hexdigest()[:12]
+def converter_version(*sources: Path) -> str:
+    """Return a short digest of the scripts that make a cached file, which changes with them."""
+    return hashlib.sha256(b''.join(source.read_bytes() for source in sources)).hexdigest()[:12]
 
 
 # Scenes and descriptions carry this in their names, so an update never serves an old one.
-SCENE_VERSION = converter_version()
+SCENE_VERSION = converter_version(EXPORTER, DESCRIBER)
 
 
 def budget(config: dict[str, Any], key: str) -> int:
