@@ -52,28 +52,19 @@ that registered it, and the next build's service does not start.
 
 `main` is protected by a pre-commit hook, so work on a branch.
 
-A release is a tag. With `main` merged and up to date, tag it with the version behind a
-`v` and push the tag:
+A release is a tag: the version behind a `v`, pushed from an up-to-date `main`.
 
 ```bash
 git tag v0.9.1 main
 git push origin v0.9.1
 ```
 
-That is all. CI runs on the tag: the `release` job builds the app and creates the
-GitHub release with `PyVistaQuickLook.zip` and `install.sh` already attached and the
-notes generated from the merged pull requests, and the `publish` job uploads the helper
-to PyPI through trusted publishing from the `release` environment. The two jobs are
-independent, so check that both went green, then run the install one-liner from the
-README once. The version comes from the tag alone, through setuptools-scm, so nothing
-in the repository is edited for a release. PyPI never reuses a version, so a release
-that was yanked or deleted needs the next number.
+CI does the rest. The `release` job builds the app and creates the GitHub release with
+`PyVistaQuickLook.zip` and `install.sh` attached and generated notes; the `publish` job
+uploads the helper to PyPI. The two are independent, so check both. The version comes
+from the tag through setuptools-scm, and PyPI never reuses one.
 
-Publishing a release from the GitHub web interface works too, since publishing creates
-the tag, but it leaves a window: the release is the latest from the moment it is
-published, and has no assets until the `release` job finishes some minutes later. In
-that window the installer passes it over for the newest release that has the app; if
-the job fails, the window stays open until a rerun succeeds, and the install link 404s
-should the fallback fail as well. To write the notes by hand without that window, save
-the release as a draft, which CI publishes once the assets are attached, or edit the
-notes on the release CI created.
+A release can also be made from the GitHub web interface, since publishing it creates
+the tag. Save it as a draft, though: the one-line installer downloads from the latest
+release, and a release published outright has no assets until CI attaches them. CI
+publishes the draft once it has.
