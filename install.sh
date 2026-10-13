@@ -10,6 +10,23 @@ ASSET="PyVistaQuickLook.zip"
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+# Whether a release has the published app attached; one is tagged before CI has built it.
+has_app() {
+  [ "$(curl -sIL -o /dev/null -w '%{http_code}' "https://github.com/$REPO/releases/download/$1/$ASSET")" = 200 ]
+}
+
+# The newest release with the app attached, so a release CI is still building is passed over.
+published_tag() {
+  for tag in $(curl -sf "https://api.github.com/repos/$REPO/releases?per_page=10" \
+      | sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p'); do
+    if has_app "$tag"; then
+      say "$tag"
+      return 0
+    fi
+  done
+  return 1
+}
+
 [ "$(uname -s)" = 'Darwin' ] || die 'PyVista Quick Look only runs on macOS.'
 # The oldest macOS it is built and tested on, as plist.MIN_MACOS.
 MIN_MACOS=15
@@ -31,7 +48,8 @@ if [ -n "$HERE" ] && [ -x "$HERE/scripts/install-from-source.sh" ] && [ -d "$HER
 else
   TAG="${PVQL_TAG:-}"
   if [ -z "$TAG" ] && [ -z "${PVQL_BRANCH:-}" ]; then
-    TAG=$(curl -sI "https://github.com/$REPO/releases/latest" | tr -d '\r' \
+    # Without the API, the latest release, whose app may still be missing.
+    TAG=$(published_tag || curl -sI "https://github.com/$REPO/releases/latest" | tr -d '\r' \
       | sed -n 's#^[Ll]ocation: .*/tag/##p')
   fi
   if [ -n "$TAG" ]; then

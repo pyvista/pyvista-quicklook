@@ -57,3 +57,6 @@ Releases are published by CI: push a `v*` tag and the `publish` job uploads the 
 to PyPI through trusted publishing from the `release` environment, while the `release`
 job creates the tag's GitHub release if there is none and attaches the built app to it,
 which is what the installer downloads. The two jobs are independent, so check both.
+Between the tag and the end of that job the release has no app attached; the installer,
+fetched from `main` rather than from a release, passes such a release over for the
+newest one that has it.

@@ -12,7 +12,7 @@ dataset holds beside it.
 macOS 15 or newer. Nothing else needs to be installed first.
 
 ```bash
-curl -LsSf https://github.com/pyvista/pyvista-quicklook/releases/latest/download/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/pyvista/pyvista-quicklook/main/install.sh | sh
 ```
 
 Then select a `.vtu`, `.vtp`, or `.vtk` file in the Finder and press space.
@@ -374,8 +374,8 @@ pvql uninstall        # remove everything, asking first
 
 ## What the installer does
 
-1. Downloads the latest release: the installer scripts, about 1 MB, and the prebuilt
-   app, a 2 MB zip.
+1. Downloads the newest release that has the prebuilt app attached, a 2 MB zip, along
+   with that release's installer scripts, about 1 MB.
 2. Installs [uv](https://docs.astral.sh/uv/) if it is missing or updates it if it is too
    old, then a Python 3.14 if uv finds none on the machine.
 3. Installs the `pvql` helper as a uv tool.

@@ -385,3 +385,33 @@ def test_the_installers_stop_on_an_older_macos(tmp_path, version, stops):
         result = run_strict(path + check)
         assert ('reached the end' not in result.stdout) == stops, check
         assert ('needs macOS 15' in result.stderr) == stops
+
+
+@pytest.mark.parametrize(('api_down', 'picked'), [(False, 'v0.9.0'), (True, '')])
+def test_the_installer_picks_the_newest_release_with_the_app(tmp_path, api_down, picked):
+    """A release tagged before CI attached the app is passed over; without the API, none is."""
+    curl = tmp_path / 'curl'
+    curl.write_text(
+        '#!/bin/sh\n'
+        'for arg in "$@"; do url=$arg; done\n'
+        'case "$url" in\n'
+        f'  *api.github.com*) [ -z "{"down" if api_down else ""}" ] || exit 22;'
+        ' printf \'[\\n  {\\n    "tag_name": "v0.9.1",\\n  },\\n'
+        '  {\\n    "tag_name": "v0.9.0",\\n  }\\n]\\n\' ;;\n'
+        '  */download/v0.9.1/*) printf 404 ;;\n'
+        '  *) printf 200 ;;\n'
+        'esac\n'
+    )
+    curl.chmod(0o755)
+    one_line = (ROOT / 'install.sh').read_text()
+    start = one_line.index('has_app()')
+    functions = one_line[start : one_line.index('\n}\n', one_line.index('published_tag()')) + 3]
+    script = (
+        f'PATH={shlex.quote(str(tmp_path))}:"$PATH"\n'
+        'REPO=pyvista/pyvista-quicklook; ASSET=PyVistaQuickLook.zip\n'
+        f'say() {{ printf \'%s\\n\' "$*"; }}\n{functions}'
+        'printf "picked=%s\\n" "$(published_tag || true)"\n'
+    )
+    result = run_strict(script)
+    assert f'picked={picked}' in result.stdout, result.stderr
+    assert 'reached the end' in result.stdout
