@@ -6,7 +6,7 @@ import SceneKit
 let viewDirection = simd_normalize(SIMD3<Float>(1, 1, 1))
 /// PyVista's default view angle, in degrees.
 let viewAngle: Float = 30
-/// Space left around the scene's outline, as a share of its side; `_still.py`'s MARGIN matches.
+/// Space left around the scene's outline, as a share of its side, as pyvista-zstd leaves around its pictures.
 let frameMargin: Float = 0.05
 
 /// A camera framing a scene, and the point it turns about.

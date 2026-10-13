@@ -194,7 +194,8 @@ def test_config_lists_every_setting_and_marks_the_changed_ones(capsys, home):
         ('max_file_size_mb', ['0'], 0, '0'),
         ('timeout', ['90'], 90, '90'),
         ('timeout', ['2.5'], 2.5, '2.5'),
-        ('interactive', ['yes'], True, 'true'),
+        ('interactive', ['no'], False, 'false'),
+        ('force_interactive', ['yes'], True, 'true'),
         ('info_panel', ['side'], 'side', 'side'),
         ('window_size', ['1280', '720'], [1280, 720], '1280 720'),
         (
@@ -211,6 +212,7 @@ def test_config_set_stores_a_checked_value(capsys, home, key, values, stored, sh
     assert cli.cmd_config(config_args('set', key, *values)) == 0
     assert capsys.readouterr().out == f'{key} = {shown}\n'
     assert json.loads(config.CONFIG_PATH.read_text())[key] == stored
+    assert config.MIRROR_PATH.read_text() == config.CONFIG_PATH.read_text()
     assert config.load()[key] == stored
     cli.cmd_config(config_args('get', key))
     assert capsys.readouterr().out == f'{shown}\n'
@@ -226,6 +228,7 @@ def test_config_set_stores_a_checked_value(capsys, home, key, values, stored, sh
         ('timeout', ['nan'], 'number of seconds'),
         ('timeout', ['inf'], 'number of seconds'),
         ('interactive', ['maybe'], 'true or false'),
+        ('force_interactive', ['sometimes'], 'true or false'),
         ('info_panel', ['left'], 'automatic, side, below, compact, hidden'),
         ('window_size', ['1280'], 'width and a height'),
         ('python', ['/no/such/python'], 'not an executable'),
@@ -361,50 +364,42 @@ def doctor(home, monkeypatch):
 
 
 def test_doctor_passes_a_healthy_installation(capsys, doctor, tmp_path):
-    """Every check passes, both smoke renders included, and the results are cleaned up."""
-    rendered = []
+    """Every check passes, the smoke render included, and the result is cleaned up."""
+    rendered = tmp_path / 'smoke.ply'
 
-    def preview(sample, timeout, scene):
+    def preview(sample, timeout):
         assert 'POLYGONS' in sample.read_text()
-        out = tmp_path / ('smoke.ply' if scene else 'smoke.png')
-        out.write_bytes(b'x' * (2048 if scene else 1024))
-        rendered.append(out)
-        return out
+        rendered.write_bytes(b'x' * 2048)
+        return rendered
 
     doctor(healthy=True, preview=preview)
     assert cli.cmd_doctor(argparse.Namespace()) == 0
     out = capsys.readouterr().out
     assert f'pyvista    {sys.executable}' in out
-    assert 'rendered image, 1 KB' in out
     assert 'interactive scene, 2 KB' in out
     assert 'all checks passed' in out
-    assert len(rendered) == 2
-    assert not any(path.exists() for path in rendered)
+    assert not rendered.exists()
 
 
 def test_doctor_notes_a_pyvista_command_that_does_not_run(capsys, doctor, tmp_path):
-    """A pyvista command that fails to run only rules out stills drawn on a background."""
+    """A pyvista command that fails to run only rules out still images."""
     rendered = tmp_path / 'smoke.ply'
 
-    def preview(sample, timeout, scene):
+    def preview(sample, timeout):
         rendered.write_bytes(b'x')
         return rendered
 
     doctor(healthy=True, preview=preview, pyvista_runs=False)
     assert cli.cmd_doctor(argparse.Namespace()) == 0
-    assert 'background and extra_args unavailable' in capsys.readouterr().out
+    assert 'still images unavailable' in capsys.readouterr().out
 
 
 def test_doctor_reports_a_failed_render(capsys, doctor, tmp_path):
     """A render that fails through the service is a problem, with the reason shown."""
 
-    def preview(sample, timeout, scene):
-        if scene:
-            message = 'service did not answer'
-            raise RenderError(message)
-        out = tmp_path / 'smoke.png'
-        out.write_bytes(b'x')
-        return out
+    def preview(sample, timeout):
+        message = 'service did not answer'
+        raise RenderError(message)
 
     doctor(healthy=True, preview=preview)
     assert cli.cmd_doctor(argparse.Namespace()) == 1
@@ -419,7 +414,7 @@ def test_doctor_counts_every_missing_piece(capsys, doctor):
     assert cli.cmd_doctor(argparse.Namespace()) == 1
     out = capsys.readouterr().out
     assert '(using defaults)' in out
-    assert 'background and extra_args unavailable' in out
+    assert 'still images unavailable' in out
     assert 'thumbnails not registered' in out
     assert '5 problem(s) found' in out
 
@@ -529,7 +524,7 @@ def test_doctor_reports_a_stale_finder(capsys, doctor, monkeypatch, tmp_path):
     """A Finder that still asks for the old extension is a problem, with the remedy."""
     rendered = tmp_path / 'smoke.ply'
 
-    def preview(sample, timeout, scene):
+    def preview(sample, timeout):
         rendered.write_bytes(b'x')
         return rendered
 
@@ -539,3 +534,11 @@ def test_doctor_reports_a_stale_finder(capsys, doctor, monkeypatch, tmp_path):
     out = capsys.readouterr().out
     assert 'run "killall Finder"' in out
     assert '1 problem(s) found' in out
+
+
+def test_mirror_copies_nothing_until_settings_exist(home):
+    """Without a settings file there is nothing to put where the extension reads."""
+    config.mirror()
+    assert not config.MIRROR_PATH.exists()
+    config.save({'timeout': 5})
+    assert json.loads(config.MIRROR_PATH.read_text()) == {'timeout': 5}

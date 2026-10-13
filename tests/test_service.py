@@ -115,26 +115,24 @@ def test_warm_runs_the_warmer_and_leaves_a_stamp(env):
 
 
 @pytest.mark.skipif(sys.platform != 'darwin', reason='rendering needs a display server on Linux')
-def test_still_images_are_drawn_on_a_transparent_background(tmp_path, env, monkeypatch):
-    """The environment renders a still, cropped to the dataset with nothing drawn behind it."""
+def test_still_images_come_from_the_pyvista_command(tmp_path, env, monkeypatch):
+    """The environment renders a still image with ``pyvista plot``, on the background asked for."""
     source = tmp_path / 'sphere.vtp'
     pv.Sphere().save(source)
-    png = render.preview(source, {**env, 'window_size': [128, 128]})
-    alpha = pixels(png)[..., 3]
-    side = alpha.shape[0]
-    assert alpha.shape == (side, side)
-    assert alpha[side // 2, side // 2] == 255
-    # Cropped to the sphere, which then touches the margin on at least one pair of sides.
-    rows, columns = np.nonzero(alpha)
-    gaps = [rows.min(), side - 1 - rows.max(), columns.min(), side - 1 - columns.max()]
-    assert min(gaps) <= np.ceil(0.05 * side) + 1
-    assert alpha[0, 0] == 0
-    png = render.preview(source, env)
-    assert daemon.produce(source, {**env, 'interactive': False}) == png
+    png = render.preview(source, {**env, 'window_size': [64, 64], 'background': 'white'})
+    drawn = pixels(png)
+    assert drawn.shape[:2] == (64, 64)
+    assert (drawn[0, 0, :3] == 255).all()
+    assert (
+        daemon.produce(
+            source, {**env, 'interactive': False, 'window_size': [64, 64], 'background': 'white'}
+        )
+        == png
+    )
     assert convert.describe(source, env)['type'] == 'PolyData'
     # The description belongs to the file, so other render settings do not read it again.
     monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: pytest.fail('read again'))
-    assert convert.describe(source, {**env, 'window_size': [64, 64]})['type'] == 'PolyData'
+    assert convert.describe(source, {**env, 'window_size': [32, 32]})['type'] == 'PolyData'
 
 
 def pixels(png):
@@ -145,29 +143,15 @@ def pixels(png):
 
 
 @pytest.mark.skipif(sys.platform != 'darwin', reason='rendering needs a display server on Linux')
-def test_a_background_draws_the_still_with_the_pyvista_command(tmp_path, env):
-    """Asking for a background colour draws the still opaque with ``pyvista plot``."""
-    source = tmp_path / 'sphere.vtp'
-    pv.Sphere().save(source)
-    png = render.preview(source, {**env, 'window_size': [64, 64], 'background': 'white'})
-    corner = pixels(png)[0, 0]
-    assert pixels(png).shape[:2] == (64, 64)
-    assert (corner[:3] == 255).all()
-
-
-@pytest.mark.skipif(sys.platform != 'darwin', reason='rendering needs a display server on Linux')
-def test_a_saved_theme_colours_the_scene_and_the_still(tmp_path, env):
-    """A theme saved as JSON reaches both the exporter and the still renderer."""
+def test_a_saved_theme_colours_the_scene(tmp_path, env):
+    """A theme saved as JSON reaches the exporter."""
     theme = pv.themes.DocumentTheme()
     theme.color = 'red'
     theme.save(tmp_path / 'theme.json')
-    settings = {**env, 'window_size': [64, 64], 'theme': str(tmp_path / 'theme.json')}
+    settings = {**env, 'theme': str(tmp_path / 'theme.json')}
     source = tmp_path / 'sphere.vtp'
     pv.Sphere().save(source)
     assert (pv.read(convert.scene(source, settings))['RGB'] == (255, 0, 0)).all()
-    drawn = pixels(render.preview(source, settings))
-    covered = drawn[drawn[..., 3] == 255]
-    assert (covered[:, 0] > 3 * covered[:, 1:3].max(axis=1)).all()
 
 
 @pytest.mark.parametrize('name', ['dark', 'paraview'])
@@ -255,8 +239,6 @@ def test_a_file_without_a_mesh_is_told_apart_from_a_failure(tmp_path, env):
     notes.write_text('a table of numbers\n1 2 3\n')
     with pytest.raises(environment.NotAMeshError):
         convert.scene(notes, env)
-    with pytest.raises(environment.NotAMeshError, match='no surface to show'):
-        render.preview(notes, env)
     with pytest.raises(environment.RenderError) as raised:
         environment.run(env, [sys.executable, '-c', 'raise SystemExit(1)'], task='Failing')
     assert not isinstance(raised.value, environment.NotAMeshError)

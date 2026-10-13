@@ -8,15 +8,23 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .plist import EXT_BUNDLE_ID
+
 APP_SUPPORT = Path.home() / 'Library' / 'Application Support' / 'PyVistaQuickLook'
 CONFIG_PATH = APP_SUPPORT / 'config.json'
+# The copy the sandboxed extension can read, in the folder it exchanges requests through.
+MIRROR_PATH = (
+    Path.home() / 'Library' / 'Containers' / EXT_BUNDLE_ID / 'Data' / 'tmp' / 'config.json'
+)
 CACHE_DIR = Path.home() / 'Library' / 'Caches' / 'PyVistaQuickLook'
 LOG_PATH = APP_SUPPORT / 'pvql.log'
 
 DEFAULTS: dict[str, Any] = {
     'python': None,
     'pvql': None,
-    'interactive': False,
+    'interactive': True,
+    # Whether a .pv file opens on the 3D view even when it carries a picture of itself.
+    'force_interactive': False,
     'info_panel': 'automatic',
     'warm_on_start': True,
     'max_scene_points': 2000000,
@@ -64,6 +72,7 @@ KINDS: dict[str, str] = {
     'python': 'executable',
     'pvql': 'executable',
     'interactive': 'switch',
+    'force_interactive': 'switch',
     'info_panel': 'choice',
     'warm_on_start': 'switch',
     'max_scene_points': 'count',
@@ -212,10 +221,19 @@ def put(key: str, value: Any) -> Path:
 
 
 def save(config: dict[str, Any]) -> Path:
-    """Write the configuration to disk and return its path."""
+    """Write the configuration to disk, copy it for the extension, and return its path."""
     APP_SUPPORT.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(config, indent=2) + '\n')
+    mirror()
     return CONFIG_PATH
+
+
+def mirror() -> None:
+    """Copy the stored settings where the extension can read them, if a file exists."""
+    if not CONFIG_PATH.is_file():
+        return
+    MIRROR_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MIRROR_PATH.write_text(CONFIG_PATH.read_text())
 
 
 def executable(path: str | os.PathLike[str] | None) -> str | None:

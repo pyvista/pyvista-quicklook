@@ -24,7 +24,6 @@ from . import render as render_mod
 from . import warmup as warmup_mod
 from .environment import RenderError
 from .plist import APP_BUNDLE_ID
-from .plist import EXT_BUNDLE_ID
 from .plist import LEGACY_EXT_BUNDLE_ID
 
 if TYPE_CHECKING:
@@ -54,7 +53,7 @@ file elsewhere."""
 
 def drop_dir() -> Path:
     """Return the directory the extension and the daemon exchange files in."""
-    return Path.home() / 'Library' / 'Containers' / EXT_BUNDLE_ID / 'Data' / 'tmp'
+    return config_mod.MIRROR_PATH.parent
 
 
 def legacy_drop_dir() -> Path:
@@ -365,7 +364,7 @@ def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -
         write_json(reply, {'ok': True, 'info': description_only(source, config, identity)})
         return
     if 'scene' in payload:
-        # The reader chose the 3D view or the picture, whatever previews start as.
+        # A file with a picture of its own asks for the 3D view by its tab, whatever the settings.
         config = {**config, 'interactive': payload['scene'] is True}
     ready = cached_preview(identity, config)
     if payload.get('force') is True or ready is not None:
@@ -490,6 +489,7 @@ def serve(poll: float = 0.05) -> int:
     directory.mkdir(parents=True, exist_ok=True)
     cache.discard_other_versions(convert_mod.SCENE_VERSION)
     cache.discard_scratch(STALE_SECONDS)
+    config_mod.mirror()
     startup = config_mod.load()
     if startup.get('warm_on_start', True):
         warm_in_background(startup)

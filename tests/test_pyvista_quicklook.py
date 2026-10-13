@@ -204,9 +204,8 @@ def test_cache_keys_follow_the_theme_and_its_file(tmp_path):
 
 
 def test_the_theme_reaches_every_drawing_command():
-    """Stills, ``pyvista plot`` and scene export are all given the theme."""
+    """``pyvista plot`` and scene export are both given the theme."""
     config = {'window_size': [64, 32], 'theme': 'dark'}
-    assert render.still_command('/bin/python', 'in.vtu', 'out.png', config)[-1] == 'dark'
     command = render.build_command('/bin/pyvista', 'in.vtu', 'out.png', config)
     assert command[command.index('--theme') + 1] == 'dark'
     with pytest.raises(environment.RenderError, match='by name only'):
@@ -225,15 +224,6 @@ def test_build_command_renders_off_screen():
         '64',
         '32',
     ]
-
-
-def test_stills_are_drawn_transparent_unless_pyvista_plot_is_given_arguments():
-    """``pyvista plot`` draws stills only when a background or extra arguments ask it to."""
-    assert not render.uses_pyvista_plot({})
-    assert render.uses_pyvista_plot({'background': 'white'})
-    assert render.uses_pyvista_plot({'extra_args': ['--show-edges']})
-    command = render.still_command('/bin/python', 'in.vtu', 'out.png', {'window_size': [64, 32]})
-    assert command == ['/bin/python', str(render.STILL), 'in.vtu', 'out.png', '64', '32']
 
 
 def test_build_command_passes_background_and_extra_args():
@@ -1167,12 +1157,6 @@ def test_scene_version_follows_the_exporter(tmp_path):
     exporter.write_text('b')
     assert convert.converter_version(exporter) != before
     assert convert.converter_version(convert.EXPORTER, convert.DESCRIBER) == convert.SCENE_VERSION
-
-
-def test_still_version_follows_what_draws_the_still():
-    """Stills are keyed by the code that reads and draws them, so a change there redraws them."""
-    sources = (render.STILL, convert.EXPORTER, convert.DESCRIBER)
-    assert convert.converter_version(*sources) == render.STILL_VERSION
 
 
 def test_scenes_of_other_versions_are_discarded(tmp_path, monkeypatch):

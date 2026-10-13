@@ -128,14 +128,19 @@ enum Helper {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    /// Returns the contents of the configuration file, if present.
+    /// Returns the settings: the copy the service keeps in the exchange folder, which the
+    /// sandbox lets the extension read, else the file itself.
     static func configuration() -> [String: Any]? {
-        let url = URL(fileURLWithPath: realHome())
+        let mirrored = URL(fileURLWithPath: exchangeDirectory()).appendingPathComponent("config.json")
+        let original = URL(fileURLWithPath: realHome())
             .appendingPathComponent("Library/Application Support/PyVistaQuickLook/config.json")
-        guard let data = try? Data(contentsOf: url) else {
-            return nil
+        for url in [mirrored, original] {
+            if let data = try? Data(contentsOf: url),
+               let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                return settings
+            }
         }
-        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return nil
     }
 
     /// Returns the `pvql` path recorded in the configuration file, if present.
@@ -250,7 +255,7 @@ enum Helper {
     static func requestPreview(
         _ url: URL,
         force: Bool = false,
-        scene: Bool = false,
+        scene: Bool? = nil,
         early: (([String: Any]) -> Void)? = nil
     ) throws -> Reply {
         do {
@@ -310,7 +315,7 @@ enum Helper {
         force: Bool,
         copy: String?,
         early: (([String: Any]) -> Void)?,
-        scene: Bool = false,
+        scene: Bool? = nil,
         describe: Bool = false
     ) throws -> Reply {
         let directory = exchangeDirectory() as NSString
@@ -328,8 +333,10 @@ enum Helper {
         if let copy {
             body["copy"] = copy
         }
-        // Sent either way, so the Static tab gets a picture whatever previews start as.
-        body["scene"] = scene
+        // Sent when a tab chose the view; otherwise the settings choose.
+        if let scene {
+            body["scene"] = scene
+        }
         if describe {
             body["describe"] = true
         }

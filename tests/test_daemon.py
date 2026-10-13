@@ -19,7 +19,8 @@ from pyvista_quicklook.environment import RenderError
 
 def test_exchange_locations_are_in_the_extension_containers():
     """The service and the extension exchange files inside the extension's container."""
-    assert daemon.EXT_BUNDLE_ID in daemon.drop_dir().parts
+    assert daemon.drop_dir() == daemon.config_mod.MIRROR_PATH.parent
+    assert daemon.config_mod.EXT_BUNDLE_ID in daemon.drop_dir().parts
     assert daemon.LEGACY_EXT_BUNDLE_ID in daemon.legacy_drop_dir().parts
     assert daemon.agent_path().name == f'{daemon.LABEL}.plist'
     assert daemon.legacy_agent_path().name == f'{daemon.LEGACY_LABEL}.plist'
@@ -150,16 +151,16 @@ def test_a_description_alone_converts_nothing(tmp_path, monkeypatch, cached, rea
 @pytest.mark.parametrize(
     ('settings', 'payload', 'interactive'),
     [
-        ({}, {}, False),
-        ({}, {'scene': True}, True),
-        ({'interactive': True}, {}, True),
-        ({'interactive': True}, {'scene': False}, False),
+        ({}, {}, True),
+        ({}, {'scene': False}, False),
+        ({'interactive': False}, {}, False),
+        ({'interactive': False}, {'scene': True}, True),
     ],
 )
-def test_previews_are_pictures_unless_a_scene_is_asked_for(
+def test_previews_follow_the_settings_unless_a_tab_asks_otherwise(
     tmp_path, monkeypatch, settings, payload, interactive
 ):
-    """A preview follows the settings, unless the request asks for the picture or the 3D view."""
+    """A preview follows the settings, unless a request says which view its tab asked for."""
     asked = []
 
     def produce(target, config, identity):
@@ -292,6 +293,7 @@ def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
     monkeypatch.setattr(daemon.cache, 'discard_other_versions', lambda version: 0)
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': True})
+    monkeypatch.setattr(daemon.config_mod, 'mirror', lambda: warmed.append('mirrored'))
     monkeypatch.setattr(daemon, 'warm_in_background', warmed.append)
     monkeypatch.setattr(
         daemon, 'handle', lambda request: handled.append(request.name) or request.unlink()
@@ -321,7 +323,7 @@ def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
     assert handled == ['a.pvqltaken', 'b.pvqltaken']
     assert list(drop.iterdir()) == []
     assert swept == [drop]
-    assert warmed == [{'warm_on_start': True}]
+    assert warmed == ['mirrored', {'warm_on_start': True}]
 
 
 @pytest.fixture

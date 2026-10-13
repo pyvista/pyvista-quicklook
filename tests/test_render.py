@@ -11,7 +11,6 @@ import pytest
 import pyvista as pv
 
 from pyvista_quicklook import _scene_export as export_mod
-from pyvista_quicklook import _still as still_mod
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOL = ROOT / 'build' / 'RenderScene'
@@ -179,16 +178,34 @@ def outline(covered_pixels):
     return np.array([rows.min(), rows.max(), columns.min(), columns.max()]) / side
 
 
+def picture_outline(dataset, margin=0.05):
+    """Return the outline of the dataset in a picture framed as pyvista-zstd frames its own.
+
+    PyVista's default camera, the drawing cropped to the dataset and set in a square with a
+    margin on each side.
+    """
+    plotter = pv.Plotter(off_screen=True, window_size=[384, 384])
+    plotter.add_mesh(dataset)
+    covered = plotter.screenshot(transparent_background=True, return_img=True)[..., 3] > 0
+    plotter.close()
+    rows, columns = np.nonzero(covered)
+    content = covered[rows.min() : rows.max() + 1, columns.min() : columns.max() + 1]
+    height, width = content.shape
+    side = max(height, width)
+    side += 2 * int(np.ceil(margin * side))
+    square = np.zeros((side, side), dtype=bool)
+    top, left = (side - height) // 2, (side - width) // 2
+    square[top : top + height, left : left + width] = content
+    return outline(square)
+
+
 @pytest.mark.usefixtures('warmed_up')
-def test_the_scene_opens_framed_as_the_still_is(tmp_path):
-    """An off-centre shape sits in the same place in the 3D view as in its still."""
+def test_the_scene_opens_framed_as_the_picture_is(tmp_path):
+    """An off-centre shape sits in the same place in the 3D view as in the file's picture."""
     bracket = pv.Box(bounds=(0, 3, 0, 1, 0, 0.3)).merge(pv.Box(bounds=(0, 0.3, 0, 1, 0, 2)))
     bracket = bracket.extract_surface(algorithm='dataset_surface').triangulate()
-    source = tmp_path / 'bracket.vtk'
-    bracket.save(source)
-    picture = still_mod.render(str(source), 192, 192)
     scene = rendered(bracket, tmp_path, name='bracket')
-    expected = outline(picture[..., 3] > 0)
+    expected = picture_outline(bracket)
     assert np.allclose(outline(scene.astype(int).sum(axis=2) > 30), expected, atol=0.03)
 
 

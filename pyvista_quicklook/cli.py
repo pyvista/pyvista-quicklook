@@ -346,7 +346,7 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     if executable and _succeeds([executable, '--help']):
         print(f'  pyvista    {executable}')
     else:
-        print('  pyvista    none in this environment; background and extra_args unavailable')
+        print('  pyvista    none in this environment; still images unavailable')
 
     print(f'✓ formats    {len(claimed_extensions(config))} extensions claimed')
 
@@ -389,17 +389,16 @@ def cmd_doctor(_: argparse.Namespace) -> int:
         with tempfile.TemporaryDirectory() as scratch:
             sample = Path(scratch) / 'pvql-doctor.vtk'
             sample.write_text(SMOKE_MESH)
-            # The Static tab's picture and the Interactive tab's scene, each through the service.
-            for scene, kind in ((False, 'rendered image'), (True, 'interactive scene')):
-                started = time.monotonic()
-                try:
-                    out = daemon_mod.request_preview(sample, timeout=90, scene=scene)
-                except RenderError as error:
-                    problems += 1
-                    print(f'✗ render     {kind} failed through the service\n\n{error}')
-                    continue
+            started = time.monotonic()
+            try:
+                out = daemon_mod.request_preview(sample, timeout=90)
+            except RenderError as error:
+                problems += 1
+                print(f'✗ render     failed through the service\n\n{error}')
+            else:
                 elapsed = time.monotonic() - started
                 size_kb = out.stat().st_size / 1024
+                kind = 'interactive scene' if out.suffix == '.ply' else 'rendered image'
                 print(f'✓ preview    {kind}, {size_kb:.0f} KB in {elapsed:.1f} s')
                 out.unlink(missing_ok=True)
 

@@ -50,13 +50,13 @@ def test_fill_rejects_an_empty_build(tmp_path):
 
 
 def test_preview_needs_the_pyvista_command(tmp_path, monkeypatch):
-    """A still drawn on a background needs the pyvista command beside the interpreter."""
+    """A still image needs the pyvista command beside the configured interpreter."""
     monkeypatch.setattr(config, 'CACHE_DIR', tmp_path / 'cache')
     monkeypatch.setattr(render.config_mod, 'resolve_pyvista', lambda cfg: None)
     source = tmp_path / 'mesh.vtu'
     source.write_text('x')
     with pytest.raises(environment.RenderError, match='No pyvista command-line interface'):
-        render.preview(source, {**config.DEFAULTS, 'background': 'white'})
+        render.preview(source, dict(config.DEFAULTS))
 
 
 def test_warm_succeeds_without_a_writable_cache(tmp_path, monkeypatch):

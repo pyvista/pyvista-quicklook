@@ -395,7 +395,12 @@ struct Request {
     let force: Bool
     let carried: EmbeddedThumbnail.Picture?
 
+    /// Whether the settings let a file's own picture open first; false in the app.
+    let picturesFirst: Bool
+
     var name: String { url.lastPathComponent }
+    /// Whether the file opens on its own picture, with a Static tab; a stale one is only a placeholder.
+    var hasPicture: Bool { picturesFirst && carried?.isStale == false }
 }
 
 /// The Static and Interactive tabs above a mesh preview.
@@ -521,7 +526,7 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         userInfo: [NSLocalizedDescriptionKey: ""]
     )
 
-    /// Whether previews start as a picture rather than the 3D view; false in the app.
+    /// Whether a file's own picture is shown before its 3D view; false in the app.
     var prefersPicture = true
     /// Counts the loads asked for, so a slower earlier one does not replace a later one.
     var generation = 0
@@ -594,11 +599,15 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 return
             }
 
-            self.load(Request(url: url, force: false, carried: EmbeddedThumbnail.picture(url)), handler: handler)
+            // False when unset, as config.py's DEFAULTS has it.
+            let forced = (Helper.configuration()?["force_interactive"] as? Bool) ?? false
+            let request = Request(url: url, force: false, carried: EmbeddedThumbnail.picture(url), picturesFirst: self.prefersPicture && !forced)
+            self.load(request, handler: handler)
         }
     }
 
-    /// Shows a mesh preview with the tabs that switch it, unless a newer load took the panel.
+    /// Shows a mesh preview, with tabs when the file has a picture to switch to, unless a newer
+    /// load took the panel.
     func present(_ content: NSView, _ mode: PreviewMode, _ info: MeshInfo?, _ request: Request, generation: Int) {
         guard generation == self.generation else {
             return
@@ -610,8 +619,8 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         } else if kept == nil {
             shownInfo = nil
         }
-        let tabs = ModeTabs(mode, onSelect: switching(request))
-        show(withInfo(belowTabs(content, tabs), shownInfo?.info))
+        let tabbed = request.hasPicture ? belowTabs(content, ModeTabs(mode, onSelect: switching(request))) : content
+        show(withInfo(tabbed, shownInfo?.info))
     }
 
     /// Returns what a control in the panel calls to load the file again on a tab.
@@ -633,15 +642,13 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
     ///
     /// `handler` is Quick Look's, called once the panel has something to show; it is nil when a
     /// file is loaded again from a panel already showing. `mode` is the tab asked for; without
-    /// one, previews start as a picture unless the settings or the app ask for 3D.
+    /// one, a file opens on its own picture when it has one, else on what the settings say.
     nonisolated func load(_ request: Request, mode: PreviewMode? = nil, handler: ((Error?) -> Void)?) {
-        let (completion, generation, prefersPicture) = DispatchQueue.main.sync {
-            (Completion(handler), self.generation, self.prefersPicture)
+        let (completion, generation) = DispatchQueue.main.sync {
+            (Completion(handler), self.generation)
         }
         let (url, name, thumbnail) = (request.url, request.name, request.carried?.png)
-        // False when unset, as config.py's DEFAULTS has it.
-        let startsInteractive = (Helper.configuration()?["interactive"] as? Bool) ?? false
-        let shown = mode ?? (prefersPicture && !startsInteractive ? .still : .interactive)
+        let shown = mode ?? (request.hasPicture ? .still : .interactive)
         /// Shows a mesh preview with its tabs, for this load only.
         let present: @MainActor (NSView, PreviewMode, MeshInfo?) -> Void = { content, mode, info in
             self.present(content, mode, info, request, generation: generation)
@@ -652,7 +659,7 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         let described = thumbnail == nil ? nil : DescriptionWait(url)
         let early = described?.wait(seconds: 2)
         // A current picture the file carries of itself is the preview, without the service.
-        if shown == .still, let png = thumbnail, let described, request.carried?.isStale == false {
+        if shown == .still, let png = thumbnail, let described, request.hasPicture {
             DispatchQueue.main.async {
                 let picture = pictureView(png) ?? messageView(failed("Its picture could not be read."))
                 present(picture, .still, early.flatMap(MeshInfo.init))
@@ -679,7 +686,9 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         }
         let outcome: Preview
         do {
-            let reply = try Helper.requestPreview(url, force: request.force, scene: shown == .interactive) { info in
+            // Only a tab asks for one view over the other; without tabs the settings choose.
+            let asked: Bool? = request.hasPicture ? shown == .interactive : nil
+            let reply = try Helper.requestPreview(url, force: request.force, scene: asked) { info in
                 DispatchQueue.main.async {
                     present(placeholderView(name, thumbnail), shown, MeshInfo(info))
                     completion.finish(nil)
@@ -749,7 +758,7 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 present(pictureView(png) ?? NSImageView(), .still, info)
                 pvqlLog("showing a rendered image in \(self.view.bounds.size)")
             case let .tooLarge(message, info):
-                let anyway = self.switching(Request(url: url, force: true, carried: request.carried))
+                let anyway = self.switching(Request(url: url, force: true, carried: request.carried, picturesFirst: request.picturesFirst))
                 let notice = largeFileView(message, thumbnail: thumbnail) { anyway(shown) }
                 present(notice, shown, info)
                 pvqlLog("showing a size notice")
