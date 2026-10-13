@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import faulthandler
 import json
 import os
@@ -559,35 +560,92 @@ def test_a_failed_prune_is_logged_and_the_pruner_goes_on(monkeypatch):
 
 
 def test_the_pruner_looks_in_private_folders_only_once_a_preview_has(tmp_path, monkeypatch):
-    """Private folders and other volumes wait for a preview to have read them first."""
+    """Private folders and other volumes wait until a preview has read somewhere in them."""
     monkeypatch.setattr(daemon.Path, 'home', lambda: tmp_path)
     monkeypatch.setattr(daemon, '_reachable_folders', {})
-    desktop = tmp_path / 'Desktop' / 'mesh.vtu'
+    desktop = tmp_path / 'Desktop' / 'unzipped' / 'mesh.vtu'
     assert daemon.may_look(tmp_path / 'projects' / 'mesh.vtu')
+    for private in (
+        desktop,
+        tmp_path / 'Library' / 'CloudStorage' / 'Dropbox' / 'mesh.vtu',
+        tmp_path / 'Library' / 'Containers' / 'com.example' / 'mesh.vtu',
+        Path('/Volumes/disk/mesh.vtu'),
+    ):
+        assert not daemon.may_look(private)
+    daemon._reachable_folders[str(tmp_path / 'Desktop' / 'other')] = (0.0, False)
     assert not daemon.may_look(desktop)
-    assert not daemon.may_look(Path('/Volumes/disk/mesh.vtu'))
-    daemon._reachable_folders[str(desktop.parent)] = (0.0, False)
-    assert not daemon.may_look(desktop)
-    daemon._reachable_folders[str(desktop.parent)] = (0.0, True)
+    # macOS grants the Desktop as a whole, so any folder in it read once vouches for all.
+    daemon._reachable_folders[str(tmp_path / 'Desktop' / 'other')] = (0.0, True)
     assert daemon.may_look(desktop)
+    assert not daemon.may_look(tmp_path / 'Documents' / 'mesh.vtu')
+    daemon._reachable_folders['/Volumes/disk/a'] = (0.0, True)
+    assert daemon.may_look(Path('/Volumes/disk/b/mesh.vtu'))
+    assert not daemon.may_look(Path('/Volumes/other/mesh.vtu'))
 
 
-def test_a_preview_pruned_before_it_is_copied_is_built_again(tmp_path, monkeypatch):
-    """A cached preview that goes between being found and being copied is rebuilt."""
+@pytest.fixture
+def vanishing(tmp_path, monkeypatch):
+    """Serve a request whose cached preview is pruned before it is copied; record builds."""
     png = tmp_path / 'built.png'
     png.write_bytes(b'png')
+    found = iter([tmp_path / 'gone.png', tmp_path / 'gone.png', None])
     monkeypatch.setattr(daemon.config_mod, 'load', dict)
-    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
-    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: tmp_path / 'gone.png')
-    monkeypatch.setattr(daemon, 'produce', lambda target, config, identity: png)
+    monkeypatch.setattr(daemon, 'cached_preview', lambda identity, config: next(found))
     monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
     monkeypatch.setattr(daemon, 'describe_later', lambda *args: None)
-    request = tmp_path / 'token.pvqlreq'
-    payload = {'path': str(tmp_path / 'mesh.vtu'), 'mtime': 1, 'size': 2}
-    request.write_text(json.dumps(payload))
-    daemon.handle(request)
-    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
+    built, locked = [], []
+    held = threading.local()
+    original = daemon.one_at_a_time
+
+    @contextlib.contextmanager
+    def watched(identity, config):
+        with original(identity, config):
+            held.inside = True
+            try:
+                yield
+            finally:
+                held.inside = False
+
+    def produce(target, config, identity):
+        built.append(target)
+        locked.append(getattr(held, 'inside', False))
+        return png
+
+    monkeypatch.setattr(daemon, 'one_at_a_time', watched)
+    monkeypatch.setattr(daemon, 'produce', produce)
+
+    def ask(*, reachable, **extra):
+        monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: reachable)
+        request = tmp_path / 'token.pvqlreq'
+        payload = {'path': str(tmp_path / 'mesh.vtu'), 'mtime': 1, 'size': 2, **extra}
+        request.write_text(json.dumps(payload))
+        daemon.handle(request)
+        return json.loads((tmp_path / 'token.pvqlrep').read_text())
+
+    return SimpleNamespace(ask=ask, built=built, locked=locked)
+
+
+def test_a_preview_pruned_before_it_is_copied_is_built_again(vanishing, tmp_path):
+    """A cached preview that goes before it is copied is rebuilt, under the per-file lock."""
+    reply = vanishing.ask(reachable=True)
     assert Path(reply['png']).read_bytes() == b'png'
+    assert vanishing.built == [str(tmp_path / 'mesh.vtu')]
+    assert vanishing.locked == [True]
+
+
+def test_a_pruned_preview_of_an_unreadable_file_is_built_from_the_copy(vanishing, tmp_path):
+    """An unreadable file is never read for a rebuild; the extension's copy is."""
+    copy = str(tmp_path / 'staged' / 'mesh.vtu')
+    reply = vanishing.ask(reachable=False, copy=copy)
+    assert reply['ok'] is True
+    assert vanishing.built == [copy]
+
+
+def test_a_pruned_preview_of_an_unreadable_file_asks_for_a_copy(vanishing):
+    """Without a copy, the extension is asked for one rather than the file being read."""
+    reply = vanishing.ask(reachable=False)
+    assert reply['needs_copy'] is True
+    assert vanishing.built == []
 
 
 def test_pruner_runs_on_a_daemon_thread(monkeypatch):

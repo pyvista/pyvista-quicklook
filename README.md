@@ -200,13 +200,16 @@ a file that has been deleted. The render service clears these out when it starts
 then once a day: each preview has a small `.src` record of the file it was built from,
 and a preview whose file has gone or changed is deleted. Previews made before these
 records were kept are cleared once, the first time. `pvql config set cache_check_minutes
-60` checks hourly, `0` never checks, and `pvql cache --prune` checks now.
+60` checks hourly, and `0` never checks.
 
-A preview is kept whenever the service cannot tell, or would have to ask: its file is
-on a disk that is not plugged in or a share that is not mounted, or in a folder macOS
-keeps private. The service looks in Desktop, Documents, Downloads, iCloud Drive, and other volumes only
-once a preview has found that folder readable since the service started, so a check
-never raises a permission prompt of its own.
+A preview is kept whenever the service cannot tell, or would have to ask: its file is on
+a disk that is not plugged in or a share that is not mounted, or in a folder macOS keeps
+private. The service looks in Desktop, Documents, Downloads, iCloud Drive, cloud
+storage folders, other apps' data, and other volumes only once a preview has found that
+folder or volume readable since the service started, so a check never raises a
+permission prompt of its own. `pvql cache --prune` checks now, and looks at everything
+the terminal running it can read, so macOS may ask whether the terminal may open those
+folders.
 
 The service loads PyVista and VTK in the background when it starts, which is at login
 and whenever it is reinstalled, so the first preview does not wait for them. `pvql

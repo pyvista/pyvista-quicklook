@@ -1618,10 +1618,21 @@ def test_prune_is_due_on_the_configured_interval(minutes, last, now, due):
 
 @pytest.mark.parametrize(
     ('value', 'minutes'),
-    [(15, 15), (0, 0), (None, 0), (-5, 0), ('30', 30), ('often', 1440), ([1], 1440)],
+    [
+        (15, 15),
+        ('30', 30),
+        (0, 0),
+        (-5, 0),
+        (0.001, 1),
+        (None, 1440),
+        (True, 1440),
+        ('often', 1440),
+        ([1], 1440),
+        (float('inf'), 1440),
+    ],
 )
 def test_a_hand_edited_interval_is_read_or_defaulted(value, minutes):
-    """A value written by hand is read when it can be and defaulted when not."""
+    """A value written by hand is read when it can be, defaulted when not, and floored."""
     assert daemon.check_minutes({'cache_check_minutes': value}) == minutes
 
 
@@ -1672,6 +1683,34 @@ def test_a_record_that_cannot_be_written_leaves_nothing(tmp_path, monkeypatch):
     with pytest.raises(OSError, match='No space'):
         cache.fill(out, {}, 'mesh.vtu', lambda scratch: scratch.write_bytes(b'x'), ('m', 1, 1))
     assert not list(tmp_path.iterdir())
+
+
+def test_a_record_lands_before_its_entry(tmp_path, monkeypatch):
+    """Pruning never sees a landed entry without its record."""
+    monkeypatch.setattr(cache.config_mod, 'CACHE_DIR', tmp_path)
+    out = tmp_path / 'preview.png'
+    seen = []
+    remember = cache.remember
+
+    def watched(entry, identity):
+        seen.append(entry.exists())
+        remember(entry, identity)
+
+    monkeypatch.setattr(cache, 'remember', watched)
+    cache.fill(out, {}, 'mesh.vtu', lambda scratch: scratch.write_bytes(b'x'), ('m', 1, 1))
+    assert seen == [False]
+    assert cache.record_path(out).is_file()
+
+
+def test_cache_size_survives_a_file_that_vanishes(capsys, monkeypatch, tmp_path):
+    """`pvql cache` adds up what is there, even as the service prunes beside it."""
+    monkeypatch.setattr(cli.config_mod, 'CACHE_DIR', tmp_path)
+    (tmp_path / 'a.png').write_bytes(b'0123456789')
+    monkeypatch.setattr(
+        cli.cache_mod, 'files', lambda *patterns: [tmp_path / 'a.png', tmp_path / 'gone.png']
+    )
+    assert cli.cmd_cache(argparse.Namespace(clear=False, prune=False)) == 0
+    assert '0.0 MB' in capsys.readouterr().out
 
 
 def test_a_file_that_vanished_is_not_settled(tmp_path):

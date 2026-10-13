@@ -158,7 +158,8 @@ def outdated(record: Path, may_look: Callable[[Path], bool] | None = None) -> bo
         expected = (int(recorded['mtime']), int(recorded['size']))
     except OSError, ValueError, KeyError, TypeError:
         return True
-    if out_of_reach(source) or (may_look is not None and not may_look(source)):
+    # The caller's word first, since looking for a volume can itself touch it.
+    if (may_look is not None and not may_look(source)) or out_of_reach(source):
         return False
     try:
         stat = source.lstat()

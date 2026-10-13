@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 from pathlib import Path
 import plistlib
@@ -274,7 +275,11 @@ def cmd_cache(args: argparse.Namespace) -> int:
         removed = cache_mod.prune(config_mod.load())
         print(f'removed {removed} cached previews and descriptions of changed or deleted files')
     entries = cache_mod.entries()
-    total = sum(entry.stat().st_size for entry in cache_mod.files())
+    total = 0
+    for entry in cache_mod.files():
+        # The service may prune or land a file while this adds them up.
+        with contextlib.suppress(OSError):
+            total += entry.stat().st_size
     print(f'{config_mod.CACHE_DIR}\n{len(entries)} previews, {total / 1_000_000:.1f} MB')
     return 0
 
