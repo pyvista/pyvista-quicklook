@@ -19,7 +19,8 @@ from pyvista_quicklook.environment import RenderError
 
 def test_exchange_locations_are_in_the_extension_containers():
     """The service and the extension exchange files inside the extension's container."""
-    assert daemon.EXT_BUNDLE_ID in daemon.drop_dir().parts
+    assert daemon.drop_dir() == daemon.config_mod.MIRROR_PATH.parent
+    assert daemon.config_mod.EXT_BUNDLE_ID in daemon.drop_dir().parts
     assert daemon.LEGACY_EXT_BUNDLE_ID in daemon.legacy_drop_dir().parts
     assert daemon.agent_path().name == f'{daemon.LABEL}.plist'
     assert daemon.legacy_agent_path().name == f'{daemon.LEGACY_LABEL}.plist'
@@ -114,6 +115,68 @@ def test_handle_delivers_a_still_image(tmp_path, monkeypatch):
     assert reply['ok'] is True
     assert Path(reply['png']).read_bytes() == b'png'
     assert reply['info'] == {'type': 'X'}
+
+
+@pytest.mark.parametrize(
+    ('cached', 'reachable', 'expected'),
+    [
+        ({'type': 'cached'}, True, {'type': 'cached'}),
+        (None, True, {'type': 'header'}),
+        ({'type': 'cached'}, False, None),
+    ],
+)
+def test_a_description_alone_converts_nothing(tmp_path, monkeypatch, cached, reachable, expected):
+    """A request for the description alone is answered from the cache or the header."""
+    reads = []
+
+    def describe(target, config, identity=None, *, read=True, timeout=None):
+        reads.append(read)
+        return cached
+
+    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: reachable)
+    monkeypatch.setattr(daemon, 'produce', lambda *args: pytest.fail('converted'))
+    monkeypatch.setattr(daemon.convert_mod, 'describe', describe)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': 'header'})
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(
+        json.dumps({'path': '/data/big.pv', 'describe': True, 'mtime': 1, 'size': 2})
+    )
+    daemon.handle(request)
+    reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
+    assert reply == {'ok': True, 'info': expected}
+    assert all(read is False for read in reads)
+
+
+@pytest.mark.parametrize(
+    ('settings', 'payload', 'interactive'),
+    [
+        ({}, {}, True),
+        ({}, {'scene': False}, False),
+        ({'interactive': False}, {}, False),
+        ({'interactive': False}, {'scene': True}, True),
+        ({'interactive': False, 'theme': '/themes/mine.json'}, {}, True),
+        ({'theme': '/themes/mine.json'}, {'scene': False}, True),
+    ],
+)
+def test_previews_follow_the_settings_unless_a_tab_asks_otherwise(
+    tmp_path, monkeypatch, settings, payload, interactive
+):
+    """A preview follows the settings or the tab asked for, but a saved theme is drawn in 3D."""
+    asked = []
+
+    def produce(target, config, identity):
+        asked.append(config.get('interactive', daemon.config_mod.DEFAULTS['interactive']))
+        message = 'stop'
+        raise RenderError(message)
+
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: dict(settings))
+    monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
+    monkeypatch.setattr(daemon, 'produce', produce)
+    request = tmp_path / 'token.pvqlreq'
+    request.write_text(json.dumps({'path': '/data/mesh.vtu', **payload}))
+    daemon.handle(request)
+    assert asked == [interactive]
 
 
 def test_a_still_image_is_sent_before_its_description(tmp_path, monkeypatch):
@@ -232,6 +295,7 @@ def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
     monkeypatch.setattr(daemon.cache, 'discard_other_versions', lambda version: 0)
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'warm_on_start': True})
+    monkeypatch.setattr(daemon.config_mod, 'mirror', lambda: warmed.append('mirrored'))
     monkeypatch.setattr(daemon, 'warm_in_background', warmed.append)
     monkeypatch.setattr(
         daemon, 'handle', lambda request: handled.append(request.name) or request.unlink()
@@ -261,7 +325,7 @@ def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
     assert handled == ['a.pvqltaken', 'b.pvqltaken']
     assert list(drop.iterdir()) == []
     assert swept == [drop]
-    assert warmed == [{'warm_on_start': True}]
+    assert warmed == [{'warm_on_start': True}, 'mirrored', 'mirrored', 'mirrored']
 
 
 @pytest.fixture
@@ -304,7 +368,19 @@ def test_request_preview_returns_the_delivered_scene(tmp_path, drop):
     assert seen[0]['path'] == str(source.resolve())
     assert seen[0]['size'] == 1
     assert seen[0]['mtime'] == int(source.stat().st_mtime)
+    assert 'scene' not in seen[0]
     assert not list(drop.iterdir())
+
+
+def test_request_preview_can_ask_for_the_picture(tmp_path, drop):
+    """A request for the picture says so, whatever previews start as."""
+    source = tmp_path / 'mesh.vtu'
+    source.write_text('x')
+    seen = []
+    thread = answer(drop, {'ok': True, 'png': '/out/still.png'}, seen)
+    assert daemon.request_preview(str(source), timeout=10, scene=False) == Path('/out/still.png')
+    thread.join()
+    assert seen[0]['scene'] is False
 
 
 def test_request_preview_raises_the_reported_error(tmp_path, drop):

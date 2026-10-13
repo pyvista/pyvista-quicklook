@@ -17,14 +17,42 @@ from typing import Any
 
 import numpy as np
 import pyvista as pv
+from pyvista import _vtk
 
 if __package__:
     from . import _dataset_info
 else:
     import _dataset_info
 
+# Opens the PLY comment holding the theme's shading and lighting, which SceneStyle reads.
+STYLE_COMMENT = 'pvql style'
 # Readers tried in turn for extensions two formats share; None is PyVista's own choice.
 ATTEMPTS = {'.inp': (None, 'abaqus'), '.msh': (None, 'ansys')}
+
+
+def apply_theme(spec: str | None) -> None:
+    """Make a theme PyVista's own: a registered name, or the path of a theme saved as JSON."""
+    if not spec:
+        return
+    if os.path.isabs(spec):
+        pv.global_theme.load_theme(spec)
+    else:
+        pv.set_plot_theme(spec)
+
+
+def scene_style() -> dict[str, Any]:
+    """Return how the theme shades and lights a mesh, as ``add_mesh`` would draw it."""
+    theme = pv.global_theme
+    light = theme.lighting_params
+    flat = not theme.smooth_shading and light.interpolation.name == 'FLAT'
+    return {
+        'shading': 'flat' if flat else 'smooth',
+        'lighting': bool(theme.lighting),
+        'ambient': float(light.ambient),
+        'diffuse': float(light.diffuse),
+        'specular': float(light.specular),
+        'specular_power': float(light.specular_power),
+    }
 
 
 def read_iges(source: str) -> object:
@@ -254,7 +282,10 @@ _VIRIDIS = (
 
 
 def ramp() -> np.ndarray:
-    """Return the 256-entry RGB table previews are coloured with."""
+    """Return the 256-entry RGB table of the theme's colormap."""
+    if pv.global_theme.cmap != 'viridis':
+        table = pv.LookupTable(cmap=pv.global_theme.cmap, n_values=256)
+        return np.asarray(table.values)[:, :3].astype(np.uint8)
     control = np.frombuffer(bytes.fromhex(_VIRIDIS), dtype=np.uint8).reshape(-1, 3)
     positions = np.linspace(0, 255, len(control))
     channels = [np.interp(np.arange(256), positions, control[:, c]) for c in range(3)]
@@ -423,7 +454,20 @@ def export(
     surface['RGB'] = colours
     if is_open:
         surface = both_sides(surface)
-    surface.save(destination, texture='RGB')
+    save_scene(surface, destination)
+
+
+def save_scene(surface: pv.PolyData, destination: str) -> None:
+    """Write a binary PLY coloured by its ``RGB`` array, noting the theme's lighting."""
+    writer = _vtk.vtkPLYWriter()
+    writer.SetFileName(destination)
+    writer.SetInputData(surface)
+    writer.SetFileTypeToBinary()
+    writer.SetArrayName('RGB')
+    writer.AddComment(f'{STYLE_COMMENT} {json.dumps(scene_style(), separators=(",", ":"))}')
+    if not writer.Write():
+        message = f'could not write {destination}'
+        raise OSError(message)
 
 
 def summary(error: BaseException) -> str:
@@ -441,10 +485,12 @@ def main() -> int:
     parser.add_argument('--max-glyphs', type=int, default=0)
     parser.add_argument('--info')
     parser.add_argument('--header', help='describe from the header alone, reading no values')
+    parser.add_argument('--theme', help="a theme's name, or the path of a theme saved as JSON")
     args = parser.parse_args()
     if args.destination is None and args.info is None and args.header is None:
         parser.error('give a destination, --info, --header, or a combination')
     try:
+        apply_theme(args.theme)
         if args.header is not None:
             Path(args.header).write_text(json.dumps(_dataset_info.header_info(args.source)))
         if args.destination is not None:

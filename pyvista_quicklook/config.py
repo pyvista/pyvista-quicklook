@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
 from pathlib import Path
 from typing import Any
 
+from .plist import EXT_BUNDLE_ID
+
 APP_SUPPORT = Path.home() / 'Library' / 'Application Support' / 'PyVistaQuickLook'
 CONFIG_PATH = APP_SUPPORT / 'config.json'
+# The copy the sandboxed extension can read, in the folder it exchanges requests through.
+MIRROR_PATH = (
+    Path.home() / 'Library' / 'Containers' / EXT_BUNDLE_ID / 'Data' / 'tmp' / 'config.json'
+)
 CACHE_DIR = Path.home() / 'Library' / 'Caches' / 'PyVistaQuickLook'
 LOG_PATH = APP_SUPPORT / 'pvql.log'
 
@@ -17,6 +24,8 @@ DEFAULTS: dict[str, Any] = {
     'python': None,
     'pvql': None,
     'interactive': True,
+    # Whether a .pv file opens on the 3D view even when it carries a picture of itself.
+    'force_interactive': False,
     'info_panel': 'automatic',
     'warm_on_start': True,
     'max_scene_points': 2000000,
@@ -27,6 +36,8 @@ DEFAULTS: dict[str, Any] = {
     # None leaves half the Mac's memory to previews being built at once.
     'max_conversion_memory_mb': None,
     'background': None,
+    # None leaves PyVista's own theme; otherwise a theme's name or a theme saved as JSON.
+    'theme': None,
     'extra_args': [],
     'extensions': {'add': [], 'remove': []},
     'cache': True,
@@ -62,6 +73,7 @@ KINDS: dict[str, str] = {
     'python': 'executable',
     'pvql': 'executable',
     'interactive': 'switch',
+    'force_interactive': 'switch',
     'info_panel': 'choice',
     'warm_on_start': 'switch',
     'max_scene_points': 'count',
@@ -71,6 +83,7 @@ KINDS: dict[str, str] = {
     'max_file_size_mb': 'count',
     'max_conversion_memory_mb': 'count',
     'background': 'text',
+    'theme': 'theme',
     'extra_args': 'words',
     'extensions.add': 'extensions',
     'extensions.remove': 'extensions',
@@ -166,6 +179,8 @@ def parse(key: str, values: list[str]) -> Any:
             message = f'{key} takes {what}.'
             raise SettingError(message)
         return int(number) if kind == 'count' or float(number).is_integer() else number
+    if kind == 'theme':
+        return theme_spec(value)
     if kind == 'executable':
         found = executable(value)
         if found is None:
@@ -207,10 +222,30 @@ def put(key: str, value: Any) -> Path:
 
 
 def save(config: dict[str, Any]) -> Path:
-    """Write the configuration to disk and return its path."""
+    """Write the configuration to disk, copy it for the extension, and return its path."""
     APP_SUPPORT.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(config, indent=2) + '\n')
+    mirror()
     return CONFIG_PATH
+
+
+def mirror() -> None:
+    """Keep the extension's copy of the settings the same as the file, or gone without one."""
+    try:
+        settings = CONFIG_PATH.read_bytes()
+    except OSError:
+        MIRROR_PATH.unlink(missing_ok=True)
+        return
+    with contextlib.suppress(OSError):
+        if MIRROR_PATH.read_bytes() == settings:
+            return
+    MIRROR_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MIRROR_PATH.write_bytes(settings)
+
+
+def saved_theme(config: dict[str, Any]) -> bool:
+    """Return whether the theme is one saved as JSON, which only the 3D view can follow."""
+    return bool(config.get('theme')) and os.path.isabs(config['theme'])
 
 
 def executable(path: str | os.PathLike[str] | None) -> str | None:
@@ -230,3 +265,26 @@ def resolve_pyvista(config: dict[str, Any] | None = None) -> str | None:
     """Return the ``pyvista`` command line interface beside the configured interpreter."""
     interpreter = find_python(config)
     return None if interpreter is None else executable(Path(interpreter).parent / 'pyvista')
+
+
+def theme_spec(value: str) -> str:
+    """Return a theme's name as given, or the absolute path of a theme saved as JSON."""
+    if not (value.lower().endswith('.json') or os.sep in value or value.startswith('~')):
+        return value
+    path = Path(value).expanduser()
+    if not path.is_file():
+        message = f'{value} is not a file; theme takes a theme name or a theme saved as JSON.'
+        raise SettingError(message)
+    return str(path.absolute())
+
+
+def theme_token(config: dict[str, Any]) -> str:
+    """Return what a cache key holds of the theme, so editing a theme file redraws previews."""
+    spec = config.get('theme')
+    if not spec:
+        return repr(None)
+    try:
+        stat = Path(spec).stat() if os.path.isabs(spec) else None
+    except OSError:
+        stat = None
+    return repr((spec, stat and stat.st_mtime_ns, stat and stat.st_size))

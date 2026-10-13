@@ -104,6 +104,21 @@ def test_scenes_blend_colours_as_vtk_does():
     assert plist.extension_plist(['.vtu'])['SCNDisableLinearSpaceRendering'] is True
 
 
+def test_thumbnail_plist_covers_only_types_that_carry_a_picture():
+    """The Finder asks the thumbnail extension only for claimed types that can embed one."""
+    thumb = plist.thumbnail_plist(['.pv', '.3mf', '.vtu'])
+    attributes = thumb['NSExtension']['NSExtensionAttributes']
+    assert attributes['QLSupportedContentTypes'] == [formats.uti_for('.pv')]
+    assert thumb['NSExtension']['NSExtensionPointIdentifier'] == 'com.apple.quicklook.thumbnail'
+    assert thumb['NSExtension']['NSExtensionPrincipalClass'] == plist.THUMB_PRINCIPAL_CLASS
+    assert (
+        plist.thumbnail_plist(['.vtu'])['NSExtension']['NSExtensionAttributes'][
+            'QLSupportedContentTypes'
+        ]
+        == []
+    )
+
+
 def test_system_types_are_supported_but_not_exported():
     """A type macOS declares is claimed by the extension and never exported by the app."""
     app = plist.app_plist(['.vtu'])
@@ -160,6 +175,43 @@ def test_cache_key_follows_render_settings():
     assert render.cache_key(identity, {'window_size': [8, 8]}) != render.cache_key(
         identity, {'window_size': [9, 9]}
     )
+
+
+def test_cache_keys_follow_the_theme_and_its_file(tmp_path):
+    """A different theme, or an edited theme file, draws previews again."""
+    identity = ('/mesh.vtu', 1, 2)
+    saved = tmp_path / 'theme.json'
+    saved.write_text('{}')
+    keys = [
+        (render.cache_key(identity, config), convert.scene_key(identity, config))
+        for config in ({}, {'theme': 'dark'}, {'theme': str(saved)})
+    ]
+    saved.write_text('{"color": "red"}')
+    keys.append(
+        (
+            render.cache_key(identity, {'theme': str(saved)}),
+            convert.scene_key(identity, {'theme': str(saved)}),
+        )
+    )
+    saved.unlink()
+    keys.append(
+        (
+            render.cache_key(identity, {'theme': str(saved)}),
+            convert.scene_key(identity, {'theme': str(saved)}),
+        )
+    )
+    assert len({still for still, _ in keys}) == len({scene for _, scene in keys}) == 5
+
+
+def test_the_theme_reaches_every_drawing_command():
+    """``pyvista plot`` and scene export are both given the theme."""
+    config = {'window_size': [64, 32], 'theme': 'dark'}
+    command = render.build_command('/bin/pyvista', 'in.vtu', 'out.png', config)
+    assert command[command.index('--theme') + 1] == 'dark'
+    with pytest.raises(environment.RenderError, match='by name only'):
+        render.build_command(
+            '/bin/pyvista', 'in.vtu', 'out.png', {**config, 'theme': '/a/theme.json'}
+        )
 
 
 def test_build_command_renders_off_screen():
@@ -272,6 +324,7 @@ def test_handle_falls_back_to_the_staged_copy(tmp_path, monkeypatch):
                 'copy': str(tmp_path / 'copy.vtu'),
                 'mtime': 7,
                 'size': 3,
+                'scene': True,
             }
         )
     )
@@ -926,15 +979,19 @@ def test_types_lists_claimed_extensions(capsys, monkeypatch):
     assert any('extensions claimed' in line for line in lines)
 
 
-def test_plist_writes_both_files(tmp_path, monkeypatch):
-    """`pvql plist` writes an app and an extension property list."""
+def test_plist_writes_every_file(tmp_path, monkeypatch):
+    """`pvql plist` writes the app's and both extensions' property lists."""
     monkeypatch.setattr(cli.config_mod, 'load', lambda: dict(cli.config_mod.DEFAULTS))
     app = tmp_path / 'App.plist'
     ext = tmp_path / 'Ext.plist'
-    args = argparse.Namespace(app=str(app), extension=str(ext), helper='/bin/pvql')
+    thumb = tmp_path / 'Thumb.plist'
+    args = argparse.Namespace(
+        app=str(app), extension=str(ext), thumbnail=str(thumb), helper='/bin/pvql'
+    )
     assert cli.cmd_plist(args) == 0
     assert plistlib.loads(app.read_bytes())['PVQLHelperPath'] == '/bin/pvql'
     assert plistlib.loads(ext.read_bytes())['CFBundlePackageType'] == 'XPC!'
+    assert plistlib.loads(thumb.read_bytes())['CFBundleIdentifier'] == plist.THUMB_BUNDLE_ID
 
 
 def test_preview_reports_failures_on_stderr(capsys, monkeypatch):
@@ -1099,7 +1156,7 @@ def test_scene_version_follows_the_exporter(tmp_path):
     before = convert.converter_version(exporter)
     exporter.write_text('b')
     assert convert.converter_version(exporter) != before
-    assert convert.converter_version() == convert.SCENE_VERSION
+    assert convert.converter_version(convert.EXPORTER, convert.DESCRIBER) == convert.SCENE_VERSION
 
 
 def test_scenes_of_other_versions_are_discarded(tmp_path, monkeypatch):
@@ -1172,7 +1229,9 @@ def test_handle_delivers_an_interactive_scene(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon.convert_mod, 'scene', lambda target, config, identity=None: ply)
 
     request = tmp_path / 'token.pvqlreq'
-    request.write_text(json.dumps({'path': str(tmp_path / 'mesh.vtu'), 'mtime': 1, 'size': 2}))
+    request.write_text(
+        json.dumps({'path': str(tmp_path / 'mesh.vtu'), 'mtime': 1, 'size': 2, 'scene': True})
+    )
     daemon.handle(request)
 
     reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
@@ -1270,7 +1329,9 @@ def test_handle_reports_why_the_scene_failed(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
     monkeypatch.setattr(daemon.convert_mod, 'scene', no_scene)
     request = tmp_path / 'token.pvqlreq'
-    request.write_text(json.dumps({'path': str(tmp_path / 'mesh.vtu'), 'mtime': 1, 'size': 2}))
+    request.write_text(
+        json.dumps({'path': str(tmp_path / 'mesh.vtu'), 'mtime': 1, 'size': 2, 'scene': True})
+    )
     daemon.handle(request)
     reply = json.loads((tmp_path / 'token.pvqlrep').read_text())
     assert reply['ok'] is False
