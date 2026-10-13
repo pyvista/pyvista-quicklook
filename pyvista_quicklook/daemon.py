@@ -129,7 +129,7 @@ def readable(path: str, seconds: float = 2.0) -> bool | None:
                 with open(path, 'rb') as handle:
                     handle.read(1)
         except OSError as error:
-            # macOS refuses a private folder with EPERM; anything else is the file's own.
+            # TCC refuses a protected folder with EPERM; anything else is the file's own.
             answer.append(False if error.errno == errno.EPERM else None)
         else:
             answer.append(True)
@@ -161,7 +161,7 @@ _headers_guard = threading.Lock()
 def header_once(
     target: str, config: dict[str, Any], identity: tuple[str, int, int]
 ) -> dict[str, Any] | None:
-    """Return what a file's header says, reading it once for the requests that ask together."""
+    """Return what a file's header says, read once for the requests that follow."""
     with _headers_guard:
         if identity in _headers:
             return _headers[identity]
@@ -380,8 +380,8 @@ def handle(request: Path) -> None:
     try:
         asked = request.stat().st_mtime
         payload = json.loads(request.read_text())
-        source = payload['path']
-        if not isinstance(payload, dict) or not isinstance(source, str):
+        source = payload.get('path') if isinstance(payload, dict) else None
+        if not isinstance(source, str):
             message = 'the request must be an object naming a path'
             raise TypeError(message)
     except (OSError, ValueError, KeyError, TypeError) as error:

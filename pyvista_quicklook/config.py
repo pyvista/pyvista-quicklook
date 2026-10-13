@@ -59,12 +59,17 @@ def load() -> dict[str, Any]:
             if 'warm_on_start' in user:  # the key's former name
                 user.setdefault('preload_on_start', user.pop('warm_on_start'))
             config.update({k: coerced(k, v) for k, v in user.items() if k in DEFAULTS})
-    config['extensions'] = {**DEFAULTS['extensions'], **(config.get('extensions') or {})}
+    config['extensions'] = {**DEFAULTS['extensions'], **config['extensions']}
     return config
 
 
 def coerced(key: str, value: Any) -> Any:
     """Return a stored value when it is what the setting takes, else the default."""
+    if key == 'extensions':
+        # Set through extensions.add and extensions.remove, but stored as one table.
+        if not isinstance(value, dict):
+            return DEFAULTS[key]
+        return {k: v for k, v in value.items() if isinstance(v, list)}
     kind = KINDS.get(key)
     if value is None or kind is None:
         return value if kind is None else DEFAULTS[key]

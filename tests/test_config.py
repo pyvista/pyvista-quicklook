@@ -57,7 +57,8 @@ def test_config_load_ignores_a_file_that_is_not_an_object(tmp_path, monkeypatch)
         ('extra_args', 'not a list', []),
         ('python', 7, None),
         ('python', None, None),
-        ('extensions', 'not a dict', 'not a dict'),
+        ('extensions', 'not a dict', config.DEFAULTS['extensions']),
+        ('extensions', {'add': ['.foo'], 'remove': 'x'}, {'add': ['.foo']}),
     ],
 )
 def test_a_hand_edited_value_of_the_wrong_kind_falls_back_to_the_default(key, value, expected):
@@ -148,6 +149,7 @@ def test_prune_interval_is_read_as_whole_minutes():
 
 
 def test_the_former_warm_on_start_key_is_still_read(monkeypatch, tmp_path):
+    """A configuration written before the rename keeps its setting."""
     path = tmp_path / 'config.json'
     path.write_text('{"warm_on_start": false}')
     monkeypatch.setattr(config, 'CONFIG_PATH', path)

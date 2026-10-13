@@ -190,8 +190,11 @@ def values_extent(array: np.ndarray) -> Extent | None:
 
 
 def magnitude_extent(array: np.ndarray) -> Extent:
-    """Return the range of each tuple's Euclidean norm as VTK measures it, without a copy."""
+    """Return the range of each tuple's Euclidean norm as VTK measures it."""
     tuples = np.ascontiguousarray(array.reshape(len(array), -1))
+    if tuples.dtype == bool:
+        # VTK has no bool array; the XML formats store one as bytes too.
+        tuples = tuples.view(np.uint8)
     low, high = convert_array(tuples).GetRange(-1)
     if no_range(low, high):
         return np.nan, np.nan, 'f', VECTOR_NORM

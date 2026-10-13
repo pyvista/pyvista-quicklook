@@ -16,6 +16,7 @@ import tempfile
 from typing import Any
 import warnings
 
+from matplotlib.colors import ListedColormap
 import numpy as np
 import pyvista as pv
 from pyvista import _vtk
@@ -268,7 +269,7 @@ def thin(dataset: object, max_points: int) -> object:
         return dataset
     stride = math.ceil((expected / budget) ** (1 / min(axes, 2)))
     # The extent need not start at zero: a cropped image keeps its place in the original.
-    return dataset.extract_subset(voi=dataset.GetExtent(), rate=(stride,) * 3)
+    return dataset.extract_subset(voi=dataset.extent, rate=(stride,) * 3)
 
 
 def slice_volume(dataset: pv.DataSet) -> pv.DataSet:
@@ -328,8 +329,8 @@ def ramp() -> np.ndarray:
     if isinstance(cmap, str) and cmap == 'viridis':
         return interpolated(np.frombuffer(bytes.fromhex(_VIRIDIS), dtype=np.uint8).reshape(-1, 3))
     if isinstance(cmap, list | tuple):
-        # A list of colours is a lookup table of just those, so a ramp is drawn through them.
-        return interpolated(np.array([pv.Color(c).int_rgb for c in cmap], dtype=np.float64))
+        # PyVista draws a list of colours as bands of just those colours.
+        cmap = ListedColormap([pv.Color(c).float_rgb for c in cmap])
     table = pv.LookupTable(cmap=cmap, n_values=RAMP_SIZE)
     return np.asarray(table.values)[:, :3].astype(np.uint8)
 

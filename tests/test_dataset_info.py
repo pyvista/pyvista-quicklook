@@ -132,6 +132,7 @@ def test_each_kind_of_array_reports_its_range_in_its_own_terms():
     mesh.point_data['nan'] = [np.nan, np.nan]
     mesh.point_data['complex'] = [3 + 4j, 0j]
     mesh.point_data['nan_vectors'] = np.full((2, 3), np.nan)
+    mesh.point_data['masks'] = [[True, False, False], [True, True, True]]
     mesh.field_data['time'] = [0.25, 3.0]
     rows = {row['name']: row['range'] for row in info_mod.describe(mesh, 'none')['arrays']}
     assert rows['floats'] == '[0.0, 580.0]'
@@ -142,6 +143,7 @@ def test_each_kind_of_array_reports_its_range_in_its_own_terms():
     assert rows['nan'] == 'NaN'
     assert rows['complex'] == '||z|| [0.0, 5.0]'
     assert rows['nan_vectors'] == 'NaN'
+    assert rows['masks'] == '||v|| [1.0, 1.732]'
     assert rows['time'] == '[0.25, 3.0]'
     assert info_mod.data_range(mesh, 'none', 'Point', np.array([])) is None
     assert (

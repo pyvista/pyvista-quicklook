@@ -29,9 +29,11 @@ def test_a_cropped_image_is_thinned_within_its_own_extent(tmp_path):
 
 
 def test_a_list_colormap_spans_the_ramp(tmp_path, monkeypatch):
-    """A theme colormap given as colours is interpolated from the first to the last."""
+    """A theme colormap given as colours is drawn in bands of those colours, as PyVista does."""
     monkeypatch.setattr(pv.global_theme, 'cmap', ['red', 'blue'])
-    assert len(export_mod.ramp()) == export_mod.RAMP_SIZE
+    ramp = export_mod.ramp()
+    assert len(ramp) == export_mod.RAMP_SIZE
+    assert {tuple(c) for c in ramp} == {(255, 0, 0), (0, 0, 255)}
     sphere = pv.Sphere(theta_resolution=8, phi_resolution=8)
     sphere['z'] = sphere.points[:, 2]
     scene = exported(sphere, tmp_path)

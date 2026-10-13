@@ -243,8 +243,8 @@ Point data is interpolated across each face. Cell data is drawn flat: the cells 
 split apart first, so each keeps its own colour. Lines are drawn as tubes and point
 clouds as spheres, sized to the spacing between points. A volume that carries scalars
 is cut into three slices through its centre; one without is shown as its outer surface.
-Open surfaces, the slices among them, are written with a second, flipped side, so they
-are drawn and lit from wherever the camera looks.
+Both sides of every face are drawn and lit, as PyVista draws them, so an open surface
+or a slice shows from wherever the camera looks.
 
 Previews are cached under `~/Library/Caches/PyVistaQuickLook`, keyed by the file's
 path, size, and modification time, so editing a file invalidates its preview, and by the
