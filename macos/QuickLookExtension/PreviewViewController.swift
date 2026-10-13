@@ -462,8 +462,8 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
     var prefersPicture = true
     /// Counts the loads asked for, so a slower earlier one does not replace a later one.
     var generation = 0
-    /// What the info panel last showed, kept while the other tab loads.
-    var shownInfo: MeshInfo?
+    /// What the info panel last showed and for which file, kept while the other tab loads.
+    var shownInfo: (url: URL, info: MeshInfo)?
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
@@ -523,13 +523,17 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         guard generation == self.generation else {
             return
         }
-        if let info {
-            shownInfo = info
+        let kept = shownInfo?.url == url ? shownInfo?.info : nil
+        // What the header alone says has no bounds, so it never replaces what the values said.
+        if let info, info.bounds.isEmpty == false || kept?.bounds.isEmpty != false {
+            shownInfo = (url, info)
+        } else if kept == nil {
+            shownInfo = nil
         }
         let tabs = ModeTabs(mode) { [weak self] chosen in
             self?.switchTo(chosen, url, force: force)
         }
-        show(withInfo(overlaid(content, corner: tabs, topLeading: true), info ?? shownInfo))
+        show(withInfo(overlaid(content, corner: tabs, topLeading: true), shownInfo?.info))
     }
 
     /// Shows the other kind of preview, setting aside whatever the last one was still loading.
