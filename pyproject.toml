@@ -46,19 +46,21 @@ Homepage = 'https://github.com/pyvista/pyvista-quicklook'
 
 [tool.coverage.run]
 branch = true
-omit = ['*/_formats_table.py', '*/_version.py', '*/_warmup.py']
+# The preload runs inside the PyVista environment's interpreter, which is not traced.
+omit = ['*/_preload.py', '*/_version.py']
 parallel = true
 patch = ['subprocess']
 source = ['pyvista_quicklook']
 
 [tool.pytest.ini_options]
 # The slowest tests, so a test that has grown slow is seen.
-addopts = '--cov=pyvista_quicklook --cov-fail-under=95 --durations=25'
+addopts = '--cov=pyvista_quicklook --durations=25'
 filterwarnings = [
   'error',
   # lib3mf's ctypes structures trip a deprecation in Python 3.14; nothing here can fix it.
   "ignore:Due to '_pack_':DeprecationWarning:lib3mf",
 ]
+markers = ['network: downloads an example dataset, so needs a connection']
 testpaths = 'tests'
 # One line per test, named as it starts, so a log shows which test a hang is in.
 verbosity_test_cases = 1

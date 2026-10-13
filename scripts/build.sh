@@ -35,6 +35,22 @@ if [[ -z "$HELPER" ]]; then
   HELPER="$HOME/.local/bin/pvql"
 fi
 
+# The package needs its own Python, which the helper carries; uv provides it otherwise.
+if [[ -x "$HELPER" ]]; then
+  PLIST_COMMAND=("$HELPER")
+elif command -v uv >/dev/null 2>&1; then
+  PLIST_COMMAND=(uv run --project "$ROOT" python -m pyvista_quicklook)
+else
+  echo "neither the pvql helper ($HELPER) nor uv was found; one of them generates the Info.plist files" >&2
+  exit 1
+fi
+
+# Only a helper that exists is named in the bundle; the app finds one on PATH otherwise.
+BAKED_HELPER=""
+if [[ -x "$HELPER" ]]; then
+  BAKED_HELPER="$HELPER"
+fi
+
 APP="$BUILD/$BUNDLE_NAME.app"
 # macOS re-registers an app without a Developer ID signature, and the extensions it embeds,
 # on every launch; held by an app that is never launched, the extensions stay registered.
@@ -66,24 +82,30 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$HOLDER/Contents/MacOS
   "$APPEX/Contents/MacOS" "$THUMBEX/Contents/MacOS"
 
 echo "==> generating Info.plist files (helper: $HELPER)"
-PYTHONPATH="$ROOT" python3 -m pyvista_quicklook plist \
+"${PLIST_COMMAND[@]}" plist \
   --app "$APP/Contents/Info.plist" \
   --extension "$APPEX/Contents/Info.plist" \
   --thumbnail "$THUMBEX/Contents/Info.plist" \
   --holder "$HOLDER/Contents/Info.plist" \
-  --helper "$HELPER" >/dev/null
+  --helper "$BAKED_HELPER" >/dev/null
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 printf 'APPL????' > "$HOLDER/Contents/PkgInfo"
 printf 'XPC!????' > "$APPEX/Contents/PkgInfo"
 printf 'XPC!????' > "$THUMBEX/Contents/PkgInfo"
 
+# The preview code, which the app and its preview extension both carry.
+SHARED_SOURCES=(
+  "$ROOT/macos/Shared/Helper.swift"
+  "$ROOT/macos/Shared/EmbeddedThumbnail.swift"
+  "$ROOT/macos/Shared/Camera.swift"
+  "$ROOT/macos/QuickLookExtension/InfoPanel.swift"
+  "$ROOT/macos/QuickLookExtension/PreviewViewController.swift"
+)
+ENTITLEMENTS="$ROOT/macos/Shared/QuickLook.entitlements"
+
 echo "==> compiling $APP_NAME"
 compile "$APP/Contents/MacOS/$APP_NAME" -O \
-  "$ROOT/macos/Shared/Helper.swift" \
-  "$ROOT/macos/Shared/EmbeddedThumbnail.swift" \
-  "$ROOT/macos/Shared/Camera.swift" \
-  "$ROOT/macos/QuickLookExtension/InfoPanel.swift" \
-  "$ROOT/macos/QuickLookExtension/PreviewViewController.swift" \
+  "${SHARED_SOURCES[@]}" \
   "$ROOT/macos/App/main.swift" \
   -framework AppKit -framework QuickLookUI -framework SceneKit
 
@@ -97,11 +119,7 @@ compile "$BUILD/RenderScene" -O -parse-as-library \
 
 echo "==> compiling $EXT_NAME"
 compile "$APPEX/Contents/MacOS/$EXT_NAME" -O -parse-as-library \
-  "$ROOT/macos/Shared/Helper.swift" \
-  "$ROOT/macos/Shared/EmbeddedThumbnail.swift" \
-  "$ROOT/macos/Shared/Camera.swift" \
-  "$ROOT/macos/QuickLookExtension/InfoPanel.swift" \
-  "$ROOT/macos/QuickLookExtension/PreviewViewController.swift" \
+  "${SHARED_SOURCES[@]}" \
   -framework QuickLookUI \
   -Xlinker -e -Xlinker _NSExtensionMain
 
@@ -116,10 +134,8 @@ compile "$THUMBEX/Contents/MacOS/$THUMB_NAME" -O -parse-as-library \
   -Xlinker -e -Xlinker _NSExtensionMain
 
 echo "==> signing"
-codesign --force --sign - --identifier "$EXT_ID" --timestamp=none \
-  --entitlements "$ROOT/macos/QuickLookExtension/QuickLook.entitlements" "$APPEX"
-codesign --force --sign - --identifier "$THUMB_ID" --timestamp=none \
-  --entitlements "$ROOT/macos/QuickLookExtension/QuickLook.entitlements" "$THUMBEX"
+codesign --force --sign - --identifier "$EXT_ID" --timestamp=none --entitlements "$ENTITLEMENTS" "$APPEX"
+codesign --force --sign - --identifier "$THUMB_ID" --timestamp=none --entitlements "$ENTITLEMENTS" "$THUMBEX"
 codesign --force --sign - --identifier "$HOLDER_ID" --timestamp=none "$HOLDER"
 codesign --force --sign - --identifier "$APP_ID" --timestamp=none "$APP"
 codesign --verify --deep --strict "$APP"

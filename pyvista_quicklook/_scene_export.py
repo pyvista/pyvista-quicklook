@@ -16,6 +16,7 @@ import tempfile
 from typing import Any
 import warnings
 
+from matplotlib.colors import ListedColormap
 import numpy as np
 import pyvista as pv
 from pyvista import _vtk
@@ -99,20 +100,40 @@ def read(source: str) -> object:
 SELECTIVE_BYTES = 256 * 1024 * 1024
 
 
-def colour_choice(rows: list[dict[str, Any]]) -> tuple[str, str] | None:
-    """Return the array the header says a dataset is coloured by, as ``choose_scalars`` picks."""
-    active = next((row for row in rows if 'scalars' in row['active']), None)
+# Arrays VTK's filters and readers add for their own bookkeeping, which a file may carry.
+BOOKKEEPING = frozenset(
+    {
+        'vtkGhostType',
+        'vtkOriginalPointIds',
+        'vtkOriginalCellIds',
+        'vtkValidPointMask',
+        'vtkCompositeIndex',
+        'vtkBlockColors',
+        'vtkProcessId',
+    }
+)
+# What a chooser knows of an array: its name, association, and the roles it is active for.
+Candidate = tuple[str, str, list[str]]
+
+
+def pick_colour(arrays: list[Candidate]) -> tuple[str, str] | None:
+    """Return the array to colour by: the active scalars, or a real array when those are VTK's."""
+    active = next((array for array in arrays if 'scalars' in array[2]), None)
     if active is None:
         return None
-    if not active['name'].startswith('vtk'):
-        return active['name'], active['association']
+    if active[0] not in BOOKKEEPING:
+        return active[0], active[1]
     for association in ('Point', 'Cell'):
-        for row in rows:
-            if row['association'] != association or row['name'].startswith('vtk'):
-                continue
-            if 'normals' not in row['active']:
-                return row['name'], association
+        for name, where, roles in arrays:
+            # Normals are unit length everywhere, so they would colour the mesh one shade.
+            if where == association and name not in BOOKKEEPING and 'normals' not in roles:
+                return name, association
     return None
+
+
+def colour_choice(rows: list[dict[str, Any]]) -> tuple[str, str] | None:
+    """Return the array the header says a dataset is coloured by, as ``choose_scalars`` picks."""
+    return pick_colour([(row['name'], row['association'], row['active']) for row in rows])
 
 
 def read_selectively(source: str) -> tuple[object, dict[str, Any]] | None:
@@ -199,6 +220,7 @@ def read_for_preview(source: str) -> tuple[object, dict[str, Any] | None]:
 
 def point_count(dataset: object) -> int:
     """Return how many points a dataset or composite holds, counting a mystery as some."""
+    dataset = _dataset_info.as_multiblock(dataset)
     if isinstance(dataset, pv.MultiBlock):
         return sum(
             block.n_points for block in dataset.recursive_iterator('blocks', skip_none=True)
@@ -222,7 +244,8 @@ def looks_like_text(source: str) -> bool:
         return False
     if not head or b'\0' in head:
         return False
-    controls = sum(byte < 32 and byte not in (9, 10, 13) for byte in head)
+    data = np.frombuffer(head, dtype=np.uint8)
+    controls = np.count_nonzero((data < 32) & ~np.isin(data, (9, 10, 13)))
     return controls * 100 < len(head)
 
 
@@ -239,42 +262,47 @@ def thin(dataset: object, max_points: int) -> object:
     """Stride structured data down to the budget; decimating it would take minutes."""
     if not max_points or not hasattr(dataset, 'extract_subset'):
         return dataset
+    axes = sum(1 for k in dataset.dimensions if k > 1)
     budget = max_points // 3 if has_cell_scalars(dataset) else max_points
     expected = skin_estimate(dataset.dimensions)
     if expected <= budget:
         return dataset
-    axes = sum(1 for k in dataset.dimensions if k > 1)
     stride = math.ceil((expected / budget) ** (1 / min(axes, 2)))
-    nx, ny, nz = dataset.dimensions
-    return dataset.extract_subset(voi=(0, nx - 1, 0, ny - 1, 0, nz - 1), rate=(stride,) * 3)
+    # The extent need not start at zero: a cropped image keeps its place in the original.
+    return dataset.extract_subset(voi=dataset.extent, rate=(stride,) * 3)
 
 
 def slice_volume(dataset: pv.DataSet) -> pv.DataSet:
     """Cut three slices through the centre of a volume that has scalars to show."""
-    dimensions = getattr(dataset, 'dimensions', None)
-    if dimensions is None or min(dimensions) < 2 or not dataset.active_scalars_name:
+    if not will_slice(dataset):
         return dataset
     return dataset.slice_orthogonal()
 
 
+def will_slice(dataset: object) -> bool:
+    """Return whether a volume is shown as slices through its centre."""
+    dimensions = getattr(dataset, 'dimensions', None)
+    if dimensions is None or min(dimensions) < 2:
+        return False
+    return bool(dataset.active_scalars_name)
+
+
 def to_surface(dataset: object) -> pv.PolyData:
     """Return the surface of any dataset PyVista can read, cells left as they are."""
-    if isinstance(dataset, pv.PartitionedDataSet):
-        dataset = pv.MultiBlock(list(dataset))
+    dataset = _dataset_info.as_multiblock(dataset)
     if isinstance(dataset, pv.MultiBlock):
         # combine() fails on an empty nested composite, so only the leaves are joined.
         leaves = list(dataset.recursive_iterator('blocks', skip_none=True))
         if not leaves:
             return pv.PolyData()
         dataset = pv.MultiBlock(leaves).combine()
-    surface = (
-        dataset.extract_surface(algorithm='dataset_surface')
-        if hasattr(dataset, 'extract_surface')
-        else dataset
-    )
-    if not isinstance(surface, pv.PolyData):
-        surface = surface.extract_geometry()
-    return surface
+    if isinstance(dataset, pv.PolyData):
+        return dataset
+    if hasattr(dataset, 'extract_surface'):
+        return dataset.extract_surface(
+            algorithm='dataset_surface', pass_pointid=False, pass_cellid=False
+        )
+    return dataset.extract_geometry()
 
 
 # Viridis at 32 control points, interpolated to a full ramp.
@@ -285,28 +313,38 @@ _VIRIDIS = (
 )
 
 
-def ramp() -> np.ndarray:
-    """Return the 256-entry RGB table of the theme's colormap."""
-    if pv.global_theme.cmap != 'viridis':
-        table = pv.LookupTable(cmap=pv.global_theme.cmap, n_values=256)
-        return np.asarray(table.values)[:, :3].astype(np.uint8)
-    control = np.frombuffer(bytes.fromhex(_VIRIDIS), dtype=np.uint8).reshape(-1, 3)
-    positions = np.linspace(0, 255, len(control))
-    channels = [np.interp(np.arange(256), positions, control[:, c]) for c in range(3)]
+RAMP_SIZE = 256
+
+
+def interpolated(control: np.ndarray) -> np.ndarray:
+    """Return a full RGB ramp through evenly spaced control colours."""
+    positions = np.linspace(0, RAMP_SIZE - 1, len(control))
+    channels = [np.interp(np.arange(RAMP_SIZE), positions, control[:, c]) for c in range(3)]
     return np.stack(channels, axis=1).round().astype(np.uint8)
+
+
+def ramp() -> np.ndarray:
+    """Return the RGB table of the theme's colormap, one entry per scalar level."""
+    cmap = pv.global_theme.cmap
+    if isinstance(cmap, str) and cmap == 'viridis':
+        return interpolated(np.frombuffer(bytes.fromhex(_VIRIDIS), dtype=np.uint8).reshape(-1, 3))
+    if isinstance(cmap, list | tuple):
+        # PyVista draws a list of colours as bands of just those colours.
+        cmap = ListedColormap([pv.Color(c).float_rgb for c in cmap])
+    table = pv.LookupTable(cmap=cmap, n_values=RAMP_SIZE)
+    return np.asarray(table.values)[:, :3].astype(np.uint8)
 
 
 def solidify(surface: pv.PolyData, max_glyphs: int) -> pv.PolyData:
     """Give lines and loose points a surface, so there is something to draw."""
-    if surface.n_faces:
-        # Only the faces are drawn then, and the triangle filter garbles the cell data of
-        # faces mixed with points or lines; those come first, in VTK's order of cells.
+    if surface.n_faces or surface.n_strips:
+        # Vertex and line cells come first in a PolyData, and only the faces are drawn.
         loose = surface.n_verts + surface.n_lines
         return surface.remove_cells(np.arange(loose)) if loose else surface
 
     size = surface.length or 1.0
     if surface.n_lines:
-        tubed = surface.tube(radius=size * 0.004, n_sides=8).triangulate()
+        tubed = surface.tube(radius=size * 0.004, n_sides=8)
         # tube() names its normals differently from everything that reads them.
         if 'TubeNormals' in tubed.point_data:
             tubed.point_data['Normals'] = tubed.point_data['TubeNormals']
@@ -318,25 +356,19 @@ def solidify(surface: pv.PolyData, max_glyphs: int) -> pv.PolyData:
         if max_glyphs and surface.n_points > max_glyphs:
             step = surface.n_points // max_glyphs + 1
             kept = np.arange(0, surface.n_points, step)
-            points = surface.extract_points(kept).extract_surface(algorithm='dataset_surface')
+            points = to_surface(surface.extract_points(kept))
         # Scale with the spacing between points, so a handful of them still read.
         spacing = size / max(points.n_points, 1) ** (1 / 3)
         radius = min(size * 0.2, spacing * 0.15)
         sphere = pv.Sphere(radius=radius, theta_resolution=6, phi_resolution=6)
-        return points.glyph(geom=sphere, scale=False, orient=False).triangulate()
+        return points.glyph(geom=sphere, scale=False, orient=False)
 
     return surface
 
 
-def both_sides(surface: pv.PolyData) -> pv.PolyData:
-    """Add a flipped copy of an open surface, so it is drawn and lit from either side."""
-    back = surface.flip_faces()
-    if 'Normals' in back.point_data:
-        back.point_data['Normals'] = -np.asarray(back.point_data['Normals'])
-    both = pv.merge([surface, back], merge_points=False)
-    if 'Normals' in both.point_data:
-        both.point_data.active_normals_name = 'Normals'
-    return both
+def triangles(surface: pv.PolyData) -> pv.PolyData:
+    """Return a surface made of triangles, as it is when it already is."""
+    return surface if surface.is_all_triangles else surface.triangulate()
 
 
 def recentre(surface: pv.PolyData) -> pv.PolyData:
@@ -350,16 +382,19 @@ def choose_scalars(dataset: pv.DataSet) -> pv.DataSet:
     if not name:
         # Nothing was active, so the file asks for no colour. Leave it that way.
         return dataset
-    if not name.startswith('vtk'):
-        return dataset
-    normals = {dataset.point_data.active_normals_name, dataset.cell_data.active_normals_name}
-    for source in (dataset.point_data, dataset.cell_data):
-        for candidate in source:
-            # Normals are unit length everywhere, so they would colour the mesh one shade.
-            if not candidate.startswith('vtk') and candidate not in normals:
-                dataset.set_active_scalars(candidate)
-                return dataset
-    dataset.set_active_scalars(None)
+    active = (name, dataset.active_scalars_info.association.name.title())
+    arrays: list[Candidate] = []
+    for association, data in (('Point', dataset.point_data), ('Cell', dataset.cell_data)):
+        for candidate in data:
+            roles = ['scalars'] if (candidate, association) == active else []
+            if candidate == data.active_normals_name:
+                roles.append('normals')
+            arrays.append((candidate, association, roles))
+    choice = pick_colour(arrays)
+    if choice is None:
+        dataset.set_active_scalars(None)
+    elif choice != active:
+        dataset.set_active_scalars(choice[0], preference=choice[1].lower())
     return dataset
 
 
@@ -373,8 +408,7 @@ def to_point_scalars(surface: pv.PolyData) -> pv.PolyData:
     """Return a surface carrying cell scalars on points, one cell per point."""
     if not has_cell_scalars(surface):
         return surface
-    separated = surface.separate_cells().cell_data_to_point_data()
-    return separated.extract_surface(algorithm='dataset_surface').triangulate()
+    return to_surface(surface.separate_cells().cell_data_to_point_data())
 
 
 def colours_for(surface: pv.PolyData) -> np.ndarray | None:
@@ -399,8 +433,17 @@ def colours_for(surface: pv.PolyData) -> np.ndarray | None:
         return None
     low, high = float(finite.min()), float(finite.max())
     span = high - low if high > low else 1.0
+    missing = np.isnan(scalars)
     normalised = np.clip((np.nan_to_num(scalars, nan=low) - low) / span, 0.0, 1.0)
-    return ramp()[(normalised * 255).round().astype(np.intp)]
+    colours = ramp()[(normalised * (RAMP_SIZE - 1)).round().astype(np.intp)]
+    # PyVista draws a NaN value in the theme's colour for them, outside the ramp.
+    colours[missing] = np.array(pv.global_theme.nan_color.int_rgb, dtype=np.uint8)
+    return colours
+
+
+def projected_points(surface: pv.PolyData) -> int:
+    """Return how many points the scene will hold once cells are split."""
+    return 3 * surface.n_faces if has_cell_scalars(surface) else surface.n_points
 
 
 def write_info(
@@ -431,20 +474,19 @@ def export(
     # Triangulating first would discard the vertex and line cells solidify needs.
     surface = choose_scalars(to_surface(dataset))
     wanted = surface.active_scalars_name
-    surface = solidify(surface, max_glyphs).triangulate()
+    surface = triangles(solidify(surface, max_glyphs))
     # tube() and glyph() add arrays of their own; colour only by what the file had.
     surface.set_active_scalars(wanted if wanted in surface.array_names else None)
     if surface.n_points == 0:
         raise empty(source)
 
-    # Merging coincident points first, since the surface filter leaves a volume's faces
-    # unjoined at their edges. The budget counts a surface once, whatever its sides.
-    is_open = surface.clean().n_open_edges > 0
-    # Splitting cells triples the points, so the cap is shared out beforehand.
-    cap = max_points // 3 if max_points and has_cell_scalars(surface) else max_points
-    if cap and surface.n_points > cap:
-        ratio = 1.0 - (cap / surface.n_points)
-        surface = surface.decimate_pro(ratio, preserve_topology=True).triangulate()
+    if not isinstance(dataset, pv.PolyData):
+        # The surface filter leaves a volume's faces unjoined at their edges.
+        surface = surface.clean()
+    projected = projected_points(surface)
+    if max_points and projected > max_points:
+        ratio = 1.0 - (max_points / projected)
+        surface = surface.decimate_pro(ratio, preserve_topology=True)
 
     surface = recentre(to_point_scalars(surface))
     colours = colours_for(surface)
@@ -459,8 +501,6 @@ def export(
         surface.point_data['Normals'] = normals
         surface.point_data.active_normals_name = 'Normals'
     surface['RGB'] = colours
-    if is_open:
-        surface = both_sides(surface)
     save_scene(surface, destination)
 
 

@@ -17,9 +17,10 @@ from typing import Any
 
 from . import cache as cache_mod
 from . import config as config_mod
+from . import convert as convert_mod
 from . import daemon as daemon_mod
 from . import plist as plist_mod
-from . import warmup as warmup_mod
+from . import preload as preload_mod
 from .environment import RenderError
 from .formats import FORMATS
 from .formats import NATIVE_TYPES
@@ -82,10 +83,21 @@ def cmd_daemon(_: argparse.Namespace) -> int:
     return daemon_mod.serve()
 
 
+def service_target(label: str = daemon_mod.LABEL) -> str:
+    """Return the launchd name of a service in this user's session."""
+    return f'gui/{os.getuid()}/{label}'
+
+
+def unload_service(label: str = daemon_mod.LABEL) -> None:
+    """Stop and unload a service, whether or not it is loaded."""
+    subprocess.run(
+        ['/bin/launchctl', 'bootout', service_target(label)], capture_output=True, check=False
+    )
+
+
 def retire_legacy_service() -> None:
     """Stop and remove the render service installed under the io.github.user27182 label."""
-    target = f'gui/{os.getuid()}/{daemon_mod.LEGACY_LABEL}'
-    subprocess.run(['/bin/launchctl', 'bootout', target], capture_output=True, check=False)
+    unload_service(daemon_mod.LEGACY_LABEL)
     daemon_mod.legacy_agent_path().unlink(missing_ok=True)
     shutil.rmtree(daemon_mod.legacy_drop_dir(), ignore_errors=True)
 
@@ -93,11 +105,11 @@ def retire_legacy_service() -> None:
 def cmd_service(args: argparse.Namespace) -> int:
     """Install, remove, or report on the render service."""
     label = daemon_mod.LABEL
-    target = f'gui/{os.getuid()}/{label}'
+    target = service_target()
     path = daemon_mod.agent_path()
 
     if args.uninstall:
-        subprocess.run(['/bin/launchctl', 'bootout', target], capture_output=True, check=False)
+        unload_service()
         path.unlink(missing_ok=True)
         retire_legacy_service()
         print(f'removed {label}')
@@ -112,7 +124,7 @@ def cmd_service(args: argparse.Namespace) -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open('wb') as handle:
             plistlib.dump(daemon_mod.agent_plist(program), handle, sort_keys=False)
-        subprocess.run(['/bin/launchctl', 'bootout', target], capture_output=True, check=False)
+        unload_service()
         # launchd reports an I/O error when it is still tearing the old job down.
         for attempt in range(5):
             loaded = subprocess.run(
@@ -137,18 +149,18 @@ def cmd_service(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_warmup(_: argparse.Namespace) -> int:
+def cmd_preload(_: argparse.Namespace) -> int:
     """Load PyVista and VTK so the first preview does not wait for them."""
     try:
-        elapsed = warmup_mod.warm()
+        elapsed = preload_mod.run()
     except RenderError as error:
         print(error, file=sys.stderr)
         return 1
-    print(f'PyVista and VTK are warm ({elapsed:.1f} s)')
+    print(f'PyVista and VTK are loaded ({elapsed:.1f} s)')
     return 0
 
 
-def cmd_warm(args: argparse.Namespace) -> int:
+def cmd_prebuild(args: argparse.Namespace) -> int:
     """Build previews ahead of time for the given files or directories."""
     config = config_mod.load()
     claimed = set(claimed_extensions(config))
@@ -201,7 +213,8 @@ def cmd_plist(args: argparse.Namespace) -> int:
     """Write the Info.plist files used when building the app bundle."""
     config = config_mod.load()
     extensions = claimed_extensions(config)
-    helper = args.helper or shutil.which('pvql')
+    # An empty --helper bakes no path in, for a bundle built where pvql is not installed.
+    helper = (args.helper if args.helper is not None else shutil.which('pvql')) or None
     if args.app:
         plist_mod.write(plist_mod.app_plist(extensions, helper), args.app)
         print(args.app)
@@ -276,6 +289,7 @@ def cmd_cache(args: argparse.Namespace) -> int:
         return 0
     if args.prune:
         removed = cache_mod.prune(config_mod.load())
+        removed += cache_mod.discard_other_versions(convert_mod.SCENE_VERSION)
         print(f'removed {removed} cached previews and descriptions of changed or deleted files')
     entries = cache_mod.entries()
     total = 0
@@ -289,22 +303,22 @@ def cmd_cache(args: argparse.Namespace) -> int:
 
 def _run(command: list[str]) -> str:
     """Run a command and return its combined output, or an empty string on failure."""
-    try:
-        completed = subprocess.run(
-            command, capture_output=True, text=True, timeout=20, check=False
-        )
-    except OSError, subprocess.SubprocessError:
-        return ''
-    return (completed.stdout + completed.stderr).strip()
+    completed = _completed(command)
+    return '' if completed is None else (completed.stdout + completed.stderr).strip()
 
 
 def _succeeds(command: list[str]) -> bool:
     """Return whether a command runs and exits cleanly."""
+    completed = _completed(command)
+    return completed is not None and completed.returncode == 0
+
+
+def _completed(command: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """Run a command for its result, or None when it cannot run or does not finish."""
     try:
-        completed = subprocess.run(command, capture_output=True, timeout=20, check=False)
+        return subprocess.run(command, capture_output=True, text=True, timeout=20, check=False)
     except OSError, subprocess.SubprocessError:
-        return False
-    return completed.returncode == 0
+        return None
 
 
 def finder_started() -> float | None:
@@ -389,8 +403,7 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     else:
         print('✓ finder     asks for the current extension')
 
-    target = f'gui/{os.getuid()}/{daemon_mod.LABEL}'
-    if _run(['/bin/launchctl', 'print', target]):
+    if _run(['/bin/launchctl', 'print', service_target()]):
         print(f'✓ service    {daemon_mod.LABEL} loaded')
     else:
         problems += 1
@@ -402,7 +415,7 @@ def cmd_doctor(_: argparse.Namespace) -> int:
             sample.write_text(SMOKE_MESH)
             started = time.monotonic()
             try:
-                out = daemon_mod.request_preview(sample, timeout=90)
+                out = daemon_mod.request_preview(sample, timeout=daemon_mod.reply_seconds(config))
             except RenderError as error:
                 problems += 1
                 print(f'✗ render     failed through the service\n\n{error}')
@@ -492,8 +505,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
                 )
         for bundle in (app, plist_mod.plugins_folder(app).parents[1]):
             subprocess.run([LSREGISTER, '-u', str(bundle)], capture_output=True, check=False)
-    target = f'gui/{os.getuid()}/{daemon_mod.LABEL}'
-    subprocess.run(['/bin/launchctl', 'bootout', target], capture_output=True, check=False)
+    unload_service()
     retire_legacy_service()
     for path in targets:
         if path.is_dir():
@@ -538,12 +550,12 @@ def build_parser() -> argparse.ArgumentParser:
     service.add_argument('--helper', help='absolute path to the pvql executable')
     service.set_defaults(func=cmd_service)
 
-    warmup = sub.add_parser('warmup', help='load PyVista and VTK ahead of the first preview')
-    warmup.set_defaults(func=cmd_warmup)
+    preload = sub.add_parser('preload', help='load PyVista and VTK ahead of the first preview')
+    preload.set_defaults(func=cmd_preload)
 
-    warm = sub.add_parser('warm', help='build previews ahead of time')
-    warm.add_argument('paths', nargs='+')
-    warm.set_defaults(func=cmd_warm)
+    prebuild = sub.add_parser('prebuild', help='build previews ahead of time')
+    prebuild.add_argument('paths', nargs='+')
+    prebuild.set_defaults(func=cmd_prebuild)
 
     types = sub.add_parser('types', help='list claimed file extensions')
     types.add_argument('--all', action='store_true', help='include formats that are not claimed')

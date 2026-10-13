@@ -27,7 +27,7 @@ DEFAULTS: dict[str, Any] = {
     # Whether a .pv file opens on the 3D view even when it carries a picture of itself.
     'force_interactive': False,
     'info_panel': 'automatic',
-    'warm_on_start': True,
+    'preload_on_start': True,
     'max_scene_points': 2000000,
     'max_glyph_points': 20000,
     'window_size': [1024, 1024],
@@ -56,9 +56,40 @@ def load() -> dict[str, Any]:
         except OSError, json.JSONDecodeError:
             user = {}
         if isinstance(user, dict):
-            config.update({k: v for k, v in user.items() if k in DEFAULTS})
-    config['extensions'] = {**DEFAULTS['extensions'], **(config.get('extensions') or {})}
+            if 'warm_on_start' in user:  # the key's former name
+                user.setdefault('preload_on_start', user.pop('warm_on_start'))
+            config.update({k: coerced(k, v) for k, v in user.items() if k in DEFAULTS})
+    config['extensions'] = {**DEFAULTS['extensions'], **config['extensions']}
     return config
+
+
+def coerced(key: str, value: Any) -> Any:
+    """Return a stored value when it is what the setting takes, else the default."""
+    if key == 'extensions':
+        # Set through extensions.add and extensions.remove, but stored as one table.
+        if not isinstance(value, dict):
+            return DEFAULTS[key]
+        return {k: v for k, v in value.items() if isinstance(v, list)}
+    kind = KINDS.get(key)
+    if value is None or kind is None:
+        return value if kind is None else DEFAULTS[key]
+    if kind == 'switch':
+        return value if isinstance(value, bool) else DEFAULTS[key]
+    if kind == 'choice':
+        return value if value in CHOICES[key] else DEFAULTS[key]
+    if kind == 'pixels':
+        sides = value if isinstance(value, list) else []
+        if len(sides) == 2 and all(isinstance(s, int) and s > 0 for s in sides):
+            return sides
+        return DEFAULTS[key]
+    if kind in ('count', 'minutes', 'seconds'):
+        number = value if isinstance(value, (int, float)) and not isinstance(value, bool) else -1
+        if number < 0 or not math.isfinite(number) or (kind == 'seconds' and number == 0):
+            return DEFAULTS[key]
+        return number
+    if kind == 'words':
+        return value if isinstance(value, list) else DEFAULTS[key]
+    return value if isinstance(value, str) else DEFAULTS[key]
 
 
 def overrides(config: dict[str, Any]) -> dict[str, Any]:
@@ -77,7 +108,7 @@ KINDS: dict[str, str] = {
     'interactive': 'switch',
     'force_interactive': 'switch',
     'info_panel': 'choice',
-    'warm_on_start': 'switch',
+    'preload_on_start': 'switch',
     'max_scene_points': 'count',
     'max_glyph_points': 'count',
     'window_size': 'pixels',

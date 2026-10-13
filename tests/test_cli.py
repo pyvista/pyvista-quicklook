@@ -5,16 +5,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import plistlib
 import runpy
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from pyvista_quicklook import cli
 from pyvista_quicklook import config
+from pyvista_quicklook import daemon
 from pyvista_quicklook import plist
 from pyvista_quicklook.environment import RenderError
 
@@ -107,27 +110,27 @@ def test_service_reports_a_job_that_is_not_loaded(capsys, monkeypatch):
     assert 'is not loaded' in capsys.readouterr().out
 
 
-def test_warmup_reports_the_time_taken(capsys, monkeypatch):
-    """A successful warm-up says how long it took."""
-    monkeypatch.setattr(cli.warmup_mod, 'warm', lambda: 1.25)
-    assert cli.cmd_warmup(argparse.Namespace()) == 0
+def test_preload_reports_the_time_taken(capsys, monkeypatch):
+    """A successful preload says how long it took."""
+    monkeypatch.setattr(cli.preload_mod, 'run', lambda: 1.25)
+    assert cli.cmd_preload(argparse.Namespace()) == 0
     assert '1.2 s' in capsys.readouterr().out
 
 
-def test_warmup_reports_a_failure(capsys, monkeypatch):
-    """A failed warm-up is reported on stderr with a failing status."""
+def test_preload_reports_a_failure(capsys, monkeypatch):
+    """A failed preload is reported on stderr with a failing status."""
 
     def fail():
         message = 'no interpreter'
         raise RenderError(message)
 
-    monkeypatch.setattr(cli.warmup_mod, 'warm', fail)
-    assert cli.cmd_warmup(argparse.Namespace()) == 1
+    monkeypatch.setattr(cli.preload_mod, 'run', fail)
+    assert cli.cmd_preload(argparse.Namespace()) == 1
     assert 'no interpreter' in capsys.readouterr().err
 
 
-def test_warm_counts_failures_and_named_files(capsys, monkeypatch, tmp_path):
-    """Named files are warmed as given, and each failure is reported in one line."""
+def test_prebuild_counts_failures_and_named_files(capsys, monkeypatch, tmp_path):
+    """Named files are preloaded as given, and each failure is reported in one line."""
     good = tmp_path / 'good.vtu'
     bad = tmp_path / 'bad.vtu'
     for path in (good, bad):
@@ -142,7 +145,7 @@ def test_warm_counts_failures_and_named_files(capsys, monkeypatch, tmp_path):
     monkeypatch.setattr(cli.config_mod, 'load', lambda: dict(config.DEFAULTS))
     monkeypatch.setattr(cli.daemon_mod, 'produce', produce)
     args = argparse.Namespace(paths=[str(good), str(bad), str(tmp_path / 'missing.vtu')])
-    assert cli.cmd_warm(args) == 1
+    assert cli.cmd_prebuild(args) == 1
     captured = capsys.readouterr()
     assert '1 of 2 cached' in captured.out
     assert 'unreadable' in captured.err
@@ -555,3 +558,362 @@ def test_mirror_follows_a_hand_edited_or_removed_file(home):
     config.CONFIG_PATH.unlink()
     config.mirror()
     assert not config.MIRROR_PATH.exists()
+
+
+@pytest.fixture
+def installation(home, commands, monkeypatch):
+    """Lay out a fake installation under tmp_path and record the commands run."""
+    support = home / 'support'
+    for folder in ('venv', 'src', 'unpacked'):
+        (support / folder).mkdir(parents=True)
+        (support / folder / 'file').write_text('x')
+    (support / 'config.json').write_text('{}')
+    app = home / 'Applications' / plist.APP_BUNDLE
+    plist.plugins_folder(app).mkdir(parents=True)
+    (home / 'cache').mkdir()
+    (home / 'agent.plist').write_text('x')
+    (home / 'container').mkdir()
+    (home / 'pvqld.log').write_text('x')
+    (home / 'uv').write_text('#!/bin/sh\n')
+    monkeypatch.setattr(cli.shutil, 'which', lambda name: str(home / 'uv'))
+    return SimpleNamespace(home=home, commands=commands)
+
+
+def test_uninstall_removes_everything_but_the_config(installation, capsys):
+    """`pvql uninstall --yes` removes the installation and keeps the config file."""
+    home = installation.home
+    assert cli.cmd_uninstall(argparse.Namespace(yes=True, all=False)) == 0
+    for gone in (
+        f'Applications/{plist.APP_BUNDLE}',
+        'agent.plist',
+        'cache',
+        'container',
+        'pvqld.log',
+        'support/venv',
+        'support/src',
+        'support/unpacked',
+    ):
+        assert not (home / gone).exists(), gone
+    assert (home / 'support' / 'config.json').exists()
+    joined = [' '.join(str(part) for part in command) for command in installation.commands]
+    removed = [c for c in joined if 'pluginkit -r' in c]
+    assert any(
+        str(plist.plugins_folder(home / 'Applications' / plist.APP_BUNDLE)) in c for c in removed
+    )
+    assert any(
+        'Contents/PlugIns/PyVistaQuickLookExtension.appex' in c and 'Extensions.app' not in c
+        for c in removed
+    )
+    unregistered = [c for c in joined if 'lsregister -u' in c]
+    assert any(
+        c.endswith(str(plist.plugins_folder(home / 'Applications' / plist.APP_BUNDLE).parents[1]))
+        for c in unregistered
+    )
+    assert any(c.endswith(f'Applications/{plist.APP_BUNDLE}') for c in unregistered)
+    assert any('launchctl bootout' in c for c in joined)
+    assert any(c.endswith('uv tool uninstall pyvista-quicklook') for c in joined)
+    assert 'keeps' in capsys.readouterr().out
+
+
+def test_uninstall_removes_a_bundle_under_the_old_name(installation):
+    """A bundle installed before the rename is found and removed as well."""
+    legacy = installation.home / 'Applications' / plist.LEGACY_APP_BUNDLE
+    (legacy / 'Contents' / 'PlugIns').mkdir(parents=True)
+    assert legacy in cli.installed_apps()
+    assert cli.cmd_uninstall(argparse.Namespace(yes=True, all=False)) == 0
+    assert not legacy.exists()
+
+
+def test_uninstall_removes_the_service_under_the_old_label(installation):
+    """A service installed under the io.github.user27182 label is stopped and removed."""
+    home = installation.home
+    (home / 'old-agent.plist').write_text('x')
+    cli.daemon_mod.legacy_drop_dir().mkdir(parents=True)
+    assert cli.cmd_uninstall(argparse.Namespace(yes=True, all=False)) == 0
+    assert not (home / 'old-agent.plist').exists()
+    assert not cli.daemon_mod.legacy_drop_dir().exists()
+    joined = [' '.join(str(part) for part in command) for command in installation.commands]
+    assert any('bootout' in c and c.endswith(f'/{daemon.LEGACY_LABEL}') for c in joined)
+
+
+def test_uninstall_all_removes_the_config_too(installation):
+    """`pvql uninstall --all` removes the config file as well."""
+    assert cli.cmd_uninstall(argparse.Namespace(yes=True, all=True)) == 0
+    assert not (installation.home / 'support' / 'config.json').exists()
+
+
+def test_uninstall_only_reports_without_a_terminal(installation, capsys):
+    """Without --yes and without a terminal to ask on, nothing is removed."""
+    assert cli.cmd_uninstall(argparse.Namespace(yes=False, all=False)) == 1
+    assert (installation.home / 'Applications' / plist.APP_BUNDLE).exists()
+    assert installation.commands == []
+    out = capsys.readouterr().out
+    assert 'pvql uninstall --yes' in out
+    # The config file is kept, so the flag that takes it too is named separately.
+    assert '--all' in out
+
+
+def test_uninstall_without_a_config_file_does_not_mention_keeping_it(installation, capsys):
+    """With no config file there is nothing to keep, so --all is not suggested either."""
+    (installation.home / 'support' / 'config.json').unlink()
+    assert cli.cmd_uninstall(argparse.Namespace(yes=False, all=False)) == 1
+    out = capsys.readouterr().out
+    assert 'pvql uninstall --yes' in out
+    assert 'keeps' not in out
+    assert '--all' not in out
+
+
+def test_uv_note_explains_how_to_remove_an_installed_uv(tmp_path, monkeypatch):
+    """Uv the installer fetched is explained; uv from elsewhere is left to its owner."""
+    monkeypatch.setattr(cli.Path, 'home', classmethod(lambda cls: tmp_path))
+    ours = cli.uv_note(tmp_path / '.local' / 'bin' / 'uv')
+    assert 'uv cache clean' in ours
+    assert 'not only this one' in ours
+    assert 'whatever installed it' in cli.uv_note(Path('/opt/homebrew/bin/uv'))
+
+
+def test_service_install_runs_the_daemon_under_the_package_name(commands, home):
+    """The agent runs the pyvista-quicklook entry point, which is the name macOS shows."""
+    for name in ('pvql', 'pyvista-quicklook'):
+        (home / name).write_text('#!/bin/sh\n')
+        (home / name).chmod(0o755)
+    (home / 'old-agent.plist').write_text('x')
+    cli.daemon_mod.legacy_drop_dir().mkdir(parents=True)
+    args = argparse.Namespace(install=True, uninstall=False, helper=str(home / 'pvql'))
+    assert cli.cmd_service(args) == 0
+    stored = plistlib.loads((home / 'agent.plist').read_bytes())
+    assert stored['ProgramArguments'] == [str(home / 'pyvista-quicklook'), 'daemon']
+    assert not (home / 'old-agent.plist').exists()
+    assert not cli.daemon_mod.legacy_drop_dir().exists()
+    joined = [' '.join(str(part) for part in command) for command in commands]
+    assert any('bootout' in c and c.endswith(f'/{daemon.LEGACY_LABEL}') for c in joined)
+
+
+def test_services_are_named_in_this_users_session(commands):
+    """A service is addressed in the gui domain of the user running the helper."""
+    assert cli.service_target() == f'gui/{os.getuid()}/{daemon.LABEL}'
+    assert cli.service_target('other').endswith('/other')
+    cli.unload_service('other')
+    assert commands == [['/bin/launchctl', 'bootout', f'gui/{os.getuid()}/other']]
+
+
+def test_parser_accepts_every_subcommand():
+    """Each documented subcommand parses."""
+    parser = cli.build_parser()
+    for argv in (
+        ['preview', 'mesh.vtu'],
+        ['prebuild', 'dir'],
+        ['types', '--all'],
+        ['plist', '--app', 'a.plist', '--extension', 'e.plist'],
+        ['config', '--init'],
+        ['cache', '--clear'],
+        ['finder'],
+        ['doctor'],
+        ['daemon'],
+        ['service', '--install'],
+        ['uninstall', '--yes', '--all'],
+    ):
+        assert parser.parse_args(argv).func is not None
+
+
+def test_cache_prune_and_clear_cannot_be_combined(capsys):
+    """Asking to prune and to clear at once is refused rather than half done."""
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(['cache', '--prune', '--clear'])
+    assert 'not allowed with' in capsys.readouterr().err
+
+
+def test_claimed_extensions_follows_config():
+    """The claimed set reflects the config additions and removals."""
+    claimed = cli.claimed_extensions({'extensions': {'add': ['.msh'], 'remove': ['.vtu']}})
+    assert '.msh' in claimed
+    assert '.vtu' not in claimed
+
+
+def test_types_lists_claimed_extensions(capsys, monkeypatch):
+    """`pvql types` prints one line per claimed extension, and marks macOS's own apart."""
+    monkeypatch.setattr(cli.config_mod, 'load', lambda: dict(config.DEFAULTS))
+    assert cli.cmd_types(argparse.Namespace(all=False)) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert any(line.startswith('✓ .vtu ') for line in lines)
+    [stl] = [line for line in lines if ' .stl ' in f' {line}']
+    assert stl.startswith('→ .stl ')
+    assert 'not previewed' in stl
+    assert any('extensions claimed' in line for line in lines)
+
+
+def test_types_lists_an_added_extension_it_does_not_know(capsys, monkeypatch):
+    """An extension added through the config is listed even when the table lacks it."""
+    added = {**config.DEFAULTS, 'extensions': {'add': ['.xyz'], 'remove': []}}
+    monkeypatch.setattr(cli.config_mod, 'load', lambda: added)
+    assert cli.cmd_types(argparse.Namespace(all=False)) == 0
+    assert '.xyz' in capsys.readouterr().out
+
+
+def test_plist_writes_every_file(tmp_path, monkeypatch):
+    """`pvql plist` writes the app's and both extensions' property lists."""
+    monkeypatch.setattr(cli.config_mod, 'load', lambda: dict(config.DEFAULTS))
+    app = tmp_path / 'App.plist'
+    ext = tmp_path / 'Ext.plist'
+    thumb = tmp_path / 'Thumb.plist'
+    holder = tmp_path / 'Holder.plist'
+    args = argparse.Namespace(
+        app=str(app),
+        extension=str(ext),
+        thumbnail=str(thumb),
+        holder=str(holder),
+        helper='/bin/pvql',
+    )
+    assert cli.cmd_plist(args) == 0
+    held = plistlib.loads(holder.read_bytes())
+    assert held['CFBundleIdentifier'] == plist.HOLDER_BUNDLE_ID
+    assert held['LSBackgroundOnly'] is True
+    assert plistlib.loads(app.read_bytes())['PVQLHelperPath'] == '/bin/pvql'
+    assert plistlib.loads(ext.read_bytes())['CFBundlePackageType'] == 'XPC!'
+    assert plistlib.loads(thumb.read_bytes())['CFBundleIdentifier'] == plist.THUMB_BUNDLE_ID
+
+
+def test_preview_reports_failures_on_stderr(capsys, monkeypatch):
+    """A render failure exits non-zero and explains itself."""
+
+    def fail(path, config):
+        message = 'nope'
+        raise RenderError(message)
+
+    monkeypatch.setattr(cli.config_mod, 'load', lambda: dict(config.DEFAULTS))
+    monkeypatch.setattr(cli.daemon_mod, 'produce', fail)
+    args = argparse.Namespace(path='mesh.vtu', output=None, no_cache=True)
+    assert cli.cmd_preview(args) == 1
+    assert 'nope' in capsys.readouterr().err
+
+
+def test_preview_prints_the_cached_path(capsys, monkeypatch, tmp_path):
+    """A successful build prints where the scene landed."""
+    ply = tmp_path / 'out.ply'
+    ply.write_bytes(b'x')
+    monkeypatch.setattr(cli.config_mod, 'load', lambda: dict(config.DEFAULTS))
+    monkeypatch.setattr(cli.daemon_mod, 'produce', lambda path, config: ply)
+    args = argparse.Namespace(path='mesh.vtu', output=None, no_cache=False)
+    assert cli.cmd_preview(args) == 0
+    assert str(ply) in capsys.readouterr().out
+
+
+def test_prebuild_builds_every_claimed_file_in_a_directory(capsys, monkeypatch, tmp_path):
+    """`pvql prebuild DIR` builds the claimed files it finds and reports the failures."""
+    (tmp_path / 'good.vtu').write_text('x')
+    (tmp_path / 'bad.vtp').write_text('x')
+    (tmp_path / 'notes.txt').write_text('x')
+    built = []
+
+    def produce(target, config):
+        if target.suffix == '.vtp':
+            message = 'unreadable'
+            raise RenderError(message)
+        built.append(target.name)
+        return target
+
+    monkeypatch.setattr(cli.config_mod, 'load', lambda: dict(config.DEFAULTS))
+    monkeypatch.setattr(cli.daemon_mod, 'produce', produce)
+    assert cli.cmd_prebuild(argparse.Namespace(paths=[str(tmp_path)])) == 1
+    assert built == ['good.vtu']
+    captured = capsys.readouterr()
+    assert '1 of 2 cached' in captured.out
+    assert 'bad.vtp: unreadable' in captured.err
+
+
+def test_cache_reports_its_size(capsys, monkeypatch, tmp_path):
+    """`pvql cache` counts previews, not the descriptions kept beside them."""
+    (tmp_path / 'a.png').write_bytes(b'0123456789')
+    (tmp_path / 'v-a.json').write_bytes(b'{}')
+    monkeypatch.setattr(cli.config_mod, 'CACHE_DIR', tmp_path)
+    assert cli.cmd_cache(argparse.Namespace(clear=False, prune=False)) == 0
+    assert '1 previews' in capsys.readouterr().out
+
+
+def test_cache_clear_removes_previews_but_not_the_stamp(capsys, monkeypatch, tmp_path):
+    """`pvql cache --clear` deletes the previews and leaves the preload stamp."""
+    (tmp_path / 'a.png').write_bytes(b'x')
+    (tmp_path / 'b.ply').write_bytes(b'x')
+    (tmp_path / 'b.json').write_bytes(b'{}')
+    (tmp_path / '.preloaded').touch()
+    monkeypatch.setattr(cli.config_mod, 'CACHE_DIR', tmp_path)
+    assert cli.cmd_cache(argparse.Namespace(clear=True, prune=False)) == 0
+    assert 'removed 2 cached previews' in capsys.readouterr().out
+    assert [p.name for p in tmp_path.iterdir()] == ['.preloaded']
+
+
+def test_cache_prune_reports_what_went(capsys, monkeypatch, tmp_path):
+    """`pvql cache --prune` drops stale previews now and reports the count."""
+    monkeypatch.setattr(cli.config_mod, 'CACHE_DIR', tmp_path)
+    monkeypatch.setattr(cli.cache_mod, 'prune', lambda config: 3)
+    assert cli.cmd_cache(argparse.Namespace(clear=False, prune=True)) == 0
+    assert 'removed 3 cached previews and descriptions' in capsys.readouterr().out
+
+
+def test_cache_prune_also_discards_scenes_of_other_versions(capsys, monkeypatch, tmp_path):
+    """`pvql cache --prune` takes an older exporter's scenes along with the stale previews."""
+    monkeypatch.setattr(cli.config_mod, 'CACHE_DIR', tmp_path)
+    monkeypatch.setattr(cli.cache_mod, 'prune', lambda config: 1)
+    (tmp_path / 'old-1.ply').write_bytes(b'x')
+    (tmp_path / 'old-1.json').write_bytes(b'{}')
+    assert cli.cmd_cache(argparse.Namespace(clear=False, prune=True)) == 0
+    assert 'removed 3 cached previews and descriptions' in capsys.readouterr().out
+    assert not list(tmp_path.iterdir())
+
+
+def test_cache_size_survives_a_file_that_vanishes(capsys, monkeypatch, tmp_path):
+    """`pvql cache` adds up what is there, even as the service prunes beside it."""
+    monkeypatch.setattr(cli.config_mod, 'CACHE_DIR', tmp_path)
+    (tmp_path / 'a.png').write_bytes(b'0123456789')
+    monkeypatch.setattr(
+        cli.cache_mod, 'files', lambda *patterns: [tmp_path / 'a.png', tmp_path / 'gone.png']
+    )
+    assert cli.cmd_cache(argparse.Namespace(clear=False, prune=False)) == 0
+    assert '0.0 MB' in capsys.readouterr().out
+
+
+def test_config_init_with_an_interpreter_clears_a_stale_cli(tmp_path, monkeypatch):
+    """An environment named by interpreter does not keep an unrelated CLI on record."""
+    path = tmp_path / 'config.json'
+    monkeypatch.setattr(config, 'CONFIG_PATH', path)
+    monkeypatch.setattr(config, 'APP_SUPPORT', tmp_path)
+    path.write_text(json.dumps({'pyvista': '/old/bin/pyvista'}))
+    args = argparse.Namespace(
+        init=True, python='/new/bin/python', pyvista=None, helper='/bin/pvql'
+    )
+    cli.cmd_config(args)
+    stored = json.loads(path.read_text())
+    assert stored['python'] == '/new/bin/python'
+    assert 'pyvista' not in stored
+
+
+def test_doctor_gives_the_service_as_long_as_the_extension_would(capsys, doctor, tmp_path):
+    """The smoke render waits as long as a reply may take, so a cold service still passes."""
+    rendered = tmp_path / 'smoke.ply'
+    waited = []
+
+    def preview(sample, timeout):
+        waited.append(timeout)
+        rendered.write_bytes(b'x')
+        return rendered
+
+    doctor(healthy=True, preview=preview)
+    assert cli.cmd_doctor(argparse.Namespace()) == 0
+    assert waited == [daemon.reply_seconds(dict(config.DEFAULTS))]
+
+
+@pytest.mark.parametrize('helper', ['', None])
+def test_plist_leaves_the_helper_out_when_asked(tmp_path, monkeypatch, helper):
+    """An empty --helper names no helper; none at all names the pvql on PATH, if any."""
+    monkeypatch.setattr(cli.config_mod, 'load', lambda: dict(config.DEFAULTS))
+    monkeypatch.setattr(cli.shutil, 'which', lambda name: '/found/pvql')
+    app = tmp_path / 'App.plist'
+    args = argparse.Namespace(
+        app=str(app), extension=None, thumbnail=None, holder=None, helper=helper
+    )
+    assert cli.cmd_plist(args) == 0
+    stored = plistlib.loads(app.read_bytes())
+    if helper is None:
+        assert stored['PVQLHelperPath'] == '/found/pvql'
+    else:
+        assert 'PVQLHelperPath' not in stored

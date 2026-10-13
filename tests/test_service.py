@@ -1,10 +1,12 @@
-"""End-to-end tests that run the exporter and warm-up under a real PyVista interpreter."""
+"""End-to-end tests that run the exporter and preload under a real PyVista interpreter."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 import sys
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -15,8 +17,8 @@ from pyvista_quicklook import config
 from pyvista_quicklook import convert
 from pyvista_quicklook import daemon
 from pyvista_quicklook import environment
+from pyvista_quicklook import preload
 from pyvista_quicklook import render
-from pyvista_quicklook import warmup
 
 
 @pytest.fixture
@@ -49,6 +51,7 @@ def test_scene_is_built_by_the_exporter_and_cached(tmp_path, env, monkeypatch):
     assert convert.scene(source, env) == out
 
 
+@pytest.mark.network
 def test_a_folder_of_slices_is_converted(tmp_path, env):
     """A DICOM series arrives as a folder, and the whole folder is what gets read."""
     out = convert.scene(pv.examples.download_dicom_stack(load=False), env)
@@ -114,11 +117,11 @@ def test_a_missing_file_or_environment_is_not_remembered(tmp_path, env):
     assert not list(config.CACHE_DIR.glob('*.json'))
 
 
-def test_warm_runs_the_warmer_and_leaves_a_stamp(env):
-    """Warming loads PyVista in the configured interpreter and records when it finished."""
-    assert not warmup.warmed_recently()
-    assert warmup.warm(env) > 0
-    assert warmup.warmed_recently()
+def test_preload_runs_the_script_and_leaves_a_stamp(env):
+    """Preloading loads PyVista in the configured interpreter and records when it finished."""
+    assert not preload.preloaded_recently()
+    assert preload.run(env) > 0
+    assert preload.preloaded_recently()
 
 
 @pytest.mark.skipif(sys.platform != 'darwin', reason='rendering needs a display server on Linux')
@@ -161,15 +164,16 @@ def test_a_saved_theme_colours_the_scene(tmp_path, env):
     assert (pv.read(convert.scene(source, settings))['RGB'] == (255, 0, 0)).all()
 
 
-@pytest.mark.parametrize('name', ['dark', 'paraview'])
-def test_a_named_theme_reaches_pyvista_plot(tmp_path, env, name):
-    """``pyvista plot`` draws with the theme it is given by name."""
+@pytest.mark.skipif(sys.platform != 'darwin', reason='rendering needs a display server on Linux')
+def test_a_named_theme_reaches_pyvista_plot(tmp_path, env):
+    """``pyvista plot`` draws with the theme it is given by name, so the dark one looks dark."""
     source = tmp_path / 'sphere.vtp'
     pv.Sphere().save(source)
-    png = render.preview(
-        source, {**env, 'window_size': [32, 32], 'background': 'white', 'theme': name}
-    )
-    assert pixels(png).shape[:2] == (32, 32)
+    plain = pixels(render.preview(source, {**env, 'window_size': [32, 32]}))
+    dark = pixels(render.preview(source, {**env, 'window_size': [32, 32], 'theme': 'dark'}))
+    assert plain.shape == dark.shape == (32, 32, 3)
+    assert plain[0, 0, :3].mean() > dark[0, 0, :3].mean()
+    assert not np.array_equal(plain, dark)
 
 
 def test_header_is_read_by_the_exporter_without_the_values(tmp_path, env):
@@ -249,3 +253,43 @@ def test_a_file_without_a_mesh_is_told_apart_from_a_failure(tmp_path, env):
     with pytest.raises(environment.RenderError) as raised:
         environment.run(env, [sys.executable, '-c', 'raise SystemExit(1)'], task='Failing')
     assert not isinstance(raised.value, environment.NotAMeshError)
+
+
+class StopLoopError(Exception):
+    """Raised to end the service loop in a test."""
+
+
+def test_the_service_answers_a_request_end_to_end(tmp_path, env, monkeypatch):
+    """A running service picks up a request, builds the scene, and the caller gets it back."""
+    drop = tmp_path / 'container'
+    monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
+    monkeypatch.setattr(daemon, 'prune_in_background', lambda: None)
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: {**env, 'preload_on_start': False})
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    sleep, stop, outcome = time.sleep, threading.Event(), []
+
+    def sleep_until_stopped(seconds):
+        if stop.is_set() and threading.current_thread() is server:
+            raise StopLoopError
+        sleep(seconds)
+
+    def serve():
+        try:
+            daemon.serve(poll=0.01)
+        except StopLoopError:
+            outcome.append('stopped')
+
+    monkeypatch.setattr(daemon.time, 'sleep', sleep_until_stopped)
+    server = threading.Thread(target=serve, daemon=True)
+    server.start()
+    try:
+        scene = daemon.request_preview(str(source), timeout=120)
+    finally:
+        stop.set()
+        server.join(10)
+    assert outcome == ['stopped']
+    assert scene.parent == drop
+    assert pv.read(scene).n_faces > 0
+    assert not list(drop.glob(f'*{daemon.REQUEST_SUFFIX}'))
+    assert not list(drop.glob(f'*{daemon.TAKEN_SUFFIX}'))

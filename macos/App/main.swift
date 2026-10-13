@@ -49,7 +49,10 @@ final class StatusController: NSObject, NSApplicationDelegate {
                     return
                 }
                 // Declined, as a file that is not a mesh is; show its details instead.
-                DispatchQueue.main.async { controller.show(detailsView(url)) }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let facts = fileFacts(url)
+                    DispatchQueue.main.async { controller.show(detailsView(url, facts: facts)) }
+                }
             }
             pvqlLog("opened \(url.lastPathComponent) in a window")
         }
@@ -59,12 +62,28 @@ final class StatusController: NSObject, NSApplicationDelegate {
     /// Installs a minimal main menu so the standard shortcuts work.
     func buildMenu() {
         let mainMenu = NSMenu()
-        let appItem = NSMenuItem()
-        let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "Quit PyVista Quick Look", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        appItem.submenu = appMenu
-        mainMenu.addItem(appItem)
+        addMenu(to: mainMenu, titled: "PyVista Quick Look", items: [
+            ("Quit PyVista Quick Look", #selector(NSApplication.terminate(_:)), "q"),
+        ])
+        addMenu(to: mainMenu, titled: "File", items: [
+            ("Close Window", #selector(NSWindow.performClose(_:)), "w"),
+        ])
+        addMenu(to: mainMenu, titled: "Edit", items: [
+            ("Copy", #selector(NSText.copy(_:)), "c"),
+            ("Select All", #selector(NSText.selectAll(_:)), "a"),
+        ])
         NSApp.mainMenu = mainMenu
+    }
+
+    /// Adds a titled submenu whose items send their actions to the first responder.
+    func addMenu(to mainMenu: NSMenu, titled title: String, items: [(String, Selector, String)]) {
+        let menu = NSMenu(title: title)
+        for (name, action, key) in items {
+            menu.addItem(withTitle: name, action: action, keyEquivalent: key)
+        }
+        let item = NSMenuItem()
+        item.submenu = menu
+        mainMenu.addItem(item)
     }
 
     /// Lays out the diagnostics window.
@@ -135,10 +154,27 @@ final class StatusController: NSObject, NSApplicationDelegate {
     @objc func openConfig() {
         let path = URL(fileURLWithPath: realHome())
             .appendingPathComponent("Library/Application Support/PyVistaQuickLook/config.json")
-        if !FileManager.default.fileExists(atPath: path.path) {
-            _ = try? Helper.run(["config", "--init"])
+        guard !FileManager.default.fileExists(atPath: path.path) else {
+            NSWorkspace.shared.open(path)
+            return
         }
-        NSWorkspace.shared.open(path)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let trouble: String?
+            do {
+                let result = try Helper.run(["config", "--init"])
+                let said = [result.output, result.errors].filter { !$0.isEmpty }.joined(separator: "\n")
+                trouble = result.status == 0 ? nil : "pvql config --init exited \(result.status)\n\(said)"
+            } catch {
+                trouble = (error as? Helper.Failure)?.message ?? error.localizedDescription
+            }
+            DispatchQueue.main.async {
+                guard let trouble else {
+                    NSWorkspace.shared.open(path)
+                    return
+                }
+                self.textView.string = "Could not create \(path.path)\n\n\(trouble)"
+            }
+        }
     }
 
     /// Asks, then removes the app, the render service, the PyVista environment, and `pvql`.

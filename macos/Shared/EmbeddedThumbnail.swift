@@ -80,13 +80,15 @@ enum EmbeddedThumbnail {
             return false
         }
         let frames = tail.withUnsafeBytes { UInt64(littleEndian: $0.loadUnaligned(as: UInt64.self)) }
-        guard frames < size / 16, size - 8 >= 16 * frames + 32 else {
+        // The checksum covers the entries after the first two frames, so fewer leave nothing to check.
+        guard frames < size / 16, 16 * frames > 32, size - 8 >= 16 * frames else {
             return false
         }
         let start = size - 8 - 16 * frames + 32
+        let count = Int(size - 8 - start)
         guard (try? handle.seek(toOffset: start)) != nil,
-              let entries = try? handle.read(upToCount: Int(size - 8 - start)),
-              entries.count == Int(size - 8 - start)
+              let entries = try? handle.read(upToCount: count),
+              entries.count == count
         else {
             return false
         }

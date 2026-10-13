@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import functools
 import json
 import math
@@ -21,8 +22,8 @@ from . import cache
 from . import config as config_mod
 from . import convert as convert_mod
 from . import environment
+from . import preload as preload_mod
 from . import render as render_mod
-from . import warmup as warmup_mod
 from .environment import RenderError
 from .plist import APP_BUNDLE_ID
 from .plist import LEGACY_EXT_BUNDLE_ID
@@ -85,7 +86,7 @@ def reply_seconds(config: dict[str, Any]) -> float:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     """Write JSON to a path, renaming it into place so readers never see a partial file."""
-    scratch = path.with_suffix(f'.{cache.scratch_tag()}.tmp')
+    scratch = cache.scratch_path(path)
     scratch.write_text(json.dumps(payload))
     scratch.replace(path)
 
@@ -102,19 +103,22 @@ def folder_is_reachable(path: str) -> bool:
     if remembered and now - remembered[0] < FOLDER_MEMO_SECONDS:
         return remembered[1]
     answer = readable(path)
+    if answer is None:
+        # The file's own trouble, a missing or unreadable one, says nothing about its folder.
+        return True
     _reachable_folders[folder] = (now, answer)
     return answer
 
 
-def readable(path: str, seconds: float = 2.0) -> bool:
-    """Return whether a file can be opened before the guard expires.
+def readable(path: str, seconds: float = 2.0) -> bool | None:
+    """Return whether a file's folder lets it be read, or None when the file itself is the trouble.
 
     Reading a file in a folder macOS protects can block rather than fail, so the
     attempt is abandoned once the guard expires, leaving the blocked read to a thread
     of its own. A folder counts as readable when it can be listed, since a DICOM
     series is previewed as a whole.
     """
-    answer: list[bool] = []
+    answer: list[bool | None] = []
 
     def attempt() -> None:
         try:
@@ -124,15 +128,16 @@ def readable(path: str, seconds: float = 2.0) -> bool:
             else:
                 with open(path, 'rb') as handle:
                     handle.read(1)
-        except OSError:
-            answer.append(False)
+        except OSError as error:
+            # TCC refuses a protected folder with EPERM; anything else is the file's own.
+            answer.append(False if error.errno == errno.EPERM else None)
         else:
             answer.append(True)
 
     probe = threading.Thread(target=attempt, daemon=True)
     probe.start()
     probe.join(seconds)
-    return bool(answer and answer[0])
+    return answer[0] if answer else False
 
 
 def cached_preview(identity: tuple[str, int, int] | None, config: dict[str, Any]) -> Path | None:
@@ -143,14 +148,41 @@ def cached_preview(identity: tuple[str, int, int] | None, config: dict[str, Any]
         preview = convert_mod.scene_path(identity, config)
     else:
         preview = render_mod.preview_path(identity, config)
-    return preview if preview.is_file() else None
+    if not cache.holds(preview):
+        return None
+    environment.log(config, f'hit  {identity[0]}')
+    return preview
+
+
+_headers: dict[tuple[str, int, int], dict[str, Any] | None] = {}
+_headers_guard = threading.Lock()
+
+
+def header_once(
+    target: str, config: dict[str, Any], identity: tuple[str, int, int]
+) -> dict[str, Any] | None:
+    """Return what a file's header says, read once for the requests that follow."""
+    with _headers_guard:
+        if identity in _headers:
+            return _headers[identity]
+    info = convert_mod.header(target, config)
+    with _headers_guard:
+        if len(_headers) >= 32:
+            _headers.clear()
+        _headers[identity] = info
+    return info
 
 
 def send_early(
-    request: Path, target: str, config: dict[str, Any], done: threading.Event, lock: threading.Lock
+    request: Path,
+    target: str,
+    config: dict[str, Any],
+    identity: tuple[str, int, int],
+    done: threading.Event,
+    lock: threading.Lock,
 ) -> None:
     """Send what the header says, unless the preview itself has already been sent."""
-    info = convert_mod.header(target, config)
+    info = header_once(target, config, identity)
     with lock:
         if info and not done.is_set():
             write_json(request.with_suffix(EARLY_SUFFIX), {'ok': True, 'info': info})
@@ -330,7 +362,7 @@ _staged_guard = threading.Lock()
 @contextlib.contextmanager
 def staged_in_use(copy: str | None) -> Iterator[None]:
     """Keep the folder of a staged copy from the sweep while its request is handled."""
-    folder = Path(copy).parent if copy else None
+    folder = Path(copy).parent.resolve() if copy else None
     if folder is not None:
         with _staged_guard:
             _staged.add(folder)
@@ -348,8 +380,11 @@ def handle(request: Path) -> None:
     try:
         asked = request.stat().st_mtime
         payload = json.loads(request.read_text())
-        source = payload['path']
-    except (OSError, ValueError, KeyError) as error:
+        source = payload.get('path') if isinstance(payload, dict) else None
+        if not isinstance(source, str):
+            message = 'the request must be an object naming a path'
+            raise TypeError(message)
+    except (OSError, ValueError, KeyError, TypeError) as error:
         request.unlink(missing_ok=True)
         write_json(reply, {'ok': False, 'error': f'Malformed preview request: {error}'})
         return
@@ -362,11 +397,10 @@ def description_only(
     source: str, config: dict[str, Any], identity: tuple[str, int, int] | None
 ) -> dict[str, Any] | None:
     """Return a file's cached description, or what its header says, converting nothing."""
-    if not folder_is_reachable(source):
-        return None
-    return convert_mod.describe(source, config, identity, read=False) or convert_mod.header(
-        source, config
-    )
+    described = convert_mod.describe(source, config, identity, read=False)
+    if described is not None or not folder_is_reachable(source):
+        return described
+    return convert_mod.header(source, config)
 
 
 def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -> None:
@@ -374,7 +408,7 @@ def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -
     reply = request.with_suffix(REPLY_SUFFIX)
     identity = None
     if payload.get('mtime') is not None and payload.get('size') is not None:
-        identity = (source, int(payload['mtime']), int(payload['size']))
+        identity = (source, int(float(payload['mtime'])), int(float(payload['size'])))
 
     config = config_mod.load()
     if payload.get('describe') is True:
@@ -415,7 +449,9 @@ def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -
     done, lock = threading.Event(), threading.Lock()
     large = identity is not None and identity[2] >= EARLY_BYTES
     if large and convert_mod.wants_info(config) and ready is None:
-        early = threading.Thread(target=send_early, args=(request, target, config, done, lock))
+        early = threading.Thread(
+            target=send_early, args=(request, target, config, identity, done, lock)
+        )
         early.start()
 
     def answer_with(message: dict[str, Any]) -> None:
@@ -435,10 +471,12 @@ def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -
                 target = payload.get('copy') or ''
                 if not target:
                     raise NeedsCopyError
-            # A cached preview is only copied, so it never waits for memory.
-            budget = CONVERTING.reserve(conversion_memory(target, identity), memory_budget(config))
-            with contextlib.nullcontext() if ready is not None else budget:
-                built = ready or produce(target, config, identity)
+            if ready is not None:
+                # A cached preview is only copied: no memory, and no look at the file.
+                return ready, convert_mod.describe(target, config, identity, read=False)
+            needed = conversion_memory(target, identity)
+            with CONVERTING.reserve(needed, memory_budget(config)):
+                built = produce(target, config, identity)
                 # A scene is described as it is built; a still image in a read of its own.
                 info = convert_mod.describe(target, config, identity, read=False)
                 if info is None and target != source:
@@ -499,7 +537,7 @@ def sweep(directory: Path) -> None:
         in_use = set(_staged)
     for entry in stale:
         try:
-            if entry.stat().st_mtime >= cutoff or entry in in_use:
+            if entry.stat().st_mtime >= cutoff or entry.resolve() in in_use:
                 continue
             if entry.is_dir():
                 shutil.rmtree(entry, ignore_errors=True)
@@ -509,15 +547,18 @@ def sweep(directory: Path) -> None:
             pass
 
 
-def warm_in_background(config: dict[str, Any]) -> threading.Thread:
+def preload_in_background(config: dict[str, Any]) -> threading.Thread:
     """Load PyVista in a thread, so requests are still answered while it happens."""
 
     def run() -> None:
-        # The installer may have just warmed everything; do not compete with it.
-        if warmup_mod.warmed_recently():
+        # The installer may have just preloaded everything; do not compete with it.
+        if preload_mod.preloaded_recently():
             return
-        with contextlib.suppress(Exception):
-            warmup_mod.warm(config)
+        try:
+            preload_mod.run(config)
+        except Exception as error:  # noqa: BLE001
+            # Requests are still answered; the next one says what is wrong with the setup.
+            environment.log(config, f'preload failed: {error}')
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
@@ -603,13 +644,15 @@ def serve(poll: float = 0.05) -> int:
     cache.discard_other_versions(convert_mod.SCENE_VERSION)
     cache.discard_scratch(STALE_SECONDS)
     startup = config_mod.load()
-    if startup.get('warm_on_start', True):
-        warm_in_background(startup)
+    if startup.get('preload_on_start', True):
+        preload_in_background(startup)
     prune_in_background()
-    last_sweep = time.monotonic()
+    last_sweep = last_mirror = time.monotonic()
     while True:
-        # Settings edited by hand reach the extension before its next preview.
-        config_mod.mirror()
+        # Settings edited by hand reach the extension within a second.
+        if time.monotonic() - last_mirror >= 1:
+            config_mod.mirror()
+            last_mirror = time.monotonic()
         for request in sorted(directory.glob(f'*{REQUEST_SUFFIX}')):
             taken = request.with_suffix(TAKEN_SUFFIX)
             try:

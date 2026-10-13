@@ -48,6 +48,21 @@ def scratch_tag() -> str:
     return f'{os.getpid()}.{threading.get_ident()}'
 
 
+def scratch_path(out: Path, suffix: str | None = None) -> Path:
+    """Return where this thread builds ``out`` before renaming it into place."""
+    return out.with_name(
+        f'{out.stem}.{scratch_tag()}.tmp{out.suffix if suffix is None else suffix}'
+    )
+
+
+def holds(entry: Path) -> bool:
+    """Return whether a cached entry is in place and not empty."""
+    try:
+        return entry.is_file() and entry.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def record_path(entry: Path) -> Path:
     """Return where the record of the file an entry was built from is kept."""
     return entry.with_name(f'{entry.name}{RECORD_SUFFIX}')
@@ -58,7 +73,7 @@ def remember(entry: Path, identity: tuple[str, int, int]) -> None:
     source, mtime, size = identity
     record = record_path(entry)
     # Named like other scratch, so discard_scratch finds it if it is ever left behind.
-    scratch = record.with_name(f'{entry.name}.{scratch_tag()}.tmp{RECORD_SUFFIX}')
+    scratch = scratch_path(record.with_name(entry.name), RECORD_SUFFIX)
     try:
         scratch.write_text(json.dumps({'path': source, 'mtime': mtime, 'size': size}))
         scratch.replace(record)
@@ -79,12 +94,12 @@ def fill(
     complete, so a reader never sees a partial preview. ``identity`` is recorded
     beside it, so pruning can tell when the file it shows has changed or gone.
     """
-    if config.get('cache', True) and out.is_file() and out.stat().st_size:
+    if config.get('cache', True) and holds(out):
         log(config, f'hit  {label}')
         return out
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    scratch = out.with_name(f'{out.stem}.{scratch_tag()}.tmp{out.suffix}')
+    scratch = scratch_path(out)
     log(config, f'miss {label}')
     started = time.monotonic()
     try:
@@ -149,8 +164,8 @@ def outdated(record: Path, may_look: Callable[[Path], bool] | None = None) -> bo
     """Return whether the file a record names has gone or changed since its entry was built.
 
     A file that cannot be looked at, or that ``may_look`` says to leave alone, is given
-    the benefit of the doubt: its entry is kept. The file itself is compared, not what a
-    symbolic link points to, as the extension records it.
+    the benefit of the doubt: its entry is kept. A symbolic link is followed, as the
+    extension's record of its size and date does.
     """
     try:
         recorded = json.loads(record.read_text())
@@ -162,7 +177,7 @@ def outdated(record: Path, may_look: Callable[[Path], bool] | None = None) -> bo
     if (may_look is not None and not may_look(source)) or out_of_reach(source):
         return False
     try:
-        stat = source.lstat()
+        stat = source.stat()
     except FileNotFoundError, NotADirectoryError:
         return True
     except OSError:

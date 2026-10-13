@@ -82,7 +82,7 @@ def describe(
     if not described.is_file():
         if not read:
             return None
-        scratch = described.with_name(f'{described.stem}.{cache.scratch_tag()}.tmp.json')
+        scratch = cache.scratch_path(described)
         try:
             command = [environment.interpreter(config), str(EXPORTER), str(path), '--info']
             described.parent.mkdir(parents=True, exist_ok=True)
@@ -118,7 +118,7 @@ def header(source: str | os.PathLike[str], config: dict[str, Any]) -> dict[str, 
     """Return what a file's header alone says for the info panel, reading none of its values."""
     if not wants_info(config) or Path(source).suffix.lower() not in HEADER_SUFFIXES:
         return None
-    scratch = config_mod.CACHE_DIR / f'header.{cache.scratch_tag()}.tmp.json'
+    scratch = cache.scratch_path(config_mod.CACHE_DIR / 'header.json')
     try:
         scratch.parent.mkdir(parents=True, exist_ok=True)
         command = [
@@ -162,7 +162,7 @@ def scene(
 
     out = scene_path(identity, config)
     # The export describes the file in the same read, kept aside until the scene is in.
-    pending = info_path(identity).with_name(f'{out.stem}.{cache.scratch_tag()}.tmp.json')
+    pending = cache.scratch_path(info_path(identity).with_name(out.name), '.json')
 
     def build(scratch: Path) -> None:
         command = [
