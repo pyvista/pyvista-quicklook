@@ -108,10 +108,7 @@ def test_thumbnail_plist_covers_only_types_that_carry_a_picture():
     """The Finder asks the thumbnail extension only for claimed types that can embed one."""
     thumb = plist.thumbnail_plist(['.pv', '.3mf', '.vtu'])
     attributes = thumb['NSExtension']['NSExtensionAttributes']
-    assert attributes['QLSupportedContentTypes'] == [
-        formats.uti_for('.pv'),
-        formats.uti_for('.3mf'),
-    ]
+    assert attributes['QLSupportedContentTypes'] == [formats.uti_for('.pv')]
     assert thumb['NSExtension']['NSExtensionPointIdentifier'] == 'com.apple.quicklook.thumbnail'
     assert thumb['NSExtension']['NSExtensionPrincipalClass'] == plist.THUMB_PRINCIPAL_CLASS
     assert (

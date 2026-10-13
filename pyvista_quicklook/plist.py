@@ -29,7 +29,7 @@ THUMB_BUNDLE_ID = f'{APP_BUNDLE_ID}.Thumbnail'
 THUMB_EXECUTABLE = 'PyVistaQuickLookThumbnail'
 THUMB_PRINCIPAL_CLASS = 'PVQLThumbnailProvider'
 # Only these formats can carry a picture of themselves.
-THUMBNAIL_EXTENSIONS = ('.pv', '.3mf')
+THUMBNAIL_EXTENSIONS = ('.pv',)
 
 
 def bundle_version(version: str = __version__) -> str:

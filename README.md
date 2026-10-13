@@ -257,12 +257,13 @@ ordinary folder shows its own details immediately, as the Finder would.
 
 ### Pictures first
 
-Pressing space shows a picture of the dataset, its details, and an **Interactive View**
-button that loads the surface to turn and zoom. A `.pv` or `.3mf` file that carries a
-picture of itself shows that one at once, without reading the data; any other file is
-rendered by `pyvista plot --off-screen --screenshot`, which keeps the scalar bar and axes
-the interactive view leaves out. After `pvql config set interactive true`, every preview
-starts as the interactive view instead. Opening a file with the app always shows it in 3D.
+Pressing space shows a picture of the dataset beside its details, with **Static** and
+**Interactive** tabs to switch between the picture and a surface to turn and zoom. Both
+open on the same view. A `.pv` file that carries a picture of itself shows that one at once,
+without reading the data; any other file is drawn by the render service, on a transparent
+background, as pyvista-zstd draws its pictures. After `pvql config set interactive true`,
+every preview starts on the Interactive tab instead. Opening a file with the app always
+shows it in 3D.
 
 ### The render service
 
