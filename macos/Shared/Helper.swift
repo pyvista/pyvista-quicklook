@@ -321,9 +321,8 @@ enum Helper {
         if let copy {
             body["copy"] = copy
         }
-        if scene {
-            body["scene"] = true
-        }
+        // Sent either way, so the Static tab gets a picture whatever previews start as.
+        body["scene"] = scene
         if describe {
             body["describe"] = true
         }

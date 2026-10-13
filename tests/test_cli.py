@@ -351,38 +351,50 @@ def doctor(home, monkeypatch):
 
 
 def test_doctor_passes_a_healthy_installation(capsys, doctor, tmp_path):
-    """Every check passes, the smoke render included, and the result is cleaned up."""
-    rendered = tmp_path / 'smoke.ply'
+    """Every check passes, both smoke renders included, and the results are cleaned up."""
+    rendered = []
 
-    def preview(sample, timeout):
+    def preview(sample, timeout, scene):
         assert 'POLYGONS' in sample.read_text()
-        rendered.write_bytes(b'x' * 2048)
-        return rendered
+        out = tmp_path / ('smoke.ply' if scene else 'smoke.png')
+        out.write_bytes(b'x' * (2048 if scene else 1024))
+        rendered.append(out)
+        return out
 
     doctor(healthy=True, preview=preview)
     assert cli.cmd_doctor(argparse.Namespace()) == 0
     out = capsys.readouterr().out
     assert f'pyvista    {sys.executable}' in out
+    assert 'rendered image, 1 KB' in out
     assert 'interactive scene, 2 KB' in out
     assert 'all checks passed' in out
-    assert not rendered.exists()
+    assert len(rendered) == 2
+    assert not any(path.exists() for path in rendered)
 
 
 def test_doctor_notes_a_pyvista_command_that_does_not_run(capsys, doctor, tmp_path):
-    """A pyvista command that fails to run only rules out still images."""
+    """A pyvista command that fails to run only rules out stills drawn on a background."""
     rendered = tmp_path / 'smoke.ply'
-    rendered.write_bytes(b'x')
-    doctor(healthy=True, preview=lambda sample, timeout: rendered, pyvista_runs=False)
+
+    def preview(sample, timeout, scene):
+        rendered.write_bytes(b'x')
+        return rendered
+
+    doctor(healthy=True, preview=preview, pyvista_runs=False)
     assert cli.cmd_doctor(argparse.Namespace()) == 0
-    assert 'still images unavailable' in capsys.readouterr().out
+    assert 'background and extra_args unavailable' in capsys.readouterr().out
 
 
-def test_doctor_reports_a_failed_render(capsys, doctor):
+def test_doctor_reports_a_failed_render(capsys, doctor, tmp_path):
     """A render that fails through the service is a problem, with the reason shown."""
 
-    def preview(sample, timeout):
-        message = 'service did not answer'
-        raise RenderError(message)
+    def preview(sample, timeout, scene):
+        if scene:
+            message = 'service did not answer'
+            raise RenderError(message)
+        out = tmp_path / 'smoke.png'
+        out.write_bytes(b'x')
+        return out
 
     doctor(healthy=True, preview=preview)
     assert cli.cmd_doctor(argparse.Namespace()) == 1
@@ -397,7 +409,7 @@ def test_doctor_counts_every_missing_piece(capsys, doctor):
     assert cli.cmd_doctor(argparse.Namespace()) == 1
     out = capsys.readouterr().out
     assert '(using defaults)' in out
-    assert 'still images unavailable' in out
+    assert 'background and extra_args unavailable' in out
     assert 'thumbnails not registered' in out
     assert '5 problem(s) found' in out
 
@@ -506,8 +518,12 @@ def test_finder_command_says_whether_to_restart(capsys, monkeypatch, stale, said
 def test_doctor_reports_a_stale_finder(capsys, doctor, monkeypatch, tmp_path):
     """A Finder that still asks for the old extension is a problem, with the remedy."""
     rendered = tmp_path / 'smoke.ply'
-    rendered.write_bytes(b'x')
-    doctor(healthy=True, preview=lambda sample, timeout: rendered)
+
+    def preview(sample, timeout, scene):
+        rendered.write_bytes(b'x')
+        return rendered
+
+    doctor(healthy=True, preview=preview)
     monkeypatch.setattr(cli, 'finder_is_stale', lambda: True)
     assert cli.cmd_doctor(argparse.Namespace()) == 1
     out = capsys.readouterr().out

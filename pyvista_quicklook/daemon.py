@@ -364,9 +364,9 @@ def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -
     if payload.get('describe') is True:
         write_json(reply, {'ok': True, 'info': description_only(source, config, identity)})
         return
-    if payload.get('scene') is True:
-        # The reader asked for the 3D view, whatever previews start as.
-        config = {**config, 'interactive': True}
+    if 'scene' in payload:
+        # The reader chose the 3D view or the picture, whatever previews start as.
+        config = {**config, 'interactive': payload['scene'] is True}
     ready = cached_preview(identity, config)
     if payload.get('force') is True or ready is not None:
         # Asked for whatever its size, or previewed already, so no step of it applies the limit.
@@ -510,8 +510,8 @@ def serve(poll: float = 0.05) -> int:
         time.sleep(poll)
 
 
-def request_preview(source: str, timeout: float = 90) -> Path:
-    """Ask the daemon for a preview, for testing the service from the command line."""
+def request_preview(source: str, timeout: float = 90, scene: bool | None = None) -> Path:
+    """Ask the daemon for a preview, the picture or the 3D view when ``scene`` says which."""
     directory = drop_dir()
     directory.mkdir(parents=True, exist_ok=True)
     token = uuid.uuid4().hex
@@ -524,6 +524,7 @@ def request_preview(source: str, timeout: float = 90) -> Path:
             'path': str(resolved),
             'mtime': int(stat.st_mtime),
             'size': stat.st_size,
+            **({} if scene is None else {'scene': scene}),
         },
     )
 

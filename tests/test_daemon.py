@@ -147,11 +147,19 @@ def test_a_description_alone_converts_nothing(tmp_path, monkeypatch, cached, rea
     assert all(read is False for read in reads)
 
 
-@pytest.mark.parametrize(('payload', 'interactive'), [({}, False), ({'scene': True}, True)])
+@pytest.mark.parametrize(
+    ('settings', 'payload', 'interactive'),
+    [
+        ({}, {}, False),
+        ({}, {'scene': True}, True),
+        ({'interactive': True}, {}, True),
+        ({'interactive': True}, {'scene': False}, False),
+    ],
+)
 def test_previews_are_pictures_unless_a_scene_is_asked_for(
-    tmp_path, monkeypatch, payload, interactive
+    tmp_path, monkeypatch, settings, payload, interactive
 ):
-    """A preview starts as a still image, and a request for the 3D view gets a scene."""
+    """A preview follows the settings, unless the request asks for the picture or the 3D view."""
     asked = []
 
     def produce(target, config, identity):
@@ -159,7 +167,7 @@ def test_previews_are_pictures_unless_a_scene_is_asked_for(
         message = 'stop'
         raise RenderError(message)
 
-    monkeypatch.setattr(daemon.config_mod, 'load', dict)
+    monkeypatch.setattr(daemon.config_mod, 'load', lambda: dict(settings))
     monkeypatch.setattr(daemon, 'folder_is_reachable', lambda path: True)
     monkeypatch.setattr(daemon, 'produce', produce)
     request = tmp_path / 'token.pvqlreq'
@@ -356,7 +364,19 @@ def test_request_preview_returns_the_delivered_scene(tmp_path, drop):
     assert seen[0]['path'] == str(source.resolve())
     assert seen[0]['size'] == 1
     assert seen[0]['mtime'] == int(source.stat().st_mtime)
+    assert 'scene' not in seen[0]
     assert not list(drop.iterdir())
+
+
+def test_request_preview_can_ask_for_the_picture(tmp_path, drop):
+    """A request for the picture says so, whatever previews start as."""
+    source = tmp_path / 'mesh.vtu'
+    source.write_text('x')
+    seen = []
+    thread = answer(drop, {'ok': True, 'png': '/out/still.png'}, seen)
+    assert daemon.request_preview(str(source), timeout=10, scene=False) == Path('/out/still.png')
+    thread.join()
+    assert seen[0]['scene'] is False
 
 
 def test_request_preview_raises_the_reported_error(tmp_path, drop):
