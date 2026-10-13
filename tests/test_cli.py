@@ -61,13 +61,24 @@ def test_preview_bypasses_the_cache_and_copies_the_output(capsys, monkeypatch, t
     assert capsys.readouterr().out.strip() == str(copy)
 
 
-def test_service_uninstall_removes_both_agents(capsys, commands, home):
-    """Uninstalling stops the service and deletes its agent, old label included."""
+def installed_holder(home):
+    """Install a stand-in app whose nested app answers like the real registrar."""
+    app = home / 'Applications' / plist.APP_BUNDLE
+    program = plist.service_registrar(app)
+    program.parent.mkdir(parents=True)
+    program.write_text('')
+    return app, program
+
+
+def test_service_uninstall_unregisters_and_removes_old_agents(capsys, commands, home):
+    """Uninstalling unregisters the bundled agent and deletes those earlier installs wrote."""
+    _, program = installed_holder(home)
     (home / 'agent.plist').write_text('x')
     (home / 'old-agent.plist').write_text('x')
     cli.daemon_mod.legacy_drop_dir().mkdir(parents=True)
-    args = argparse.Namespace(install=False, uninstall=True, helper=None)
+    args = argparse.Namespace(install=False, uninstall=True, app=None)
     assert cli.cmd_service(args) == 0
+    assert [str(program), 'unregister'] in commands
     assert not (home / 'agent.plist').exists()
     assert not (home / 'old-agent.plist').exists()
     assert not cli.daemon_mod.legacy_drop_dir().exists()
@@ -75,37 +86,54 @@ def test_service_uninstall_removes_both_agents(capsys, commands, home):
     assert 'removed' in capsys.readouterr().out
 
 
-def test_service_install_falls_back_to_the_given_helper(commands, home):
-    """Without a pyvista-quicklook beside it, the agent runs the helper it was given."""
-    helper = home / 'bin' / 'pvql'
-    args = argparse.Namespace(install=True, uninstall=False, helper=str(helper))
+def test_service_install_registers_the_agent_the_app_carries(commands, home):
+    """Installing retires the old agent file, then has the nested app register its own."""
+    app, program = installed_holder(home)
+    (home / 'agent.plist').write_text('x')
+    args = argparse.Namespace(install=True, uninstall=False, app=str(app))
     assert cli.cmd_service(args) == 0
-    agent = plistlib.loads((home / 'agent.plist').read_bytes())
-    assert agent['ProgramArguments'] == [str(helper), 'daemon']
+    assert not (home / 'agent.plist').exists()
+    assert [str(program), 'register'] in commands
     assert any('kickstart' in command for command in commands)
 
 
-def test_service_install_retries_then_reports_launchd(capsys, monkeypatch, home):
-    """A bootstrap launchd keeps refusing is retried, then reported with its message."""
-    bootstraps = []
+def test_service_install_reports_a_refused_registration(capsys, monkeypatch, home):
+    """A registration macOS refuses is reported with its reason."""
+    app, _ = installed_holder(home)
 
     def run(command, **kwargs):
-        if 'bootstrap' in command:
-            bootstraps.append(command)
-            return subprocess.CompletedProcess(command, 5, '', 'Input/output error\n')
+        if command[-1] == 'register':
+            return subprocess.CompletedProcess(command, 1, '', 'Operation not permitted\n')
         return subprocess.CompletedProcess(command, 0, '', '')
 
     monkeypatch.setattr(cli.subprocess, 'run', run)
-    monkeypatch.setattr(cli.time, 'sleep', lambda seconds: None)
-    args = argparse.Namespace(install=True, uninstall=False, helper='/bin/pvql')
+    args = argparse.Namespace(install=True, uninstall=False, app=str(app))
     assert cli.cmd_service(args) == 1
-    assert len(bootstraps) == 5
-    assert 'could not load' in capsys.readouterr().err
+    assert 'Operation not permitted' in capsys.readouterr().err
+
+
+def test_service_install_needs_an_app_that_carries_the_agent(capsys, commands, home):
+    """With no app holding the agent, nothing is registered and the reader is told."""
+    args = argparse.Namespace(install=True, uninstall=False, app=None)
+    assert cli.cmd_service(args) == 1
+    assert not any(command[-1] == 'register' for command in commands)
+    assert 'reinstall' in capsys.readouterr().err
+
+
+def test_service_reports_how_system_settings_has_it(capsys, monkeypatch, home):
+    """With no flags, the report says whether the service is switched on in Login Items."""
+    installed_holder(home)
+    monkeypatch.setattr(
+        cli, '_run', lambda command: 'requires approval' if command[-1] == 'status' else ''
+    )
+    assert cli.cmd_service(argparse.Namespace(install=False, uninstall=False)) == 0
+    assert 'System Settings: requires approval' in capsys.readouterr().out
 
 
 def test_service_reports_a_job_that_is_not_loaded(capsys, monkeypatch):
     """With no flags, the status of the job is printed, or that it is not loaded."""
     monkeypatch.setattr(cli, '_run', lambda command: '')
+    monkeypatch.setattr(cli, 'installed_apps', list)
     assert cli.cmd_service(argparse.Namespace(install=False, uninstall=False)) == 0
     assert 'is not loaded' in capsys.readouterr().out
 
@@ -169,7 +197,7 @@ def test_plist_writes_nothing_without_targets(capsys, monkeypatch):
     """Without a target no file is written."""
     monkeypatch.setattr(cli.config_mod, 'load', lambda: dict(config.DEFAULTS))
     args = argparse.Namespace(
-        app=None, extension=None, thumbnail=None, holder=None, helper='/bin/pvql'
+        app=None, extension=None, thumbnail=None, holder=None, agent=None, helper='/bin/pvql'
     )
     assert cli.cmd_plist(args) == 0
     assert capsys.readouterr().out == ''
@@ -601,9 +629,10 @@ def test_uninstall_removes_everything_but_the_config(installation, capsys):
         str(plist.plugins_folder(home / 'Applications' / plist.APP_BUNDLE)) in c for c in removed
     )
     assert any(
-        'Contents/PlugIns/PyVistaQuickLookExtension.appex' in c and 'Extensions.app' not in c
+        'Contents/PlugIns/PyVistaQuickLookExtension.appex' in c and 'Contents/Library' not in c
         for c in removed
     )
+    assert any(plist.LEGACY_HOLDER_BUNDLE in c for c in removed)
     unregistered = [c for c in joined if 'lsregister -u' in c]
     assert any(
         c.endswith(str(plist.plugins_folder(home / 'Applications' / plist.APP_BUNDLE).parents[1]))
@@ -672,17 +701,13 @@ def test_uv_note_explains_how_to_remove_an_installed_uv(tmp_path, monkeypatch):
     assert 'whatever installed it' in cli.uv_note(Path('/opt/homebrew/bin/uv'))
 
 
-def test_service_install_runs_the_daemon_under_the_package_name(commands, home):
-    """The agent runs the pyvista-quicklook entry point, which is the name macOS shows."""
-    for name in ('pvql', 'pyvista-quicklook'):
-        (home / name).write_text('#!/bin/sh\n')
-        (home / name).chmod(0o755)
+def test_service_install_retires_the_agent_of_the_old_label(commands, home):
+    """Installing stops and removes the service an install under the old label left."""
+    app, _ = installed_holder(home)
     (home / 'old-agent.plist').write_text('x')
     cli.daemon_mod.legacy_drop_dir().mkdir(parents=True)
-    args = argparse.Namespace(install=True, uninstall=False, helper=str(home / 'pvql'))
+    args = argparse.Namespace(install=True, uninstall=False, app=str(app))
     assert cli.cmd_service(args) == 0
-    stored = plistlib.loads((home / 'agent.plist').read_bytes())
-    assert stored['ProgramArguments'] == [str(home / 'pyvista-quicklook'), 'daemon']
     assert not (home / 'old-agent.plist').exists()
     assert not cli.daemon_mod.legacy_drop_dir().exists()
     joined = [' '.join(str(part) for part in command) for command in commands]
@@ -757,17 +782,21 @@ def test_plist_writes_every_file(tmp_path, monkeypatch):
     ext = tmp_path / 'Ext.plist'
     thumb = tmp_path / 'Thumb.plist'
     holder = tmp_path / 'Holder.plist'
+    agent = tmp_path / 'Agent.plist'
     args = argparse.Namespace(
         app=str(app),
         extension=str(ext),
         thumbnail=str(thumb),
         holder=str(holder),
+        agent=str(agent),
         helper='/bin/pvql',
     )
     assert cli.cmd_plist(args) == 0
     held = plistlib.loads(holder.read_bytes())
     assert held['CFBundleIdentifier'] == plist.HOLDER_BUNDLE_ID
     assert held['LSBackgroundOnly'] is True
+    assert held['PVQLHelperPath'] == '/bin/pvql'
+    assert plistlib.loads(agent.read_bytes())['Label'] == daemon.LABEL
     assert plistlib.loads(app.read_bytes())['PVQLHelperPath'] == '/bin/pvql'
     assert plistlib.loads(ext.read_bytes())['CFBundlePackageType'] == 'XPC!'
     assert plistlib.loads(thumb.read_bytes())['CFBundleIdentifier'] == plist.THUMB_BUNDLE_ID
@@ -909,7 +938,7 @@ def test_plist_leaves_the_helper_out_when_asked(tmp_path, monkeypatch, helper):
     monkeypatch.setattr(cli.shutil, 'which', lambda name: '/found/pvql')
     app = tmp_path / 'App.plist'
     args = argparse.Namespace(
-        app=str(app), extension=None, thumbnail=None, holder=None, helper=helper
+        app=str(app), extension=None, thumbnail=None, holder=None, agent=None, helper=helper
     )
     assert cli.cmd_plist(args) == 0
     stored = plistlib.loads(app.read_bytes())

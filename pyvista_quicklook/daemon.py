@@ -25,8 +25,8 @@ from . import environment
 from . import preload as preload_mod
 from . import render as render_mod
 from .environment import RenderError
-from .plist import APP_BUNDLE_ID
 from .plist import LEGACY_EXT_BUNDLE_ID
+from .plist import SERVICE_EXECUTABLE
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -703,7 +703,7 @@ def request_preview(source: str, timeout: float = 90, scene: bool | None = None)
 
 
 def agent_path() -> Path:
-    """Return the path of the launch agent property list."""
+    """Return where installs before the bundled agent wrote the launch agent."""
     return Path.home() / 'Library' / 'LaunchAgents' / f'{LABEL}.plist'
 
 
@@ -712,18 +712,14 @@ def legacy_agent_path() -> Path:
     return Path.home() / 'Library' / 'LaunchAgents' / f'{LEGACY_LABEL}.plist'
 
 
-def agent_plist(helper: str) -> dict[str, Any]:
-    """Return the launch agent definition for the render service."""
-    logs = Path.home() / 'Library' / 'Logs'
+def bundled_agent_plist() -> dict[str, Any]:
+    """Return the agent the holder app carries, which macOS lists under the app."""
     return {
         'Label': LABEL,
-        'ProgramArguments': [helper, 'daemon'],
-        # Listed under the app's name in Login Items, rather than the program's.
-        'AssociatedBundleIdentifiers': [APP_BUNDLE_ID],
+        # Finds pvql and opens the log, neither of which a bundled plist can name.
+        'BundleProgram': f'Contents/MacOS/{SERVICE_EXECUTABLE}',
         'RunAtLoad': True,
         'KeepAlive': True,
         # Background would throttle the renderer; previews answer a key press.
         'ProcessType': 'Interactive',
-        'StandardOutPath': str(logs / 'pvqld.log'),
-        'StandardErrorPath': str(logs / 'pvqld.log'),
     }

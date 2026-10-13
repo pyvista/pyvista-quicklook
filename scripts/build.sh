@@ -12,10 +12,13 @@ APP_ID="org.pyvista.PyVistaQuickLook"
 EXT_ID="$APP_ID.QuickLook"
 THUMB_NAME="PyVistaQuickLookThumbnail"
 THUMB_ID="$APP_ID.Thumbnail"
-HOLDER_BUNDLE_NAME="$BUNDLE_NAME Extensions"
+# Login Items lists the nested app, and the service it carries, under this file name.
+HOLDER_BUNDLE_NAME="$BUNDLE_NAME"
 HOLDER_NAME="PyVistaQuickLookExtensions"
+SERVICE_NAME="pvqld"
 HOLDER_ID="$APP_ID.Extensions"
-DEPLOYMENT_TARGET="12.0"
+# The oldest macOS CI builds and tests on, as plist.MIN_MACOS.
+DEPLOYMENT_TARGET="15.0"
 
 HELPER=""
 UNIVERSAL=0
@@ -79,7 +82,8 @@ compile() {
 echo "==> cleaning $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$HOLDER/Contents/MacOS" \
-  "$HOLDER/Contents/Resources" "$APPEX/Contents/MacOS" "$THUMBEX/Contents/MacOS"
+  "$HOLDER/Contents/Resources" "$HOLDER/Contents/Library/LaunchAgents" \
+  "$APPEX/Contents/MacOS" "$THUMBEX/Contents/MacOS"
 cp "$ROOT/icon/AppIcon.icns" "$APP/Contents/Resources/"
 cp "$ROOT/icon/AppIcon.icns" "$HOLDER/Contents/Resources/"
 
@@ -89,6 +93,7 @@ echo "==> generating Info.plist files (helper: $HELPER)"
   --extension "$APPEX/Contents/Info.plist" \
   --thumbnail "$THUMBEX/Contents/Info.plist" \
   --holder "$HOLDER/Contents/Info.plist" \
+  --agent "$HOLDER/Contents/Library/LaunchAgents/org.pyvista.pvqld.plist" \
   --helper "$BAKED_HELPER" >/dev/null
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 printf 'APPL????' > "$HOLDER/Contents/PkgInfo"
@@ -126,7 +131,13 @@ compile "$APPEX/Contents/MacOS/$EXT_NAME" -O -parse-as-library \
   -Xlinker -e -Xlinker _NSExtensionMain
 
 echo "==> compiling $HOLDER_NAME"
-compile "$HOLDER/Contents/MacOS/$HOLDER_NAME" -O "$ROOT/macos/Holder/main.swift"
+compile "$HOLDER/Contents/MacOS/$HOLDER_NAME" -O "$ROOT/macos/Holder/main.swift" \
+  -framework ServiceManagement
+
+echo "==> compiling $SERVICE_NAME"
+compile "$HOLDER/Contents/MacOS/$SERVICE_NAME" -O -parse-as-library \
+  "$ROOT/macos/Shared/Helper.swift" \
+  "$ROOT/macos/Holder/Service.swift"
 
 echo "==> compiling $THUMB_NAME"
 compile "$THUMBEX/Contents/MacOS/$THUMB_NAME" -O -parse-as-library \
@@ -138,6 +149,8 @@ compile "$THUMBEX/Contents/MacOS/$THUMB_NAME" -O -parse-as-library \
 echo "==> signing"
 codesign --force --sign - --identifier "$EXT_ID" --timestamp=none --entitlements "$ENTITLEMENTS" "$APPEX"
 codesign --force --sign - --identifier "$THUMB_ID" --timestamp=none --entitlements "$ENTITLEMENTS" "$THUMBEX"
+codesign --force --sign - --identifier "$HOLDER_ID.Service" --timestamp=none \
+  "$HOLDER/Contents/MacOS/$SERVICE_NAME"
 codesign --force --sign - --identifier "$HOLDER_ID" --timestamp=none "$HOLDER"
 codesign --force --sign - --identifier "$APP_ID" --timestamp=none "$APP"
 codesign --verify --deep --strict "$APP"

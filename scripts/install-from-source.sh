@@ -10,7 +10,7 @@ EXT_NAME="PyVistaQuickLookExtension"
 EXT_ID="org.pyvista.PyVistaQuickLook.QuickLook"
 THUMB_NAME="PyVistaQuickLookThumbnail"
 THUMB_ID="org.pyvista.PyVistaQuickLook.Thumbnail"
-HOLDER_BUNDLE_NAME="$BUNDLE_NAME Extensions"
+HOLDER_BUNDLE_NAME="$BUNDLE_NAME"
 SUPPORT="$HOME/Library/Application Support/PyVistaQuickLook"
 VENV="$SUPPORT/venv"
 DEST="$HOME/Applications"
@@ -167,7 +167,8 @@ echo "==> retiring registrations of other copies"
 "$LSREGISTER" -dump 2>/dev/null \
   | sed -n 's/^[[:space:]]*path:[[:space:]]*\(.*\/PyVista Quick Look\( Extensions\)\{0,1\}\.app\) (0x.*/\1/p' | sort -u \
   | while IFS= read -r other; do
-      [[ "$other" == "$APP" || "$other" == "$APP/"* ]] && continue
+      # This copy's own bundles stay; a nested one an earlier layout left behind does not.
+      [[ ( "$other" == "$APP" || "$other" == "$APP/"* ) && -d "$other" ]] && continue
       "$LSREGISTER" -u "$other" >/dev/null 2>&1 || true
     done || true
 # Including the records of an earlier layout of this very copy, under Contents/PlugIns.
@@ -187,7 +188,7 @@ for folder in "$HOME/Applications" "/Applications"; do
   done
 done
 if [[ ! -d "$PLUGINS" ]]; then
-  echo "warning: $APP does not hold its extensions in $HOLDER_BUNDLE_NAME.app; a bundle built before 0.9 will not be registered" >&2
+  echo "warning: $APP does not hold its extensions in $HOLDER_BUNDLE_NAME.app; a bundle built before this layout will not be registered" >&2
 fi
 
 echo "==> registering with Launch Services and Quick Look"
@@ -206,7 +207,7 @@ echo "==> registering with Launch Services and Quick Look"
 
 # After the app, so macOS lists the service under the app's name.
 echo "==> installing the render service"
-"$HELPER" service --install --helper "$HELPER"
+"$HELPER" service --install --app "$APP"
 
 # A Finder started before the old extension was retired still asks for it by its old identifier.
 if [[ "$("$HELPER" finder 2>/dev/null)" == stale ]]; then

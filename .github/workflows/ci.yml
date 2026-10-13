@@ -40,10 +40,15 @@ jobs:
         SKIP: no-commit-to-branch
 
   app:
-      # Builds the real thing: compiles the app, the extensions app that holds them, both
-      # extensions and the RenderScene tool, generates the Info.plist files, and ad-hoc
-      # signs the bundle.
-    runs-on: macos-latest
+      # Builds the real thing: compiles the app, the nested app that holds the extensions
+      # and the render service, both extensions and the RenderScene tool, generates the
+      # Info.plist files, and ad-hoc signs the bundle.
+    strategy:
+      fail-fast: false
+      matrix:
+        # The newest macOS, and the oldest GitHub hosts, which is the oldest supported.
+        os: [macos-latest, macos-15]
+    runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
       with:
@@ -58,9 +63,13 @@ jobs:
     - name: Check the bundle is complete and signed
       run: |
         app="build/PyVista Quick Look.app"
-        appex="$app/Contents/Library/PyVista Quick Look Extensions.app/Contents/PlugIns/PyVistaQuickLookExtension.appex"
+        holder="$app/Contents/Library/PyVista Quick Look.app"
+        appex="$holder/Contents/PlugIns/PyVistaQuickLookExtension.appex"
         test -x "$app/Contents/MacOS/PyVistaQuickLook"
         test -x "$appex/Contents/MacOS/PyVistaQuickLookExtension"
+        # The render service the nested app registers with macOS.
+        test -x "$holder/Contents/MacOS/pvqld"
+        plutil -lint "$holder/Contents/Library/LaunchAgents/org.pyvista.pvqld.plist"
         codesign --verify --deep --strict "$app"
         # A preview extension is only registered by macOS when it is sandboxed.
         codesign -d --entitlements - "$appex" 2>&1 | grep -q app-sandbox
@@ -69,6 +78,7 @@ jobs:
         lipo -archs "$appex/Contents/MacOS/PyVistaQuickLookExtension" | grep -q arm64
     - run: uv run pytest tests/ --cov-report=xml --cov-fail-under=95
     - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5   # v7.1.1
+      if: matrix.os == 'macos-latest'
       with:
         files: ./coverage.xml
         # A Codecov outage must not hold up a release.
@@ -76,8 +86,10 @@ jobs:
       env:
         CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     - name: Package the app
+      if: matrix.os == 'macos-latest'
       run: ditto -c -k --keepParent "build/PyVista Quick Look.app" build/PyVistaQuickLook.zip
     - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7.0.1
+      if: matrix.os == 'macos-latest'
       with:
         name: PyVistaQuickLook.zip
         path: build/PyVistaQuickLook.zip

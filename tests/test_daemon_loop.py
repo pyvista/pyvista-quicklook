@@ -33,13 +33,12 @@ def test_exchange_locations_are_in_the_extension_containers():
     assert daemon.legacy_agent_path().name == f'{daemon.LEGACY_LABEL}.plist'
 
 
-def test_agent_plist_runs_the_daemon():
-    """The launch agent starts the render service and keeps it running."""
-    agent = daemon.agent_plist('/usr/local/bin/pvql')
-    assert agent['ProgramArguments'] == ['/usr/local/bin/pvql', 'daemon']
+def test_bundled_agent_runs_the_launcher_and_keeps_it_running():
+    """The agent the app carries runs the bundled launcher and keeps the service up."""
+    agent = daemon.bundled_agent_plist()
+    assert agent['BundleProgram'] == f'Contents/MacOS/{plist.SERVICE_EXECUTABLE}'
     assert agent['KeepAlive'] is True
     assert agent['Label'] == daemon.LABEL
-    assert agent['AssociatedBundleIdentifiers'] == [plist.APP_BUNDLE_ID]
 
 
 def test_a_missing_file_says_nothing_about_its_folder(tmp_path, monkeypatch):

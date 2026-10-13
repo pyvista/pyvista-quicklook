@@ -220,7 +220,7 @@ enum Helper {
     /// macOS re-registers an app without a Developer ID signature on every launch, and with it
     /// the extensions it embeds.
     static func plugInsFolder() -> URL {
-        Bundle.main.bundleURL.appendingPathComponent("Contents/Library/PyVista Quick Look Extensions.app/Contents/PlugIns")
+        Bundle.main.bundleURL.appendingPathComponent("Contents/Library/PyVista Quick Look.app/Contents/PlugIns")
     }
 
     /// The folder the service watches: the container of the preview extension the app ships.

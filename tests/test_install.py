@@ -292,11 +292,14 @@ def test_every_part_names_the_extensions_app_as_plist_does():
     """The Swift helper and both scripts find the extensions where plist.py puts them."""
     from pyvista_quicklook import plist
 
-    for source in (
-        ROOT / 'macos' / 'Shared' / 'Helper.swift',
-        ROOT / 'scripts' / 'build.sh',
-        INSTALLER,
-    ):
-        assert plist.HOLDER_BUNDLE in source.read_text() or (
-            '$BUNDLE_NAME Extensions' in source.read_text()
-        ), source.name
+    nested = f'Contents/Library/{plist.HOLDER_BUNDLE}/Contents/PlugIns'
+    assert nested in (ROOT / 'macos' / 'Shared' / 'Helper.swift').read_text()
+    for source in (ROOT / 'scripts' / 'build.sh', INSTALLER):
+        assert 'HOLDER_BUNDLE_NAME="$BUNDLE_NAME"\n' in source.read_text(), source.name
+
+
+def test_the_build_targets_the_oldest_macos_the_bundles_declare():
+    """build.sh compiles for the macOS the Info.plist files name as the minimum."""
+    from pyvista_quicklook import plist
+
+    assert f'DEPLOYMENT_TARGET="{plist.MIN_MACOS}"' in (ROOT / 'scripts' / 'build.sh').read_text()
