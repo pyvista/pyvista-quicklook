@@ -32,7 +32,8 @@ jobs:
       with:
         # The package has no dependencies, so there is nothing worth caching.
         enable-cache: false
-    - run: uvx pre-commit run --all-files --show-diff-on-failure --color=always
+      # The hooks parse the package, which is written for Python 3.14.
+    - run: uvx --python 3.14 pre-commit run --all-files --show-diff-on-failure --color=always
       env:
           # This hook exists to stop *local* commits straight to main; it
           # would always fail here since CI checks out that branch/tag directly.

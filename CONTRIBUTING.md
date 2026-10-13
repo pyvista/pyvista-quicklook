@@ -3,7 +3,7 @@
 ```bash
 uv sync --group dev
 uv run pytest tests/          # helper and exporter tests, with coverage
-uv run pre-commit run --all-files
+uvx --python 3.14 pre-commit run --all-files
 ./scripts/build.sh            # compile and sign the app bundle
 ./scripts/install-from-source.sh   # build, install and register the result
 ```
