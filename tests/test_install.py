@@ -276,12 +276,12 @@ def test_the_installer_picks_extension_records_out_of_the_pluginkit_listing():
         '/Contents/PlugIns/PyVistaQuickLookExtension.appex\n'
         '\t            UUID = 00523111-4007-42E5-B23E-BBD5C7E2EF9D\n'
         '+    org.pyvista.PyVistaQuickLook.Thumbnail(0.9.0)\n'
-        '\t            Path = /Users/x/src/build/PyVista Quick Look.app/Contents/Library'
+        '\t            Path = /Users/x/build/PyVista Quick Look.app/Contents/Library'
         '/PyVista Quick Look Extensions.app/Contents/PlugIns/PyVistaQuickLookThumbnail.appex\n'
         '\t            Path = /Applications/GarageBand.app/Contents/PlugIns/GarageBandQL.appex\n'
     )
     installed = '/Users/x/Applications/PyVista Quick Look.app/Contents/PlugIns'
-    built = '/Users/x/src/build/PyVista Quick Look.app/Contents/Library/PyVista Quick Look Extensions'
+    built = '/Users/x/build/PyVista Quick Look.app/Contents/Library/PyVista Quick Look Extensions'
     assert extracted('/usr/bin/pluginkit -mAvvv', listing) == [
         f'{installed}/PyVistaQuickLookExtension.appex',
         f'{built}.app/Contents/PlugIns/PyVistaQuickLookThumbnail.appex',
