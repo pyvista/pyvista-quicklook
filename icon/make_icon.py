@@ -2,9 +2,11 @@
 # requires-python = ">=3.10"
 # dependencies = ["numpy", "pillow"]
 # ///
-"""Draw AppIcon.icns: a magnifier over "Vista" from the PyVista logo.
+"""Draw AppIcon.icns: a magnifier over the PyVista logo.
 
-Run ``uv run icon/make_icon.py``; ``--logo pyvista/logo/pyvista_sq.png`` re-cuts vista.png.
+From 128 px up the lens holds "PyVista"; below that it holds "Vista" alone, which stays
+legible where the icon is small. Run ``uv run icon/make_icon.py``;
+``--logo pyvista/logo/pyvista_sq.png`` re-cuts pyvista.png from the logo.
 """
 
 from __future__ import annotations
@@ -23,26 +25,44 @@ from PIL import ImageDraw
 from PIL import ImageFilter
 
 HERE = Path(__file__).resolve().parent
-VISTA = HERE / 'vista.png'
-# vista.png is kept about as wide as the lettering is drawn.
-VISTA_WIDTH = 1100
+PYVISTA = HERE / 'pyvista.png'
+# The lettering is kept about as wide as it is drawn.
+LETTERING_WIDTH = 1100
 # Pictures this wide or wider are stored with a 256-colour palette, which keeps the .icns small.
 PALETTE_FROM = 512
 
 # Drawn at twice the largest size, then scaled down, so every edge is antialiased.
 S = 2048
-# Where "Vista" starts and the V ends, as fractions of the 4375 px square logo.
-V_START = 1653 / 4375
-V_END = 2600 / 4375
+# Where "Vista" starts and the V ends, as fractions of the lettering's width.
+V_START = 1526 / 4116
+V_END = 2473 / 4116
 
-# The lens, as fractions of the canvas: centre, glass radius, rim width.
-LENS_CENTRE = (0.46, 0.46)
-LENS_RADIUS = 0.3
 RIM_WIDTH = 0.036
-# Lettering width as a share of the glass, and the zoom at its centre (1x at the rim).
-LETTER_FILL = 0.84
-CENTRE_ZOOM = 2.0
 HANDLE_ANGLE = 45
+# The two designs: whether the lettering keeps the Py, the lens centre and glass radius as
+# fractions of the canvas, the grip's length, the lettering's width as a share of the glass,
+# the zoom at the centre of the glass, and the share of the radius magnified evenly before
+# the zoom eases to 1x at the rim (0 bulges all the way from the centre).
+LARGE = {
+    'py': True,
+    'centre': (0.43, 0.43),
+    'radius': 0.29,
+    'grip': 0.216,
+    'fill': 0.9,
+    'zoom': 1.85,
+    'flat': 0.5,
+}
+SMALL = {
+    'py': False,
+    'centre': (0.46, 0.46),
+    'radius': 0.3,
+    'grip': 0.12,
+    'fill': 0.84,
+    'zoom': 2.0,
+    'flat': 0.0,
+}
+# The smallest size drawn from LARGE.
+LARGE_FROM = 128
 
 LIGHT = np.array([-0.45, -0.6, 0.66])
 LIGHT /= np.linalg.norm(LIGHT)
@@ -76,20 +96,26 @@ ICONSET = [
 ]
 
 
-def cut_vista(logo_path: Path) -> Image.Image:
-    """Return the "Vista" lettering from the PyVista logo, without the P and the y."""
-    logo = np.array(Image.open(logo_path).convert('RGBA')).astype(int)
-    width = logo.shape[1]
-    cols = np.arange(width)[None, :]
-    logo[..., 3] = np.where(cols < V_START * width, 0, logo[..., 3])
-    # The gold y reaches under the V, so it is dropped by colour where they overlap.
-    gold = (logo[..., 0] > logo[..., 2] + 25) & (cols < V_END * width)
-    logo[gold, 3] = 0
-    image = Image.fromarray(logo.astype(np.uint8))
+def cut_lettering(logo_path: Path) -> Image.Image:
+    """Return the lettering from the PyVista logo, cropped to it."""
+    image = Image.open(logo_path).convert('RGBA')
     image = image.crop(image.getbbox())
     return image.resize(
-        (VISTA_WIDTH, round(image.height * VISTA_WIDTH / image.width)), Image.LANCZOS
+        (LETTERING_WIDTH, round(image.height * LETTERING_WIDTH / image.width)), Image.LANCZOS
     )
+
+
+def without_py(lettering: Image.Image) -> Image.Image:
+    """Return the lettering without the P and the y, cropped to what is left."""
+    pixels = np.array(lettering).astype(int)
+    width = pixels.shape[1]
+    cols = np.arange(width)[None, :]
+    pixels[..., 3] = np.where(cols < V_START * width, 0, pixels[..., 3])
+    # The gold y reaches under the V, so it is dropped by colour where they overlap.
+    gold = (pixels[..., 0] > pixels[..., 2] + 25) & (cols < V_END * width)
+    pixels[gold, 3] = 0
+    image = Image.fromarray(pixels.astype(np.uint8))
+    return image.crop(image.getbbox())
 
 
 def vertical_gradient(top: tuple[int, ...], bottom: tuple[int, ...]) -> Image.Image:
@@ -212,15 +238,16 @@ def handle(canvas: Image.Image, start, angle_deg: float, segments) -> None:
     canvas.alpha_composite(layer)
 
 
-def magnify(src: Image.Image, centre, radius: float) -> Image.Image:
-    """Return src seen through a bulging lens: CENTRE_ZOOM in the middle, 1x at the rim."""
+def magnify(src: Image.Image, centre, radius: float, zoom: float, flat: float) -> Image.Image:
+    """Return src seen through a lens: zoom at the middle, easing to 1x at the rim."""
     a = np.asarray(src).astype(float)
     x0, y0 = int(centre[0] - radius) - 2, int(centre[1] - radius) - 2
     x1, y1 = int(centre[0] + radius) + 2, int(centre[1] + radius) + 2
     yy, xx = np.mgrid[y0:y1, x0:x1].astype(float)
     dx, dy = xx - centre[0], yy - centre[1]
     t = np.clip(np.hypot(dx, dy) / radius, 0, 1)
-    k = 1 / CENTRE_ZOOM + (1 - 1 / CENTRE_ZOOM) * t**2
+    ease = np.clip((t - flat) / (1 - flat), 0, 1) ** 2
+    k = 1 / zoom + (1 - 1 / zoom) * ease
     sx, sy = centre[0] + dx * k, centre[1] + dy * k
     ix = np.clip(np.floor(sx).astype(int), 0, S - 2)
     iy = np.clip(np.floor(sy).astype(int), 0, S - 2)
@@ -280,19 +307,23 @@ def reflections(canvas: Image.Image, centre, radius: float) -> None:
     canvas.alpha_composite(white(ImageChops.multiply(bounce, lens)))
 
 
-def draw_icon(vista: Image.Image) -> Image.Image:
+def draw_icon(design: dict) -> Image.Image:
     """Return the icon at S x S."""
     canvas, mask = tile()
     content = canvas.copy()
-    centre = (S * LENS_CENTRE[0], S * LENS_CENTRE[1])
-    radius = S * LENS_RADIUS
+    centre = (S * design['centre'][0], S * design['centre'][1])
+    radius = S * design['radius']
     width = S * RIM_WIDTH
 
+    lettering = Image.open(PYVISTA).convert('RGBA')
+    if not design['py']:
+        lettering = without_py(lettering)
     letters = Image.new('RGBA', (S, S), (0, 0, 0, 0))
-    lw = int(2 * radius * LETTER_FILL)
-    lh = int(vista.height * lw / vista.width)
+    lw = int(2 * radius * design['fill'])
+    lh = int(lettering.height * lw / lettering.width)
     letters.alpha_composite(
-        vista.resize((lw, lh), Image.LANCZOS), (int(centre[0] - lw / 2), int(centre[1] - lh / 2))
+        lettering.resize((lw, lh), Image.LANCZOS),
+        (int(centre[0] - lw / 2), int(centre[1] - lh / 2)),
     )
 
     lens_shadow = circle_mask((centre[0] + S * 0.012, centre[1] + S * 0.02), radius + width)
@@ -304,7 +335,7 @@ def draw_icon(vista: Image.Image) -> Image.Image:
         content,
         start,
         HANDLE_ANGLE,
-        [(S * 0.03, S * 0.045, 'gloss'), (S * 0.12, S * 0.075, 'satin')],
+        [(S * 0.03, S * 0.045, 'gloss'), (S * design['grip'], S * 0.075, 'satin')],
     )
 
     glass = radial_gradient(
@@ -318,7 +349,7 @@ def draw_icon(vista: Image.Image) -> Image.Image:
             glass, Image.new('RGBA', (S, S), (0, 0, 0, 0)), circle_mask(centre, radius)
         )
     )
-    content.alpha_composite(magnify(letters, centre, radius))
+    content.alpha_composite(magnify(letters, centre, radius, design['zoom'], design['flat']))
     reflections(content, centre, radius)
     rim(content, centre, radius - 1, width)
 
@@ -329,12 +360,13 @@ def draw_icon(vista: Image.Image) -> Image.Image:
     return canvas
 
 
-def write_icns(icon: Image.Image, destination: Path) -> None:
+def write_icns(large: Image.Image, small: Image.Image, destination: Path) -> None:
     """Write every size macOS asks for into an .iconset and pack it with iconutil."""
     with tempfile.TemporaryDirectory() as tmp:
         iconset = Path(tmp) / 'AppIcon.iconset'
         iconset.mkdir()
         for name, size in ICONSET:
+            icon = large if size >= LARGE_FROM else small
             picture = icon.resize((size, size), Image.LANCZOS)
             if size >= PALETTE_FROM:
                 picture = picture.quantize(256, method=Image.Quantize.FASTOCTREE)
@@ -346,17 +378,17 @@ def write_icns(icon: Image.Image, destination: Path) -> None:
 
 
 def main() -> None:
-    """Cut the lettering if asked, then write the .icns beside this script."""
+    """Cut the lettering if asked, then write the .icns, beside this script by default."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('--logo', type=Path, help='PyVista logo to cut vista.png from')
+    parser.add_argument('--logo', type=Path, help='PyVista logo to cut the lettering from')
+    parser.add_argument('--output', type=Path, default=HERE / 'AppIcon.icns')
     args = parser.parse_args()
     if args.logo:
-        cut_vista(args.logo).save(VISTA, optimize=True)
-    icon = draw_icon(Image.open(VISTA).convert('RGBA'))
+        cut_lettering(args.logo).save(PYVISTA, optimize=True)
     if shutil.which('iconutil') is None:
         msg = 'iconutil not found; the .icns can only be built on macOS'
         raise SystemExit(msg)
-    write_icns(icon, HERE / 'AppIcon.icns')
+    write_icns(draw_icon(LARGE), draw_icon(SMALL), args.output)
 
 
 if __name__ == '__main__':
