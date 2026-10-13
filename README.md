@@ -309,17 +309,17 @@ immediately, as the Finder would.
 ### The render service
 
 macOS runs Quick Look extensions in a sandbox that VTK cannot run inside, so reading
-and conversion happen in a launch agent the app carries instead. The installer
-registers it with macOS.
+and conversion happen in a launch agent instead, which the installer writes to
+`~/Library/LaunchAgents` and starts.
 
 ```bash
-pvql service            # report whether it is loaded and switched on
-pvql service --install  # (re)register and start it
+pvql service            # report whether it is loaded
+pvql service --install  # (re)install and start it
 pvql service --uninstall
 ```
 
-It appears as PyVista Quick Look, the one entry the app has, under Login Items &
-Extensions in System Settings, where it can be switched off; its output goes to
+It appears as `pyvista-quicklook-daemon` under Login Items & Extensions in System
+Settings, next to the app's own entry, where it can be switched off; its output goes to
 `~/Library/Logs/pvqld.log`.
 
 ### Files in the Desktop, Documents, and Downloads folders
@@ -340,12 +340,11 @@ file picker that opens from the + button, press Cmd-Shift-G and paste that path.
 `pvql doctor` checks every part of the installation and builds one real preview, and
 says what to do about anything that fails.
 
-- **The panel says the service is not answering.** Check that PyVista Quick Look is
-  switched on under General, Login Items & Extensions in System Settings, then run
-  `pvql service --install`.
+- **The panel says the service is not answering.** Run `pvql service --install`, then
+  `pvql doctor`; the service's own output is in `~/Library/Logs/pvqld.log`.
 - **Login Items still lists `pyvista-quicklook` or PyVista Quick Look Extensions.**
-  Earlier versions made those two entries; reinstalling replaces them with one, and
-  System Settings drops the old ones the next time it opens.
+  Earlier versions made those entries; reinstalling replaces them, and System Settings
+  drops the old ones the next time it opens.
 - **Nothing happens on space bar.** Confirm the type is claimed with `pvql types`, then
   check that Finder resolves it: `mdls -name kMDItemContentType yourfile.vtu` should
   report an `org.pyvista.pyvista-quicklook.*` type.
@@ -375,8 +374,8 @@ pvql uninstall        # remove everything, asking first
 
 ## What the installer does
 
-1. Downloads the latest release: the installer scripts, about 1 MB, and the prebuilt
-   app, a 2 MB zip.
+1. Downloads the newest release that has the prebuilt app attached, a 2 MB zip, along
+   with that release's installer scripts, about 1 MB.
 2. Installs [uv](https://docs.astral.sh/uv/) if it is missing or updates it if it is too
    old, then a Python 3.14 if uv finds none on the machine.
 3. Installs the `pvql` helper as a uv tool.
@@ -390,8 +389,8 @@ pvql uninstall        # remove everything, asking first
 5. Writes the configuration file and loads PyVista once, so the first preview is quick.
 6. Copies the app from the download into `~/Applications` and registers it with Launch
    Services and Quick Look. The downloads are removed once everything is installed.
-7. Registers the render service, a launch agent the app carries. It appears as
-   PyVista Quick Look under Login Items & Extensions in System Settings.
+7. Installs the render service, a launch agent in `~/Library/LaunchAgents`. It appears
+   as `pyvista-quicklook-daemon` under Login Items & Extensions in System Settings.
 
 No system Python and no existing environment is used or changed.
 
@@ -401,7 +400,7 @@ No system Python and no existing environment is used or changed.
 | `~/Library/Application Support/PyVistaQuickLook/config.json` | Configuration | 4 KB |
 | `~/Applications/PyVista Quick Look.app` | The app, with its Quick Look extensions and the render service in a nested `PyVista Quick Look.app` that is never launched | 4 MB |
 | `~/Library/Application Support/uv/tools/pyvista-quicklook` | The `pvql` helper | 400 KB |
-| `~/.local/bin/pvql`, `~/.local/bin/pyvista-quicklook` | Links to the helper | |
+| `~/.local/bin/pvql`, `~/.local/bin/pyvista-quicklook-daemon` | Links to the helper | |
 | `~/Library/Logs/pvqld.log` | The service's output | grows slowly |
 | `~/Library/Containers/org.pyvista.PyVistaQuickLook.QuickLook/Data/tmp` | The extension's log, its requests to the service, staged copies and a copy of the settings, in a sandbox folder that macOS creates and keeps | small |
 | `~/Library/Caches/PyVistaQuickLook` | Built previews, one per file and settings | grows with use |

@@ -67,9 +67,6 @@ jobs:
         appex="$holder/Contents/PlugIns/PyVistaQuickLookExtension.appex"
         test -x "$app/Contents/MacOS/PyVistaQuickLook"
         test -x "$appex/Contents/MacOS/PyVistaQuickLookExtension"
-        # The render service the nested app registers with macOS.
-        test -x "$holder/Contents/MacOS/pvqld"
-        plutil -lint "$holder/Contents/Library/LaunchAgents/org.pyvista.PyVistaQuickLook.Service.plist"
         codesign --verify --deep --strict "$app"
         # A preview extension is only registered by macOS when it is sandboxed.
         codesign -d --entitlements - "$appex" 2>&1 | grep -q app-sandbox
@@ -143,8 +140,14 @@ jobs:
     - env:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ github.ref_name }}
-      # Pushing the tag is enough: the release is created here unless one already exists.
+      # Pushing the tag is enough. The installer downloads from the latest release, so a release
+      # becomes the latest only with its assets on it: one created here carries them from the
+      # start, and a draft made by hand is published once they are attached.
       run: |
-        gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-          || gh release create "$TAG" --verify-tag --generate-notes --repo "$GITHUB_REPOSITORY"
-        gh release upload "$TAG" PyVistaQuickLook.zip install.sh --clobber --repo "$GITHUB_REPOSITORY"
+        if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          gh release upload "$TAG" PyVistaQuickLook.zip install.sh --clobber --repo "$GITHUB_REPOSITORY"
+          gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
+        else
+          gh release create "$TAG" PyVistaQuickLook.zip install.sh --verify-tag --generate-notes \
+            --repo "$GITHUB_REPOSITORY"
+        fi

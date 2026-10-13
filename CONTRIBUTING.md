@@ -27,7 +27,8 @@ uv run python -m pyvista_quicklook._formats_table README.md
 ## Names
 
 One project, three names, each where its own conventions apply: `pyvista-quicklook` is
-the package on PyPI and the program the render service runs as, `pvql` is the command,
+the package on PyPI and, as `pyvista-quicklook-daemon`, the program the render service
+runs as, `pvql` is the command,
 and `PyVista Quick Look` is what the reader sees, from the app bundle to the panel. The
 build's own files keep the compact `PyVistaQuickLook` spelling: the bundle identifier,
 the executables, and the downloadable zip.
@@ -41,17 +42,29 @@ showing a preview; held by an app that is never launched, they stay registered. 
 installer unregisters every other copy of the app before registering, since a stale
 Launch Services record keeps Quick Look from starting the extension at all.
 
-The nested app also carries the render service, as a launch agent in
-`Contents/Library/LaunchAgents` that runs `Contents/MacOS/pvqld`, which starts `pvql
-daemon`. The installer runs the nested app's binary directly, never through Launch
-Services, to register the agent with `SMAppService`; Login Items then lists the
-extensions and the service as one entry, under the nested bundle's file name.
+The render service is a launch agent in `~/Library/LaunchAgents` that runs `pvql
+daemon` as `pyvista-quicklook-daemon`, which is how Login Items lists it, apart from
+the app. It is not registered from inside the app with `SMAppService`, which would make
+one Login Items entry: without a Developer ID, launchd pins such an agent to the build
+that registered it, and the next build's service does not start.
 
 ## Releasing
 
 `main` is protected by a pre-commit hook, so work on a branch.
 
-Releases are published by CI: push a `v*` tag and the `publish` job uploads the helper
-to PyPI through trusted publishing from the `release` environment, while the `release`
-job creates the tag's GitHub release if there is none and attaches the built app to it,
-which is what the installer downloads. The two jobs are independent, so check both.
+A release is a tag: the version behind a `v`, pushed from an up-to-date `main`.
+
+```bash
+git tag v0.9.1 main
+git push origin v0.9.1
+```
+
+CI does the rest. The `release` job builds the app and creates the GitHub release with
+`PyVistaQuickLook.zip` and `install.sh` attached and generated notes; the `publish` job
+uploads the helper to PyPI. The two are independent, so check both. The version comes
+from the tag through setuptools-scm, and PyPI never reuses one.
+
+A release can also be made from the GitHub web interface, since publishing it creates
+the tag. Save it as a draft, though: the one-line installer downloads from the latest
+release, and a release published outright has no assets until CI attaches them. CI
+publishes the draft once it has.

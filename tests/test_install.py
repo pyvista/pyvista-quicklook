@@ -10,6 +10,8 @@ import tomllib
 
 import pytest
 
+from pyvista_quicklook import daemon
+
 ROOT = Path(__file__).parents[1]
 INSTALLER = ROOT / 'scripts' / 'install-from-source.sh'
 SCRIPT = INSTALLER.read_text()
@@ -113,6 +115,12 @@ def test_readme_names_the_installer_python():
     assert set(re.findall(r'Python,? (3\.\d+)', readme)) == {PYTHON_VERSION}
     project = tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']
     assert project['requires-python'].split(',')[0] == f'>={PYTHON_VERSION}'
+
+
+def test_the_service_program_is_a_command_the_package_installs():
+    """The name the agent runs under is an entry point, so uv installs it next to pvql."""
+    scripts = tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']['scripts']
+    assert scripts[daemon.SERVICE_PROGRAM] == scripts['pvql']
 
 
 def script_lines(first, last):
@@ -331,22 +339,6 @@ def test_the_build_targets_the_oldest_macos_the_bundles_declare():
     assert f'DEPLOYMENT_TARGET="{plist.MIN_MACOS}"' in (ROOT / 'scripts' / 'build.sh').read_text()
 
 
-def test_every_part_names_the_service_agent_as_daemon_does():
-    """The registrar, the build and CI name the agent's plist by daemon.LABEL."""
-    from pyvista_quicklook import cli
-    from pyvista_quicklook import daemon
-    from pyvista_quicklook import plist
-
-    registrar = (ROOT / 'macos' / 'Holder' / 'main.swift').read_text()
-    build = (ROOT / 'scripts' / 'build.sh').read_text()
-    assert f'{plist.APP_BUNDLE_ID}.Service' == daemon.LABEL
-    assert f'"{daemon.LABEL}.plist"' in registrar
-    assert f'APP_ID="{plist.APP_BUNDLE_ID}"' in build
-    assert 'SERVICE_LABEL="$APP_ID.Service"' in build
-    assert f'{daemon.LABEL}.plist' in (ROOT / '.github' / 'workflows' / 'ci.yml').read_text()
-    assert f'return "{cli.SWITCHED_OFF}"' in registrar
-
-
 def test_both_installers_refuse_a_macos_older_than_the_bundles_declare():
     """The installers stop on a macOS below plist.MIN_MACOS before changing anything."""
     from pyvista_quicklook import plist
@@ -376,3 +368,42 @@ def test_the_installers_stop_on_an_older_macos(tmp_path, version, stops):
         result = run_strict(path + check)
         assert ('reached the end' not in result.stdout) == stops, check
         assert ('needs macOS 15' in result.stderr) == stops
+
+
+@pytest.mark.parametrize(
+    ('failing', 'picked'),
+    [('v0.9.1', 'v0.9.0'), ('api', ''), ('all', '')],
+    ids=['newest-without-app', 'api-down', 'downloads-down'],
+)
+def test_the_installer_picks_the_newest_release_with_the_app(tmp_path, failing, picked):
+    """A release tagged before CI attached the app, or a pre-release, is passed over."""
+    releases = ''.join(
+        f'  {{\n    "tag_name": "{tag}",\n    "prerelease": {pre},\n  }},\n'
+        for tag, pre in [('v0.9.2', 'true'), ('v0.9.1', 'false'), ('v0.9.0', 'false')]
+    )
+    curl = tmp_path / 'curl'
+    curl.write_text(
+        '#!/bin/sh\n'
+        'for arg in "$@"; do url=$arg; done\n'
+        'case "$url" in\n'
+        '  *api.github.com*) [ "$FAILING" = api ] && exit 22;'
+        f" printf '%s' {shlex.quote(releases)} ;;\n"
+        '  */download/v0.9.2/*) printf 200 ;;\n'
+        '  */download/*) case "$FAILING" in all) printf 000; exit 6 ;; esac;'
+        ' case "$url" in */download/$FAILING/*) printf 404 ;; *) printf 200 ;; esac ;;\n'
+        'esac\n'
+    )
+    curl.chmod(0o755)
+    one_line = (ROOT / 'install.sh').read_text()
+    start = one_line.index('has_app()')
+    functions = one_line[start : one_line.index('\n}\n', one_line.index('published_tag()')) + 3]
+    script = (
+        f'PATH={shlex.quote(str(tmp_path))}:"$PATH"\n'
+        f'export FAILING={failing}\n'
+        'REPO=pyvista/pyvista-quicklook; ASSET=PyVistaQuickLook.zip\n'
+        f'say() {{ printf \'%s\\n\' "$*"; }}\n{functions}'
+        'printf "picked=%s\\n" "$(published_tag || true)"\n'
+    )
+    result = run_strict(script)
+    assert f'picked={picked}' in result.stdout, result.stderr
+    assert 'reached the end' in result.stdout

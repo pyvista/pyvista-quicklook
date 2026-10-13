@@ -30,14 +30,11 @@ THUMB_EXECUTABLE = 'PyVistaQuickLookThumbnail'
 THUMB_PRINCIPAL_CLASS = 'PVQLThumbnailProvider'
 # The extensions live in an app of their own, nested in the main one and never launched: macOS
 # re-registers an app without a Developer ID signature on every launch, and with it the
-# extensions it embeds, stopping the one the Finder is showing a preview through. It also
-# carries the render service, and Login Items lists both under its file name.
+# extensions it embeds, stopping the one the Finder is showing a preview through.
 HOLDER_BUNDLE = APP_BUNDLE
 LEGACY_HOLDER_BUNDLE = f'{APP_NAME} Extensions.app'
 HOLDER_BUNDLE_ID = f'{APP_BUNDLE_ID}.Extensions'
 HOLDER_EXECUTABLE = 'PyVistaQuickLookExtensions'
-# What the holder's service agent runs: it finds pvql and starts the render service.
-SERVICE_EXECUTABLE = 'pvqld'
 # AppIcon.icns, which the build copies from icon/ into both apps' Resources.
 ICON_FILE = 'AppIcon'
 # Only these formats can carry a picture of themselves.
@@ -169,11 +166,6 @@ def holder_plist(helper: str | None = None) -> dict[str, Any]:
 def plugins_folder(app: Path, holder: str = HOLDER_BUNDLE) -> Path:
     """Return the folder of an installed app that holds its Quick Look extensions."""
     return app / 'Contents' / 'Library' / holder / 'Contents' / 'PlugIns'
-
-
-def service_registrar(app: Path) -> Path:
-    """Return the program in an installed app that registers the render service with macOS."""
-    return app / 'Contents' / 'Library' / HOLDER_BUNDLE / 'Contents' / 'MacOS' / HOLDER_EXECUTABLE
 
 
 def thumbnail_plist(extensions: list[str]) -> dict[str, Any]:

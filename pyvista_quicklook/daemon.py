@@ -25,18 +25,16 @@ from . import environment
 from . import preload as preload_mod
 from . import render as render_mod
 from .environment import RenderError
-from .plist import APP_BUNDLE_ID
 from .plist import LEGACY_EXT_BUNDLE_ID
-from .plist import SERVICE_EXECUTABLE
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-# macOS keys background items by label, and a record left under UNBUNDLED_LABEL blocks
-# registration, so the bundled agent has a label of its own.
-LABEL = f'{APP_BUNDLE_ID}.Service'
-UNBUNDLED_LABEL = 'org.pyvista.pvqld'
+LABEL = 'org.pyvista.pvqld'
+# The name the helper is also installed under, which Login Items shows for the service.
+SERVICE_PROGRAM = 'pyvista-quicklook-daemon'
 LEGACY_LABEL = 'io.github.user27182.pvqld'
+LOG_PATH = Path.home() / 'Library' / 'Logs' / 'pvqld.log'
 REQUEST_SUFFIX = '.pvqlreq'
 REPLY_SUFFIX = '.pvqlrep'
 # A request the service has picked up, so the next poll does not pick it up again.
@@ -707,9 +705,9 @@ def request_preview(source: str, timeout: float = 90, scene: bool | None = None)
     raise RenderError(message)
 
 
-def unbundled_agent_path() -> Path:
-    """Return where installs before the bundled agent wrote the launch agent."""
-    return Path.home() / 'Library' / 'LaunchAgents' / f'{UNBUNDLED_LABEL}.plist'
+def agent_path() -> Path:
+    """Return the path of the launch agent property list."""
+    return Path.home() / 'Library' / 'LaunchAgents' / f'{LABEL}.plist'
 
 
 def legacy_agent_path() -> Path:
@@ -717,14 +715,15 @@ def legacy_agent_path() -> Path:
     return Path.home() / 'Library' / 'LaunchAgents' / f'{LEGACY_LABEL}.plist'
 
 
-def bundled_agent_plist() -> dict[str, Any]:
-    """Return the agent the holder app carries, which macOS lists under the app."""
+def agent_plist(helper: str) -> dict[str, Any]:
+    """Return the launch agent definition for the render service."""
     return {
         'Label': LABEL,
-        # Finds pvql and opens the log, neither of which a bundled plist can name.
-        'BundleProgram': f'Contents/MacOS/{SERVICE_EXECUTABLE}',
+        'ProgramArguments': [helper, 'daemon'],
         'RunAtLoad': True,
         'KeepAlive': True,
         # Background would throttle the renderer; previews answer a key press.
         'ProcessType': 'Interactive',
+        'StandardOutPath': str(LOG_PATH),
+        'StandardErrorPath': str(LOG_PATH),
     }

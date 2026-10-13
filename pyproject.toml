@@ -38,8 +38,8 @@ requires-python = '>=3.14,<3.15'
 
 [project.scripts]
 pvql = 'pyvista_quicklook.cli:main'
-# The render service runs under this name, which is what macOS shows for it.
-pyvista-quicklook = 'pyvista_quicklook.cli:main'
+# The render service runs under this name, which is what Login Items shows for it.
+pyvista-quicklook-daemon = 'pyvista_quicklook.cli:main'
 
 [project.urls]
 Homepage = 'https://github.com/pyvista/pyvista-quicklook'

@@ -16,7 +16,6 @@ from conftest import wait_for
 import pytest
 
 from pyvista_quicklook import daemon
-from pyvista_quicklook import plist
 from pyvista_quicklook.environment import RenderError
 
 
@@ -29,16 +28,17 @@ def test_exchange_locations_are_in_the_extension_containers():
     assert daemon.drop_dir() == daemon.config_mod.MIRROR_PATH.parent
     assert daemon.config_mod.EXT_BUNDLE_ID in daemon.drop_dir().parts
     assert daemon.LEGACY_EXT_BUNDLE_ID in daemon.legacy_drop_dir().parts
-    assert daemon.unbundled_agent_path().name == f'{daemon.UNBUNDLED_LABEL}.plist'
+    assert daemon.agent_path().name == f'{daemon.LABEL}.plist'
     assert daemon.legacy_agent_path().name == f'{daemon.LEGACY_LABEL}.plist'
 
 
-def test_bundled_agent_runs_the_launcher_and_keeps_it_running():
-    """The agent the app carries runs the bundled launcher and keeps the service up."""
-    agent = daemon.bundled_agent_plist()
-    assert agent['BundleProgram'] == f'Contents/MacOS/{plist.SERVICE_EXECUTABLE}'
+def test_agent_runs_the_helper_and_keeps_it_running():
+    """The launch agent runs pvql daemon, keeps it up, and logs to the service log."""
+    agent = daemon.agent_plist('/opt/pvql')
+    assert agent['ProgramArguments'] == ['/opt/pvql', 'daemon']
     assert agent['KeepAlive'] is True
     assert agent['Label'] == daemon.LABEL
+    assert agent['StandardOutPath'].endswith('pvqld.log')
 
 
 def test_a_missing_file_says_nothing_about_its_folder(tmp_path, monkeypatch):

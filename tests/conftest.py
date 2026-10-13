@@ -51,7 +51,7 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'CACHE_DIR', tmp_path / 'cache')
     monkeypatch.setattr(cli, 'APP_DIRS', (tmp_path / 'Applications',))
     monkeypatch.setattr(cli, 'SERVICE_LOG', tmp_path / 'pvqld.log')
-    monkeypatch.setattr(cli.daemon_mod, 'unbundled_agent_path', lambda: tmp_path / 'agent.plist')
+    monkeypatch.setattr(cli.daemon_mod, 'agent_path', lambda: tmp_path / 'agent.plist')
     monkeypatch.setattr(cli.daemon_mod, 'drop_dir', lambda: tmp_path / 'container')
     monkeypatch.setattr(cli.daemon_mod, 'legacy_agent_path', lambda: tmp_path / 'old-agent.plist')
     monkeypatch.setattr(

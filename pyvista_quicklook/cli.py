@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import os
 from pathlib import Path
+import plistlib
 import re
 import shutil
 import subprocess
@@ -30,7 +31,7 @@ from .formats import uti_for
 
 # Where the app may have been installed, and where the render service writes.
 APP_DIRS = (Path.home() / 'Applications', Path('/Applications'))
-SERVICE_LOG = Path.home() / 'Library' / 'Logs' / 'pvqld.log'
+SERVICE_LOG = daemon_mod.LOG_PATH
 LSREGISTER = (
     '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework'
     '/Support/lsregister'
@@ -95,33 +96,10 @@ def unload_service(label: str = daemon_mod.LABEL) -> None:
 
 
 def retire_legacy_service() -> None:
-    """Stop and remove the agents earlier installs wrote to ~/Library/LaunchAgents."""
-    unload_service(daemon_mod.UNBUNDLED_LABEL)
-    daemon_mod.unbundled_agent_path().unlink(missing_ok=True)
+    """Stop and remove the render service installed under the io.github.user27182 label."""
     unload_service(daemon_mod.LEGACY_LABEL)
     daemon_mod.legacy_agent_path().unlink(missing_ok=True)
     shutil.rmtree(daemon_mod.legacy_drop_dir(), ignore_errors=True)
-
-
-def service_app(args: argparse.Namespace) -> Path | None:
-    """Return the app whose service to manage: the one named, else the first installed."""
-    return Path(args.app) if args.app else next(iter(installed_apps()), None)
-
-
-def registrar(app: Path | None) -> Path | None:
-    """Return the program in an app that registers its render service, if it has one."""
-    if app is None:
-        return None
-    program = plist_mod.service_registrar(app)
-    return program if program.is_file() else None
-
-
-# How the registrar reports a service switched off in System Settings.
-SWITCHED_OFF = 'requires approval'
-SWITCHED_OFF_HINT = (
-    'switched off; turn on PyVista Quick Look in System Settings, '
-    'General, Login Items & Extensions'
-)
 
 
 def service_loaded() -> bool:
@@ -129,55 +107,60 @@ def service_loaded() -> bool:
     return _succeeds(['/bin/launchctl', 'print', service_target()])
 
 
-def service_status(app: Path | None) -> str:
-    """Return how macOS has the app's service: enabled, requires approval, and so on."""
-    program = registrar(app)
-    return _run([str(program), 'status']) if program else ''
+def service_state() -> str:
+    """Return the state launchd reports for the render service, such as running."""
+    output = _run(['/bin/launchctl', 'print', service_target()])
+    match = re.search(r'^\s*state = (.+)$', output, re.MULTILINE)
+    return match.group(1).strip() if match else ''
 
 
 def cmd_service(args: argparse.Namespace) -> int:
-    """Register, unregister, or report on the render service the app carries."""
+    """Install, remove, or report on the render service."""
     label = daemon_mod.LABEL
-    app = service_app(args)
-    program = registrar(app)
+    target = service_target()
+    path = daemon_mod.agent_path()
 
     if args.uninstall:
-        if program:
-            subprocess.run([str(program), 'unregister'], capture_output=True, check=False)
+        unload_service()
+        path.unlink(missing_ok=True)
         retire_legacy_service()
         print(f'removed {label}')
         return 0
 
     if args.install:
-        if program is None:
-            print(f'no app carries {label}; reinstall PyVista Quick Look', file=sys.stderr)
-            return 1
+        helper = args.helper or shutil.which('pvql') or str(Path.home() / '.local/bin/pvql')
+        # Login Items names a launch agent after its program.
+        named = Path(helper).with_name(daemon_mod.SERVICE_PROGRAM)
+        program = str(named) if named.is_file() else helper
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('wb') as handle:
+            plistlib.dump(daemon_mod.agent_plist(program), handle, sort_keys=False)
         retire_legacy_service()
-        registered = subprocess.run(
-            [str(program), 'register'], capture_output=True, text=True, check=False
-        )
-        if registered.returncode != 0:
-            reason = (registered.stderr or registered.stdout).strip()
-            print(f'could not register {label}: {reason}', file=sys.stderr)
-            return 1
-        if registered.stdout.strip() == SWITCHED_OFF:
-            print(f'{label} is {SWITCHED_OFF_HINT}', file=sys.stderr)
+        unload_service()
+        # launchd reports an I/O error when it is still tearing the old job down.
+        for attempt in range(5):
+            loaded = subprocess.run(
+                ['/bin/launchctl', 'bootstrap', f'gui/{os.getuid()}', str(path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if loaded.returncode == 0:
+                break
+            time.sleep(0.5 * (attempt + 1))
+        if loaded.returncode != 0:
+            print(f'could not load {label}: {loaded.stderr.strip()}', file=sys.stderr)
             return 1
         subprocess.run(
-            ['/bin/launchctl', 'kickstart', '-k', service_target()],
-            capture_output=True,
-            check=False,
+            ['/bin/launchctl', 'kickstart', '-k', target], capture_output=True, check=False
         )
-        print(f'registered {label} with {app}')
+        print(f'installed {path}')
         return 0
 
     if service_loaded():
-        print(_run(['/bin/launchctl', 'print', service_target()]))
+        print(_run(['/bin/launchctl', 'print', target]))
     else:
         print(f'{label} is not loaded')
-    status = service_status(app)
-    if status:
-        print(f'System Settings: {status}')
     return 0
 
 
@@ -259,9 +242,6 @@ def cmd_plist(args: argparse.Namespace) -> int:
     if args.holder:
         plist_mod.write(plist_mod.holder_plist(helper), args.holder)
         print(args.holder)
-    if args.agent:
-        plist_mod.write(daemon_mod.bundled_agent_plist(), args.agent)
-        print(args.agent)
     return 0
 
 
@@ -439,10 +419,14 @@ def cmd_doctor(_: argparse.Namespace) -> int:
         print('✓ finder     asks for the current extension')
 
     if service_loaded():
-        print(f'✓ service    {daemon_mod.LABEL} loaded')
-    elif service_status(next(iter(installed_apps()), None)) == SWITCHED_OFF:
-        problems += 1
-        print(f'✗ service    {SWITCHED_OFF_HINT}')
+        state = service_state()
+        if state == 'running':
+            print(f'✓ service    {daemon_mod.LABEL} running')
+        else:
+            problems += 1
+            print(
+                f'✗ service    loaded but {state or "not running"}; see ~/Library/Logs/pvqld.log'
+            )
     else:
         problems += 1
         print('✗ service    not loaded; run "pvql service --install"')
@@ -479,7 +463,7 @@ def uninstall_targets(everything: bool) -> list[Path]:
     support = config_mod.APP_SUPPORT
     candidates = [
         *installed_apps(),
-        daemon_mod.unbundled_agent_path(),
+        daemon_mod.agent_path(),
         daemon_mod.legacy_agent_path(),
         config_mod.CACHE_DIR,
         support / 'venv',
@@ -534,9 +518,6 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     for executable in (plist_mod.EXT_EXECUTABLE, plist_mod.THUMB_EXECUTABLE):
         subprocess.run(['/usr/bin/pkill', '-x', executable], capture_output=True, check=False)
     for app in installed_apps():
-        program = registrar(app)
-        if program:
-            subprocess.run([str(program), 'unregister'], capture_output=True, check=False)
         # Where this layout keeps the extensions, where development builds of 0.9 kept
         # them, and where 0.8 and earlier did.
         legacy_folder = plist_mod.plugins_folder(app, plist_mod.LEGACY_HOLDER_BUNDLE)
@@ -590,7 +571,7 @@ def build_parser() -> argparse.ArgumentParser:
     service = sub.add_parser('service', help='install or remove the render service')
     service.add_argument('--install', action='store_true')
     service.add_argument('--uninstall', action='store_true')
-    service.add_argument('--app', help='the installed app; the first one found otherwise')
+    service.add_argument('--helper', help='absolute path to the pvql executable')
     service.set_defaults(func=cmd_service)
 
     preload = sub.add_parser('preload', help='load PyVista and VTK ahead of the first preview')
@@ -609,7 +590,6 @@ def build_parser() -> argparse.ArgumentParser:
     plist.add_argument('--extension')
     plist.add_argument('--thumbnail')
     plist.add_argument('--holder')
-    plist.add_argument('--agent', help='where the holder carries the service agent')
     plist.add_argument('--helper', help='absolute path to the pvql executable')
     plist.set_defaults(func=cmd_plist)
 
