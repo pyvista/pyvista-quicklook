@@ -27,7 +27,8 @@ uv run python -m pyvista_quicklook._formats_table README.md
 ## Names
 
 One project, three names, each where its own conventions apply: `pyvista-quicklook` is
-the package on PyPI and the program the render service runs as, `pvql` is the command,
+the package on PyPI and, as `pyvista-quicklook-daemon`, the program the render service
+runs as, `pvql` is the command,
 and `PyVista Quick Look` is what the reader sees, from the app bundle to the panel. The
 build's own files keep the compact `PyVistaQuickLook` spelling: the bundle identifier,
 the executables, and the downloadable zip.
@@ -42,7 +43,7 @@ installer unregisters every other copy of the app before registering, since a st
 Launch Services record keeps Quick Look from starting the extension at all.
 
 The render service is a launch agent in `~/Library/LaunchAgents` that runs `pvql
-daemon`, and Login Items lists it as `pvql`, apart from the app. Version 0.9.0 instead
+daemon`, and Login Items lists it as `pyvista-quicklook-daemon`, apart from the app. Version 0.9.0 instead
 registered it from inside the nested app with `SMAppService`, which made one Login
 Items entry but had launchd pin the service to that build's binary, so the next build
 would not start. The nested app still carries that agent's property list, and its

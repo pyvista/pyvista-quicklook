@@ -94,6 +94,16 @@ def test_service_install_writes_the_agent_and_retires_the_bundled_one(commands, 
     with (home / 'agent.plist').open('rb') as handle:
         agent = plistlib.load(handle)
     assert agent['ProgramArguments'] == ['/opt/pvql', 'daemon']
+    # Installed under its own name next to pvql, the service runs under that name.
+    named = home / 'bin' / daemon.SERVICE_PROGRAM
+    named.parent.mkdir()
+    named.write_text('')
+    args = argparse.Namespace(
+        install=True, uninstall=False, app=str(app), helper=str(home / 'bin' / 'pvql')
+    )
+    assert cli.cmd_service(args) == 0
+    with (home / 'agent.plist').open('rb') as handle:
+        assert plistlib.load(handle)['ProgramArguments'] == [str(named), 'daemon']
     assert [str(program), 'unregister'] in commands
     assert any(c[:2] == ['/bin/launchctl', 'bootstrap'] for c in commands)
     assert any('kickstart' in command for command in commands)

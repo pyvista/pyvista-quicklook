@@ -10,6 +10,8 @@ import tomllib
 
 import pytest
 
+from pyvista_quicklook import daemon
+
 ROOT = Path(__file__).parents[1]
 INSTALLER = ROOT / 'scripts' / 'install-from-source.sh'
 SCRIPT = INSTALLER.read_text()
@@ -113,6 +115,12 @@ def test_readme_names_the_installer_python():
     assert set(re.findall(r'Python,? (3\.\d+)', readme)) == {PYTHON_VERSION}
     project = tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']
     assert project['requires-python'].split(',')[0] == f'>={PYTHON_VERSION}'
+
+
+def test_the_service_program_is_a_command_the_package_installs():
+    """The name the agent runs under is an entry point, so uv installs it next to pvql."""
+    scripts = tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']['scripts']
+    assert scripts[daemon.SERVICE_PROGRAM] == scripts['pvql']
 
 
 def script_lines(first, last):

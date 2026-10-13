@@ -151,9 +151,12 @@ def cmd_service(args: argparse.Namespace) -> int:
 
     if args.install:
         helper = args.helper or shutil.which('pvql') or str(Path.home() / '.local/bin/pvql')
+        # Login Items names a launch agent after its program.
+        named = Path(helper).with_name(daemon_mod.SERVICE_PROGRAM)
+        program = str(named) if named.is_file() else helper
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open('wb') as handle:
-            plistlib.dump(daemon_mod.agent_plist(helper), handle, sort_keys=False)
+            plistlib.dump(daemon_mod.agent_plist(program), handle, sort_keys=False)
         retire_bundled_service(service_app(args))
         retire_legacy_service()
         unload_service()

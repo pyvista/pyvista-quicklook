@@ -32,6 +32,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 LABEL = 'org.pyvista.pvqld'
+# The name the helper is also installed under, which Login Items shows for the service.
+SERVICE_PROGRAM = 'pyvista-quicklook-daemon'
 # The agent 0.9.0 registered from inside the app, which launchd pinned to that build's
 # program and would not start again after an upgrade.
 BUNDLED_LABEL = f'{APP_BUNDLE_ID}.Service'
