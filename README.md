@@ -195,6 +195,22 @@ Previews are cached under `~/Library/Caches/PyVistaQuickLook`, keyed by the file
 path, size, and modification time, so editing a file invalidates its preview, and by the
 version of the converter, so an update rebuilds them rather than serving old ones.
 
+An edited file gets a new preview, but the old one stays on disk, as does the preview of
+a file that has been deleted. The render service clears these out when it starts and
+then once a day: each preview has a small `.src` record of the file it was built from,
+and a preview whose file has gone or changed is deleted. Previews made before these
+records were kept are cleared once, the first time. `pvql config set cache_check_minutes
+60` checks hourly, and `0` never checks.
+
+A preview is kept whenever the service cannot tell, or would have to ask: its file is on
+a disk that is not plugged in or a share that is not mounted, or in a folder macOS keeps
+private. The service looks in Desktop, Documents, Downloads, iCloud Drive, cloud
+storage folders, other apps' data, and other volumes only once a preview has found that
+folder or volume readable since the service started, so a check never raises a
+permission prompt of its own. `pvql cache --prune` checks now, and looks at everything
+the terminal running it can read, so macOS may ask whether the terminal may open those
+folders.
+
 The service loads PyVista and VTK in the background when it starts, which is at login
 and whenever it is reinstalled, so the first preview does not wait for them. `pvql
 warmup` does the same on demand, and `pvql config set warm_on_start false` turns the
@@ -347,6 +363,7 @@ They are kept in `~/Library/Application Support/PyVistaQuickLook/config.json`; `
 | `extra_args` | none | Extra arguments appended to `pyvista plot` |
 | `extensions.add`, `extensions.remove` | none | Extensions to claim or stop claiming, on the next install |
 | `cache` | `true` | Reuse previously built previews |
+| `cache_check_minutes` | `1440` (a day) | How often the service deletes previews of changed or deleted files; `0` never does |
 | `log` | `false` | Append activity to `pvql.log` beside the config file |
 
 A theme of your own is saved from PyVista and then named by its path; editing the file redraws
@@ -383,6 +400,7 @@ pvql finder           # say whether the Finder must restart to show previews
 pvql service          # manage the render service
 pvql config           # list settings; get, set, or unset one
 pvql config --init    # write a config file with discovered defaults
+pvql cache --prune    # delete previews of files that have changed or gone
 pvql cache --clear    # delete cached previews
 pvql uninstall        # remove everything, asking first
 ```

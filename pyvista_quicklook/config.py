@@ -41,6 +41,8 @@ DEFAULTS: dict[str, Any] = {
     'extra_args': [],
     'extensions': {'add': [], 'remove': []},
     'cache': True,
+    # How often the service drops previews of files that have changed or gone; 0 never.
+    'cache_check_minutes': 1440,
     'log': False,
 }
 
@@ -88,6 +90,7 @@ KINDS: dict[str, str] = {
     'extensions.add': 'extensions',
     'extensions.remove': 'extensions',
     'cache': 'switch',
+    'cache_check_minutes': 'minutes',
     'log': 'switch',
 }
 CHOICES: dict[str, tuple[str, ...]] = {
@@ -164,21 +167,21 @@ def parse(key: str, values: list[str]) -> Any:
             message = f'{key} takes one of: {", ".join(CHOICES[key])}.'
             raise SettingError(message)
         return value
-    if kind in ('count', 'seconds'):
+    if kind in ('count', 'minutes', 'seconds'):
         number: float
         try:
-            number = int(value) if kind == 'count' else float(value)
+            number = float(value) if kind == 'seconds' else int(value)
         except ValueError:
             number = -1
         if number < 0 or not math.isfinite(number) or (kind == 'seconds' and number == 0):
-            what = (
-                'a whole number, where 0 means no limit'
-                if kind == 'count'
-                else 'a number of seconds'
-            )
+            what = {
+                'count': 'a whole number, where 0 means no limit',
+                'minutes': 'a whole number of minutes, where 0 means never',
+                'seconds': 'a number of seconds',
+            }[kind]
             message = f'{key} takes {what}.'
             raise SettingError(message)
-        return int(number) if kind == 'count' or float(number).is_integer() else number
+        return number if kind == 'seconds' and not float(number).is_integer() else int(number)
     if kind == 'theme':
         return theme_spec(value)
     if kind == 'executable':

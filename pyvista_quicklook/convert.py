@@ -96,6 +96,7 @@ def describe(
             # A file the describer read but could not describe is remembered as such.
             if not scratch.is_file():
                 scratch.write_text('{}')
+            cache.remember(described, identity)
             scratch.replace(described)
         except environment.RenderError, OSError:
             # A failure that may pass, such as a timeout, is tried again next time.
@@ -181,8 +182,9 @@ def scene(
         environment.run(config, command, task=f'Converting {path.name}', cwd=path.parent)
 
     try:
-        built = cache.fill(out, config, f'{path} (scene)', build)
+        built = cache.fill(out, config, f'{path} (scene)', build, identity)
         if pending.is_file():
+            cache.remember(info_path(identity), identity)
             pending.replace(info_path(identity))
     finally:
         pending.unlink(missing_ok=True)
