@@ -31,7 +31,10 @@ from .plist import SERVICE_EXECUTABLE
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-LABEL = 'org.pyvista.pvqld'
+# A new label for the agent the app carries: macOS keys background items by label, and the
+# record an unbundled agent left under the old one keeps the new agent from registering.
+LABEL = 'org.pyvista.PyVistaQuickLook.Service'
+UNBUNDLED_LABEL = 'org.pyvista.pvqld'
 LEGACY_LABEL = 'io.github.user27182.pvqld'
 REQUEST_SUFFIX = '.pvqlreq'
 REPLY_SUFFIX = '.pvqlrep'
@@ -704,7 +707,7 @@ def request_preview(source: str, timeout: float = 90, scene: bool | None = None)
 
 def agent_path() -> Path:
     """Return where installs before the bundled agent wrote the launch agent."""
-    return Path.home() / 'Library' / 'LaunchAgents' / f'{LABEL}.plist'
+    return Path.home() / 'Library' / 'LaunchAgents' / f'{UNBUNDLED_LABEL}.plist'
 
 
 def legacy_agent_path() -> Path:

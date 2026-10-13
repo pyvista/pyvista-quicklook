@@ -2,7 +2,7 @@
 import Foundation
 import ServiceManagement
 
-let service = SMAppService.agent(plistName: "org.pyvista.pvqld.plist")
+let service = SMAppService.agent(plistName: "org.pyvista.PyVistaQuickLook.Service.plist")
 
 /// How System Settings has the service, in words `pvql doctor` matches on.
 func describe(_ status: SMAppService.Status) -> String {

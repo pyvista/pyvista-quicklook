@@ -29,7 +29,7 @@ def test_exchange_locations_are_in_the_extension_containers():
     assert daemon.drop_dir() == daemon.config_mod.MIRROR_PATH.parent
     assert daemon.config_mod.EXT_BUNDLE_ID in daemon.drop_dir().parts
     assert daemon.LEGACY_EXT_BUNDLE_ID in daemon.legacy_drop_dir().parts
-    assert daemon.agent_path().name == f'{daemon.LABEL}.plist'
+    assert daemon.agent_path().name == f'{daemon.UNBUNDLED_LABEL}.plist'
     assert daemon.legacy_agent_path().name == f'{daemon.LEGACY_LABEL}.plist'
 
 

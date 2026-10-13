@@ -96,9 +96,8 @@ def unload_service(label: str = daemon_mod.LABEL) -> None:
 
 def retire_legacy_service() -> None:
     """Stop and remove the agents earlier installs wrote to ~/Library/LaunchAgents."""
-    if daemon_mod.agent_path().exists():
-        unload_service()
-        daemon_mod.agent_path().unlink(missing_ok=True)
+    unload_service(daemon_mod.UNBUNDLED_LABEL)
+    daemon_mod.agent_path().unlink(missing_ok=True)
     unload_service(daemon_mod.LEGACY_LABEL)
     daemon_mod.legacy_agent_path().unlink(missing_ok=True)
     shutil.rmtree(daemon_mod.legacy_drop_dir(), ignore_errors=True)

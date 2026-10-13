@@ -69,7 +69,7 @@ jobs:
         test -x "$appex/Contents/MacOS/PyVistaQuickLookExtension"
         # The render service the nested app registers with macOS.
         test -x "$holder/Contents/MacOS/pvqld"
-        plutil -lint "$holder/Contents/Library/LaunchAgents/org.pyvista.pvqld.plist"
+        plutil -lint "$holder/Contents/Library/LaunchAgents/org.pyvista.PyVistaQuickLook.Service.plist"
         codesign --verify --deep --strict "$app"
         # A preview extension is only registered by macOS when it is sandboxed.
         codesign -d --entitlements - "$appex" 2>&1 | grep -q app-sandbox
