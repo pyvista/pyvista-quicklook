@@ -69,9 +69,11 @@ README once. The version comes from the tag alone, through setuptools-scm, so no
 in the repository is edited for a release. PyPI never reuses a version, so a release
 that was yanked or deleted needs the next number.
 
-To write the notes by hand, edit them on the release once CI has created it. Do not
-publish a release by hand before its assets are on it: the one-line installer downloads
-`install.sh` from whichever release is the latest. A draft saved by hand is fine, as CI
-attaches the assets and then publishes it. Should a release be published without its
-app all the same, the installer passes it over, and any pre-release, for the newest
-release that has one.
+Publishing a release from the GitHub web interface works too, since publishing creates
+the tag, but it leaves a window: the release is the latest from the moment it is
+published, and has no assets until the `release` job finishes some minutes later. In
+that window the installer passes it over for the newest release that has the app; if
+the job fails, the window stays open until a rerun succeeds, and the install link 404s
+should the fallback fail as well. To write the notes by hand without that window, save
+the release as a draft, which CI publishes once the assets are attached, or edit the
+notes on the release CI created.
