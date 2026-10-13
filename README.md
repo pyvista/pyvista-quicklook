@@ -180,7 +180,8 @@ hands it to a background render service, which reads it with PyVista, extracts t
 surface, colours the vertices by the active scalars, and writes a PLY. The extension
 shows that PLY in a SceneKit view, which is what makes the preview turnable.
 A mesh without scalars is drawn in PyVista's theme colour, and the scene is lit by VTK's
-light kit, which turns with the camera, so its colours match PyVista's own renders.
+light kit, which turns with the camera, so its colours match PyVista's own renders. Faces
+are drawn flat, as PyVista draws them, unless the theme's `smooth_shading` is on.
 
 Point data is interpolated across each face. Cell data is drawn flat: the cells are
 split apart first, so each keeps its own colour. Lines are drawn as tubes and point

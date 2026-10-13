@@ -6,6 +6,9 @@ import SceneKit
 /// Renders a scene file off screen with the same camera the panel uses.
 func render(_ input: URL, to output: URL, size: CGFloat) throws {
     let scene = try SCNScene(url: input, options: nil)
+    if drawsFlat(input) {
+        drawFlat(scene)
+    }
 
     // SCNScene reports an unreadable file by handing back an empty scene.
     var geometries = 0

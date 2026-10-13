@@ -630,3 +630,14 @@ def test_a_failed_selective_read_falls_back_and_says_so(tmp_path, capsys, monkey
 def test_a_file_that_cannot_be_opened_does_not_look_like_text(tmp_path):
     """Text is only claimed for a file whose opening can be read."""
     assert not export_mod.looks_like_text(str(tmp_path / 'gone.dat'))
+
+
+@pytest.mark.parametrize(('smooth', 'style'), [(False, b'flat'), (True, b'smooth')])
+def test_the_scene_says_how_the_theme_shades(tmp_path, monkeypatch, smooth, style):
+    """The scene's header names the theme's shading, and the PLY still reads."""
+    monkeypatch.setattr(pv.global_theme, 'smooth_shading', smooth)
+    out = written(pv.Sphere(theta_resolution=8, phi_resolution=8), tmp_path)
+    head = (tmp_path / 'out.ply').read_bytes()[:200]
+    assert head.startswith(b'ply\nformat ')
+    assert b'\ncomment pvql shading ' + style + b'\n' in head
+    assert out.n_points > 0

@@ -657,6 +657,9 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             case let .scene(sceneURL):
                 defer { try? FileManager.default.removeItem(at: sceneURL) }
                 let scene = try SCNScene(url: sceneURL, options: nil)
+                if drawsFlat(sceneURL) {
+                    drawFlat(scene)
+                }
                 // Framing reads every vertex, so it is done here rather than on the main thread.
                 outcome = .scene(scene, previewCamera(for: scene), info)
             case let .image(png):

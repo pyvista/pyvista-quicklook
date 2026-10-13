@@ -94,6 +94,25 @@ func previewCamera(for scene: SCNScene) -> Framing {
     return (node, target)
 }
 
+/// Whether a scene file asks for its faces drawn flat, as PyVista's theme draws them by default.
+func drawsFlat(_ url: URL) -> Bool {
+    guard let handle = try? FileHandle(forReadingFrom: url) else {
+        return false
+    }
+    defer { try? handle.close() }
+    let head = (try? handle.read(upToCount: 1024)) ?? Data()
+    return head.range(of: Data("comment pvql shading flat\n".utf8)) != nil
+}
+
+/// Shades every face with its own slope, as VTK's flat interpolation does.
+func drawFlat(_ scene: SCNScene) {
+    // The view-space position's change across the pixel gives the face's normal toward the eye.
+    let modifier = "_surface.normal = normalize(cross(dfdy(_surface.position), dfdx(_surface.position)));"
+    scene.rootNode.enumerateHierarchy { node, _ in
+        node.geometry?.materials.forEach { $0.shaderModifiers = [.surface: modifier] }
+    }
+}
+
 /// SceneKit's intensity for a light of unit strength, in lumens.
 let unitLightIntensity: CGFloat = 1000
 

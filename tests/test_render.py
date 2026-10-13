@@ -192,6 +192,22 @@ def test_the_scene_opens_framed_as_the_still_is(tmp_path):
     assert np.allclose(outline(scene.astype(int).sum(axis=2) > 30), expected, atol=0.03)
 
 
+def varying(pixels):
+    """Return the share of side-by-side lit pixels that differ, low where faces are flat."""
+    lit = pixels.astype(int).sum(axis=2) > 30
+    pairs = lit[:, 1:] & lit[:, :-1]
+    steps = np.abs(np.diff(pixels.astype(int), axis=1)).sum(axis=2) > 0
+    return (steps & pairs).sum() / pairs.sum()
+
+
+@pytest.mark.parametrize(('smooth', 'low', 'high'), [(False, 0, 0.3), (True, 0.4, 1)])
+def test_faces_are_shaded_as_the_theme_says(tmp_path, monkeypatch, smooth, low, high):
+    """Faces are drawn flat, as PyVista draws them, unless the theme shades smoothly."""
+    monkeypatch.setattr(pv.global_theme, 'smooth_shading', smooth)
+    sphere = pv.Sphere(theta_resolution=12, phi_resolution=12)
+    assert low < varying(rendered(sphere, tmp_path)) < high
+
+
 def test_a_point_cloud_is_drawn(tmp_path):
     """Glyphed points reach the frame instead of rendering blank."""
     cloud = pv.PolyData(np.random.default_rng(0).random((400, 3)))

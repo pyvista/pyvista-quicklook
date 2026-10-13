@@ -424,6 +424,17 @@ def export(
     if is_open:
         surface = both_sides(surface)
     surface.save(destination, texture='RGB')
+    mark_shading(destination)
+
+
+def mark_shading(destination: str) -> None:
+    """Note in a PLY's header whether the theme shades smoothly, for the 3D view to follow."""
+    path = Path(destination)
+    data = path.read_bytes()
+    style = b'smooth' if pv.global_theme.smooth_shading else b'flat'
+    # After the 'ply' and 'format' lines, where a reader expects comments.
+    at = data.index(b'\n', data.index(b'\n') + 1) + 1
+    path.write_bytes(data[:at] + b'comment pvql shading ' + style + b'\n' + data[at:])
 
 
 def summary(error: BaseException) -> str:
