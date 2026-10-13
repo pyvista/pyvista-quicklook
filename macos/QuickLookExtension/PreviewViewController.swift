@@ -616,12 +616,12 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             self.present(content, mode, info, request, generation: generation)
         }
         let failed = { (message: String) in "Could not preview \(name)\n\n\(message)" }
+        // The description comes in under a second, and a picture shown without it would move
+        // when the details arrive beside or below it.
+        let described = thumbnail == nil ? nil : DescriptionWait(url)
+        let early = described?.wait(seconds: 2)
         // A current picture the file carries of itself is the preview, without the service.
-        if shown == .still, let png = thumbnail, request.carried?.isStale == false {
-            // The description usually comes in a fraction of a second, and showing the picture
-            // without it first would shrink the picture when the details arrive beside or below it.
-            let described = DescriptionWait(url)
-            let early = described.wait(seconds: 0.5)
+        if shown == .still, let png = thumbnail, let described, request.carried?.isStale == false {
             DispatchQueue.main.async {
                 let picture = pictureView(png) ?? messageView(failed("Its picture could not be read."))
                 present(picture, .still, early.flatMap(MeshInfo.init))
@@ -641,7 +641,7 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             pvqlLog("showing the picture \(name) carries")
             DispatchQueue.main.async {
                 if completion.isPending {
-                    present(placeholderView(name, thumbnail), shown, nil)
+                    present(placeholderView(name, thumbnail), shown, early.flatMap(MeshInfo.init))
                     completion.finish(nil)
                 }
             }
@@ -659,9 +659,7 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             case let .scene(sceneURL):
                 defer { try? FileManager.default.removeItem(at: sceneURL) }
                 let scene = try SCNScene(url: sceneURL, options: nil)
-                if drawsFlat(sceneURL) {
-                    drawFlat(scene)
-                }
+                SceneStyle.read(sceneURL).apply(to: scene)
                 // Framing reads every vertex, so it is done here rather than on the main thread.
                 outcome = .scene(scene, previewCamera(for: scene), info)
             case let .image(png):
