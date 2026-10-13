@@ -50,7 +50,7 @@ jobs:
     - name: Check the bundle is complete and signed
       run: |
         app="build/PyVista Quick Look.app"
-        appex="$app/Contents/PlugIns/PyVistaQuickLookExtension.appex"
+        appex="$app/Contents/Library/PyVista Quick Look Extensions.app/Contents/PlugIns/PyVistaQuickLookExtension.appex"
         test -x "$app/Contents/MacOS/PyVistaQuickLook"
         test -x "$appex/Contents/MacOS/PyVistaQuickLookExtension"
         codesign --verify --deep --strict "$app"

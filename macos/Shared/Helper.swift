@@ -160,11 +160,17 @@ enum Helper {
         }?.bundleIdentifier
     }
 
-    /// Returns the folder the service watches: the container of the preview extension the app embeds.
+    /// The app's extensions live in an app of their own, nested here and never launched, since
+    /// macOS re-registers an app without a Developer ID signature on every launch, and with it
+    /// the extensions it embeds.
+    static func plugInsFolder() -> URL {
+        Bundle.main.bundleURL.appendingPathComponent("Contents/Library/PyVista Quick Look Extensions.app/Contents/PlugIns")
+    }
+
+    /// Returns the folder the service watches: the container of the preview extension the app ships.
     static func exchangeDirectory() -> String {
         guard ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] == nil,
-              let plugIns = Bundle.main.builtInPlugInsURL,
-              let identifier = previewExtension(in: plugIns)
+              let identifier = previewExtension(in: plugInsFolder())
         else {
             return NSTemporaryDirectory()
         }
