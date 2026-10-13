@@ -52,13 +52,16 @@ patch = ['subprocess']
 source = ['pyvista_quicklook']
 
 [tool.pytest.ini_options]
-addopts = '--cov=pyvista_quicklook --cov-fail-under=95'
+# The slowest tests, so a test that has grown slow is seen.
+addopts = '--cov=pyvista_quicklook --cov-fail-under=95 --durations=25'
 filterwarnings = [
   'error',
   # lib3mf's ctypes structures trip a deprecation in Python 3.14; nothing here can fix it.
   "ignore:Due to '_pack_':DeprecationWarning:lib3mf",
 ]
 testpaths = 'tests'
+# One line per test, named as it starts, so a log shows which test a hang is in.
+verbosity_test_cases = 1
 
 [tool.ruff]
 indent-width = 4
