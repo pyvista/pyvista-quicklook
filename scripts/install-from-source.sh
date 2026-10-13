@@ -216,7 +216,8 @@ echo "==> registering with Launch Services and Quick Look"
 # Quick Look's own service caches which extension answers; it restarts on the next preview.
 /usr/bin/killall QuickLookUIService 2>/dev/null || true
 
-# After the app is in place, since the nested app it holds registers the service.
+# After the app is in place, so that the agent a 0.9.0 install registered from inside it
+# is unregistered.
 echo "==> installing the render service"
 "$HELPER" service --install --app "$APP"
 

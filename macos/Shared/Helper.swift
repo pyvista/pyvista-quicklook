@@ -118,8 +118,7 @@ enum Helper {
     static let serviceMissingMessage = """
     The PyVista Quick Look render service is not answering.
 
-    Check that PyVista Quick Look is switched on in System Settings, under
-    General, Login Items & Extensions. Otherwise start it with:
+    Start it with:
 
         pvql service --install
 

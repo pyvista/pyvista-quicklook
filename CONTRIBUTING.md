@@ -41,11 +41,12 @@ showing a preview; held by an app that is never launched, they stay registered. 
 installer unregisters every other copy of the app before registering, since a stale
 Launch Services record keeps Quick Look from starting the extension at all.
 
-The nested app also carries the render service, as a launch agent in
-`Contents/Library/LaunchAgents` that runs `Contents/MacOS/pvqld`, which starts `pvql
-daemon`. The installer runs the nested app's binary directly, never through Launch
-Services, to register the agent with `SMAppService`; Login Items then lists the
-extensions and the service as one entry, under the nested bundle's file name.
+The render service is a launch agent in `~/Library/LaunchAgents` that runs `pvql
+daemon`, and Login Items lists it as `pvql`, apart from the app. Version 0.9.0 instead
+registered it from inside the nested app with `SMAppService`, which made one Login
+Items entry but had launchd pin the service to that build's binary, so the next build
+would not start. The nested app still carries that agent's property list, and its
+binary unregisters it, so that upgrades from 0.9.0 retire it.
 
 ## Releasing
 

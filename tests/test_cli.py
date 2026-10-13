@@ -71,85 +71,60 @@ def installed_holder(home):
 
 
 def test_service_uninstall_unregisters_and_removes_old_agents(capsys, commands, home):
-    """Uninstalling unregisters the bundled agent and deletes those earlier installs wrote."""
+    """Uninstalling unloads the agent, unregisters 0.9.0's, and deletes earlier installs' files."""
     _, program = installed_holder(home)
     (home / 'agent.plist').write_text('x')
     (home / 'old-agent.plist').write_text('x')
     cli.daemon_mod.legacy_drop_dir().mkdir(parents=True)
-    args = argparse.Namespace(install=False, uninstall=True, app=None)
+    args = argparse.Namespace(install=False, uninstall=True, app=None, helper=None)
     assert cli.cmd_service(args) == 0
     assert [str(program), 'unregister'] in commands
     assert not (home / 'agent.plist').exists()
     assert not (home / 'old-agent.plist').exists()
     assert not cli.daemon_mod.legacy_drop_dir().exists()
-    assert sum('bootout' in command for command in commands) == 2
+    assert sum('bootout' in command for command in commands) == 3
     assert 'removed' in capsys.readouterr().out
 
 
-def test_service_install_registers_the_agent_the_app_carries(commands, home):
-    """Installing retires the old agent file, then has the nested app register its own."""
+def test_service_install_writes_the_agent_and_retires_the_bundled_one(commands, home):
+    """Installing writes the agent for the helper, unregisters 0.9.0's, and starts it."""
     app, program = installed_holder(home)
-    (home / 'agent.plist').write_text('x')
-    args = argparse.Namespace(install=True, uninstall=False, app=str(app))
+    args = argparse.Namespace(install=True, uninstall=False, app=str(app), helper='/opt/pvql')
     assert cli.cmd_service(args) == 0
-    assert not (home / 'agent.plist').exists()
-    assert [str(program), 'register'] in commands
+    with (home / 'agent.plist').open('rb') as handle:
+        agent = plistlib.load(handle)
+    assert agent['ProgramArguments'] == ['/opt/pvql', 'daemon']
+    assert [str(program), 'unregister'] in commands
+    assert any(c[:2] == ['/bin/launchctl', 'bootstrap'] for c in commands)
     assert any('kickstart' in command for command in commands)
 
 
-def test_service_install_reports_a_refused_registration(capsys, monkeypatch, home):
-    """A registration macOS refuses is reported with its reason."""
-    app, _ = installed_holder(home)
+def test_service_install_needs_no_app(commands, home):
+    """Without an installed app there is no 0.9.0 agent to retire, and the install goes on."""
+    args = argparse.Namespace(install=True, uninstall=False, app=None, helper='/opt/pvql')
+    assert cli.cmd_service(args) == 0
+    assert (home / 'agent.plist').exists()
+    assert not any(c[-1] == 'unregister' for c in commands)
+
+
+def test_service_install_reports_a_job_launchd_refuses(capsys, monkeypatch, home):
+    """A bootstrap launchd keeps refusing is reported with its reason, after a few tries."""
+    monkeypatch.setattr(cli.time, 'sleep', lambda seconds: None)
 
     def run(command, **kwargs):
-        if command[-1] == 'register':
-            return subprocess.CompletedProcess(command, 1, '', 'Operation not permitted\n')
+        if command[1:2] == ['bootstrap']:
+            return subprocess.CompletedProcess(command, 5, '', 'Input/output error\n')
         return subprocess.CompletedProcess(command, 0, '', '')
 
     monkeypatch.setattr(cli.subprocess, 'run', run)
-    args = argparse.Namespace(install=True, uninstall=False, app=str(app))
+    args = argparse.Namespace(install=True, uninstall=False, app=None, helper='/opt/pvql')
     assert cli.cmd_service(args) == 1
-    assert 'Operation not permitted' in capsys.readouterr().err
-
-
-def test_service_install_needs_an_app_that_carries_the_agent(capsys, commands, home):
-    """With no app holding the agent, the agent already running is left as it is."""
-    (home / 'agent.plist').write_text('x')
-    args = argparse.Namespace(install=True, uninstall=False, app=None)
-    assert cli.cmd_service(args) == 1
-    assert commands == []
-    assert (home / 'agent.plist').exists()
-    assert 'reinstall' in capsys.readouterr().err
-
-
-def test_service_install_reports_a_service_switched_off(capsys, monkeypatch, home):
-    """A service left switched off in System Settings fails the install, saying where."""
-    app, _ = installed_holder(home)
-    monkeypatch.setattr(
-        cli.subprocess,
-        'run',
-        lambda command, **k: subprocess.CompletedProcess(command, 0, f'{cli.SWITCHED_OFF}\n', ''),
-    )
-    args = argparse.Namespace(install=True, uninstall=False, app=str(app))
-    assert cli.cmd_service(args) == 1
-    assert 'Login Items & Extensions' in capsys.readouterr().err
-
-
-def test_service_reports_how_system_settings_has_it(capsys, monkeypatch, home):
-    """With no flags, the report says whether the service is switched on in Login Items."""
-    installed_holder(home)
-    monkeypatch.setattr(
-        cli, '_run', lambda command: 'requires approval' if command[-1] == 'status' else ''
-    )
-    assert cli.cmd_service(argparse.Namespace(install=False, uninstall=False, app=None)) == 0
-    assert 'System Settings: requires approval' in capsys.readouterr().out
+    assert 'Input/output error' in capsys.readouterr().err
 
 
 def test_service_reports_a_job_that_is_not_loaded(capsys, monkeypatch):
     """With no flags, the status of the job is printed, or that it is not loaded."""
-    monkeypatch.setattr(cli, '_run', lambda command: 'Bad request.')
-    monkeypatch.setattr(cli, '_succeeds', lambda command: False)
-    monkeypatch.setattr(cli, 'installed_apps', list)
+    monkeypatch.setattr(cli, '_run', lambda command: '')
     assert cli.cmd_service(argparse.Namespace(install=False, uninstall=False, app=None)) == 0
     assert 'is not loaded' in capsys.readouterr().out
 
@@ -398,10 +373,11 @@ def test_run_and_succeeds_survive_a_missing_program(tmp_path):
 def doctor(home, monkeypatch):
     """Return a hook that sets what each doctor check finds."""
 
-    def setup(*, healthy, preview=None, pyvista_runs=None, loaded=None, status=''):
+    def setup(*, healthy, preview=None, pyvista_runs=None, loaded=None, state=None):
         interpreter = sys.executable if healthy else None
         runs = healthy if pyvista_runs is None else pyvista_runs
         loaded = healthy if loaded is None else loaded
+        state = ('running' if healthy else '') if state is None else state
         monkeypatch.setattr(cli.config_mod, 'find_python', lambda cfg: interpreter)
         monkeypatch.setattr(cli.config_mod, 'resolve_pyvista', lambda cfg: interpreter)
         monkeypatch.setattr(
@@ -410,7 +386,11 @@ def doctor(home, monkeypatch):
         monkeypatch.setattr(
             cli,
             '_run',
-            lambda command: status if command[-1] == 'status' else ('loaded' if healthy else ''),
+            lambda command: (
+                f'{{\n\tstate = {state}\n}}'
+                if command[0].endswith('launchctl')
+                else ('loaded' if healthy else '')
+            ),
         )
         if healthy:
             (home / 'Applications' / plist.APP_BUNDLE).mkdir(parents=True)
@@ -464,19 +444,16 @@ def test_doctor_reports_a_failed_render(capsys, doctor, tmp_path):
     assert '1 problem(s) found' in out
 
 
-def test_doctor_says_when_the_service_is_switched_off(capsys, doctor, home):
-    """A service switched off in System Settings is named as that, not as not installed."""
+def test_doctor_says_when_the_service_is_loaded_but_not_running(capsys, doctor):
+    """A service launchd has but cannot start, as after a stale upgrade, is a problem."""
 
     def preview(sample, timeout):
         message = 'service did not answer'
         raise RenderError(message)
 
-    doctor(healthy=True, preview=preview, loaded=False, status=cli.SWITCHED_OFF)
-    installed_holder(home)
+    doctor(healthy=True, preview=preview, state='spawn scheduled')
     assert cli.cmd_doctor(argparse.Namespace()) == 1
-    out = capsys.readouterr().out
-    assert f'✗ service    {cli.SWITCHED_OFF_HINT}' in out
-    assert 'not loaded' not in out
+    assert '✗ service    loaded but spawn scheduled; see' in capsys.readouterr().out
 
 
 def test_doctor_counts_every_missing_piece(capsys, doctor):
@@ -683,7 +660,7 @@ def test_uninstall_removes_everything_but_the_config(installation, capsys):
 
 
 def test_uninstall_unregisters_the_service_before_removing_the_app(installation):
-    """The service the nested app registered is unregistered, then the app is removed."""
+    """The agent a 0.9.0 install registered from the app is unregistered before it goes."""
     app, program = installed_holder(installation.home)
     assert cli.cmd_uninstall(argparse.Namespace(yes=True, all=False)) == 0
     assert [str(program), 'unregister'] in installation.commands
@@ -752,7 +729,7 @@ def test_service_install_retires_the_agent_of_the_old_label(commands, home):
     app, _ = installed_holder(home)
     (home / 'old-agent.plist').write_text('x')
     cli.daemon_mod.legacy_drop_dir().mkdir(parents=True)
-    args = argparse.Namespace(install=True, uninstall=False, app=str(app))
+    args = argparse.Namespace(install=True, uninstall=False, app=str(app), helper=None)
     assert cli.cmd_service(args) == 0
     assert not (home / 'old-agent.plist').exists()
     assert not cli.daemon_mod.legacy_drop_dir().exists()
@@ -842,7 +819,7 @@ def test_plist_writes_every_file(tmp_path, monkeypatch):
     assert held['CFBundleIdentifier'] == plist.HOLDER_BUNDLE_ID
     assert held['LSBackgroundOnly'] is True
     assert held['PVQLHelperPath'] == '/bin/pvql'
-    assert plistlib.loads(agent.read_bytes())['Label'] == daemon.LABEL
+    assert plistlib.loads(agent.read_bytes())['Label'] == daemon.BUNDLED_LABEL
     assert plistlib.loads(app.read_bytes())['PVQLHelperPath'] == '/bin/pvql'
     assert plistlib.loads(ext.read_bytes())['CFBundlePackageType'] == 'XPC!'
     assert plistlib.loads(thumb.read_bytes())['CFBundleIdentifier'] == plist.THUMB_BUNDLE_ID

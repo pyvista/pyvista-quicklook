@@ -333,18 +333,19 @@ def test_the_build_targets_the_oldest_macos_the_bundles_declare():
 
 def test_every_part_names_the_service_agent_as_daemon_does():
     """The registrar, the build and CI name the agent's plist by daemon.LABEL."""
-    from pyvista_quicklook import cli
     from pyvista_quicklook import daemon
     from pyvista_quicklook import plist
 
     registrar = (ROOT / 'macos' / 'Holder' / 'main.swift').read_text()
     build = (ROOT / 'scripts' / 'build.sh').read_text()
-    assert f'{plist.APP_BUNDLE_ID}.Service' == daemon.LABEL
-    assert f'"{daemon.LABEL}.plist"' in registrar
+    assert f'{plist.APP_BUNDLE_ID}.Service' == daemon.BUNDLED_LABEL
+    assert f'"{daemon.BUNDLED_LABEL}.plist"' in registrar
     assert f'APP_ID="{plist.APP_BUNDLE_ID}"' in build
     assert 'SERVICE_LABEL="$APP_ID.Service"' in build
-    assert f'{daemon.LABEL}.plist' in (ROOT / '.github' / 'workflows' / 'ci.yml').read_text()
-    assert f'return "{cli.SWITCHED_OFF}"' in registrar
+    assert (
+        f'{daemon.BUNDLED_LABEL}.plist' in (ROOT / '.github' / 'workflows' / 'ci.yml').read_text()
+    )
+    assert 'case "register"' not in registrar
 
 
 def test_both_installers_refuse_a_macos_older_than_the_bundles_declare():

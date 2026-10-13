@@ -1,10 +1,10 @@
-// Holds the extensions and the render service; never launched, only run to (un)register it.
+// Holds the extensions; never launched, only run to unregister the agent 0.9.0 registered.
 import Foundation
 import ServiceManagement
 
 let service = SMAppService.agent(plistName: "org.pyvista.PyVistaQuickLook.Service.plist")
 
-/// How System Settings has the service, in words `pvql doctor` matches on.
+/// How System Settings has the agent.
 func describe(_ status: SMAppService.Status) -> String {
     switch status {
     case .enabled: return "enabled"
@@ -21,20 +21,6 @@ func fail(_ message: String) -> Never {
 }
 
 switch CommandLine.arguments.dropFirst().first {
-case "register":
-    // Left alone when switched off in System Settings, which is the reader's choice.
-    if service.status == .requiresApproval {
-        print(describe(service.status))
-        exit(0)
-    }
-    // Registered afresh, since macOS runs only the build of the program it registered.
-    try? service.unregister()
-    do {
-        try service.register()
-    } catch {
-        fail("\(error.localizedDescription) (\(describe(service.status)))")
-    }
-    print(describe(service.status))
 case "unregister":
     if service.status != .notRegistered {
         do {
@@ -47,5 +33,5 @@ case "unregister":
 case "status":
     print(describe(service.status))
 default:
-    print("This app holds the PyVista Quick Look extensions and render service; it does nothing on its own.")
+    print("This app holds the PyVista Quick Look extensions; it does nothing on its own.")
 }
