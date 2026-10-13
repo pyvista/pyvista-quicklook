@@ -10,6 +10,7 @@ dev = [
   'pre-commit',
   'pytest',
   'pytest-cov',
+  'pytest-timeout',
   'pyvista-cad[step-light,3mf]',
   'pyvista[io,io-override]==0.49.0',
 ]
@@ -52,13 +53,16 @@ patch = ['subprocess']
 source = ['pyvista_quicklook']
 
 [tool.pytest.ini_options]
-addopts = '--cov=pyvista_quicklook --cov-fail-under=95'
+# The slowest tests, so a test that has grown slow, or hung, is seen.
+addopts = '--cov=pyvista_quicklook --cov-fail-under=95 --durations=25'
 filterwarnings = [
   'error',
   # lib3mf's ctypes structures trip a deprecation in Python 3.14; nothing here can fix it.
   "ignore:Due to '_pack_':DeprecationWarning:lib3mf",
 ]
 testpaths = 'tests'
+# Well above the slowest test, so a hang fails with its stack rather than stalling CI.
+timeout = 300
 
 [tool.ruff]
 indent-width = 4
