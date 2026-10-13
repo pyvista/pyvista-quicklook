@@ -43,6 +43,16 @@ func textContents(of url: URL) -> String? {
 final class LitSceneView: SCNView {
     /// Held here, since a view only keeps a weak reference to its delegate.
     var lights: LightsFollowCamera?
+    /// The camera the scene opens with, framed as the still is.
+    var framed: SCNNode?
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        // The still fits the shorter side, so the view angle spans that side until the scene is turned.
+        if let framed, pointOfView === framed {
+            framed.camera?.projectionDirection = newSize.width < newSize.height ? .horizontal : .vertical
+        }
+    }
 }
 
 /// Builds a view that lets the reader turn the mesh with the mouse.
@@ -54,7 +64,10 @@ func sceneView(for scene: SCNScene) -> SCNView {
     view.antialiasingMode = .multisampling4X
     view.backgroundColor = .clear
 
-    view.pointOfView = previewCamera(for: scene)
+    let (camera, target) = previewCamera(for: scene)
+    view.pointOfView = camera
+    view.framed = camera
+    view.defaultCameraController.target = SCNVector3(target)
     view.lights = LightsFollowCamera(lightLikePyVista(scene))
     view.delegate = view.lights
     return view

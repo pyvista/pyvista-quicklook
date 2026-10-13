@@ -32,7 +32,7 @@ func render(_ input: URL, to output: URL, size: CGFloat) throws {
 
     let renderer = SCNRenderer(device: device, options: nil)
     renderer.scene = scene
-    let camera = previewCamera(for: scene)
+    let camera = previewCamera(for: scene).node
     lightLikePyVista(scene).simdWorldOrientation = camera.simdWorldOrientation
     renderer.pointOfView = camera
 

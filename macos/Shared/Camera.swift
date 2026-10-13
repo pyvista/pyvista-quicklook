@@ -2,28 +2,93 @@ import AppKit
 import Foundation
 import SceneKit
 
-/// Returns a camera three quarters round and a little above the scene, with +z up.
-func previewCamera(for scene: SCNScene) -> SCNNode {
+/// PyVista's default view direction, from the scene toward the camera, with +z up.
+let viewDirection = simd_normalize(SIMD3<Float>(1, 1, 1))
+/// PyVista's default view angle, in degrees.
+let viewAngle: Float = 30
+/// Space left around the scene's outline, as a share of the picture's side, as stills leave it.
+let frameMargin: Float = 0.05
+
+/// Returns every vertex in the scene, in world coordinates.
+func worldVertices(_ scene: SCNScene) -> [SIMD3<Float>] {
+    var points: [SIMD3<Float>] = []
+    scene.rootNode.enumerateHierarchy { node, _ in
+        guard let geometry = node.geometry else {
+            return
+        }
+        let transform = node.simdWorldTransform
+        for source in geometry.sources(for: .vertex)
+        where source.usesFloatComponents && source.componentsPerVector >= 3 {
+            let wide = source.bytesPerComponent == 8
+            source.data.withUnsafeBytes { raw in
+                for index in 0..<source.vectorCount {
+                    let start = source.dataOffset + index * source.dataStride
+                    var point = SIMD4<Float>(0, 0, 0, 1)
+                    for axis in 0..<3 {
+                        let at = start + axis * source.bytesPerComponent
+                        point[axis] = wide
+                            ? Float(raw.loadUnaligned(fromByteOffset: at, as: Double.self))
+                            : raw.loadUnaligned(fromByteOffset: at, as: Float.self)
+                    }
+                    let world = transform * point
+                    points.append(SIMD3(world.x, world.y, world.z))
+                }
+            }
+        }
+    }
+    return points
+}
+
+/// Returns a camera where PyVista puts its own, and the point it turns about.
+///
+/// The camera is aimed through the middle of the scene's outline and its view angle narrowed
+/// until the outline fills it less a margin, as a still is cropped to the dataset.
+func previewCamera(for scene: SCNScene) -> (node: SCNNode, target: SIMD3<Float>) {
     let (center, radius) = scene.rootNode.boundingSphere
+    let middle = SIMD3<Float>(Float(center.x), Float(center.y), Float(center.z))
+    let halfAngle = viewAngle / 2 * .pi / 180
+    // VTK backs away until the bounding sphere fills its view angle.
+    let distance = Float(radius) / sin(halfAngle)
+
     let camera = SCNCamera()
     camera.zNear = 0.01
-    camera.zFar = Double(radius) * 100
-
+    camera.zFar = Double(distance + Float(radius)) * 10
     let node = SCNNode()
     node.camera = camera
-
-    let middle = SCNVector3(CGFloat(center.x), CGFloat(center.y), CGFloat(center.z))
-    let offset = SCNVector3(1, 1, 0.85)
-    let length = sqrt(offset.x * offset.x + offset.y * offset.y + offset.z * offset.z)
-    let distance = CGFloat(radius) * 2.6
-    node.position = SCNVector3(
-        middle.x + offset.x / length * distance,
-        middle.y + offset.y / length * distance,
-        middle.z + offset.z / length * distance
-    )
+    node.simdPosition = middle + viewDirection * distance
     scene.rootNode.addChildNode(node)
-    node.look(at: middle, up: SCNVector3(0, 0, 1), localFront: SCNVector3(0, 0, -1))
-    return node
+
+    let up = SIMD3<Float>(0, 0, 1)
+    var target = middle
+    var span = 2 * tan(halfAngle)
+    let points = worldVertices(scene)
+    // Aiming moves the outline a little, so it is measured again from the new aim.
+    for _ in 0..<3 {
+        node.simdLook(at: target, up: up, localFront: SIMD3(0, 0, -1))
+        let toCamera = node.simdWorldTransform.inverse
+        var low = SIMD2<Float>(repeating: .infinity)
+        var high = -low
+        for point in points {
+            let seen = toCamera * SIMD4(point, 1)
+            guard seen.z < 0 else {
+                continue
+            }
+            let slope = SIMD2(seen.x, seen.y) / -seen.z
+            low = simd_min(low, slope)
+            high = simd_max(high, slope)
+        }
+        guard low.x <= high.x else {
+            break
+        }
+        let aim = (low + high) / 2
+        let depth = simd_distance(node.simdPosition, middle)
+        let world = node.simdWorldTransform * SIMD4(aim.x * depth, aim.y * depth, -depth, 1)
+        target = SIMD3(world.x, world.y, world.z)
+        span = max(high.x - low.x, high.y - low.y) * (1 + 2 * frameMargin)
+    }
+    node.simdLook(at: target, up: up, localFront: SIMD3(0, 0, -1))
+    camera.fieldOfView = CGFloat(2 * atan(span / 2) * 180 / .pi)
+    return (node, target)
 }
 
 /// SceneKit's intensity for a light of unit strength, in lumens.
