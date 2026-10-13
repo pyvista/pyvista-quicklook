@@ -24,23 +24,51 @@ private let logStamp: DateFormatter = {
     return formatter
 }()
 
+/// The debug log file, kept open between lines and started afresh once it grows too large.
+private final class DebugLog {
+    static let shared = DebugLog()
+    static let maximumBytes: UInt64 = 1_000_000
+    /// How many lines go by between looks at the file's size.
+    static let linesPerCheck = 100
+
+    let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("pvql-extension.log")
+    private let queue = DispatchQueue(label: "org.pyvista.PyVistaQuickLook.log")
+    private var handle: FileHandle?
+    private var linesSinceCheck = DebugLog.linesPerCheck
+
+    /// Appends a line, reopening the file when it is missing or has outgrown its limit.
+    func append(_ line: String) {
+        queue.sync {
+            linesSinceCheck += 1
+            if linesSinceCheck >= Self.linesPerCheck {
+                linesSinceCheck = 0
+                reopen()
+            }
+            handle?.write(Data(line.utf8))
+        }
+    }
+
+    /// Opens the file for appending, emptied first when it is above the limit.
+    private func reopen() {
+        try? handle?.close()
+        handle = nil
+        let manager = FileManager.default
+        if let size = (try? manager.attributesOfItem(atPath: path))?[.size] as? UInt64, size > Self.maximumBytes {
+            try? manager.removeItem(atPath: path)
+        }
+        if !manager.fileExists(atPath: path) {
+            manager.createFile(atPath: path, contents: nil)
+        }
+        handle = FileHandle(forWritingAtPath: path)
+        handle?.seekToEndOfFile()
+    }
+}
+
 /// Appends a line to a debug log inside the extension's own temporary directory.
 func pvqlLog(_ message: String) {
     osLog.notice("\(message, privacy: .public)")
-    let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("pvql-extension.log")
-    if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int,
-       size > 1_000_000 {
-        try? FileManager.default.removeItem(atPath: path)
-    }
     let age = String(format: "%6.2fs", processAge())
-    let line = "\(logStamp.string(from: Date())) [pid \(getpid()) +\(age)] \(message)\n"
-    if let handle = FileHandle(forWritingAtPath: path) {
-        handle.seekToEndOfFile()
-        handle.write(Data(line.utf8))
-        try? handle.close()
-    } else {
-        try? line.write(toFile: path, atomically: true, encoding: .utf8)
-    }
+    DebugLog.shared.append("\(logStamp.string(from: Date())) [pid \(getpid()) +\(age)] \(message)\n")
 }
 
 /// Absolute path of the user's home directory, even when the process is sandboxed.
@@ -81,6 +109,8 @@ enum Helper {
     }
 
     static let hardTimeout: TimeInterval = 120
+    /// Seconds a helper asked to stop gets before it is killed.
+    static let killGrace: TimeInterval = 5
     static let requestSuffix = ".pvqlreq"
     static let replySuffix = ".pvqlrep"
     static let earlySuffix = ".pvqlpre"
@@ -128,10 +158,36 @@ enum Helper {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
+    /// The settings one preview load reads once; the next load reads the file again.
+    struct Settings {
+        /// Whether a file opens in 3D rather than on the picture it carries.
+        let forceInteractive: Bool
+        /// Where the info panel goes, as the settings name it; nil leaves it to the panel.
+        let infoPanel: String?
+        /// Files above this many bytes are not staged; the service refuses them at the same size.
+        let maximumFileBytes: Int
+        /// Seconds to wait for the service: its own conversion timeout, and some to spare.
+        let replyTimeout: TimeInterval
+
+        init(_ configuration: [String: Any]?) {
+            // False when unset, as config.py's DEFAULTS has it.
+            forceInteractive = configuration?["force_interactive"] as? Bool ?? false
+            infoPanel = configuration?["info_panel"] as? String
+            let megabytes = (configuration?["max_file_size_mb"] as? NSNumber)?.intValue ?? 2048
+            maximumFileBytes = megabytes > 0 ? megabytes * 1_000_000 : Int.max
+            replyTimeout = ((configuration?["timeout"] as? NSNumber)?.doubleValue ?? 60) + 30
+        }
+
+        /// Reads the settings file as it is at this moment.
+        static func load() -> Settings {
+            Settings(configuration())
+        }
+    }
+
     /// Returns the settings: the copy the service keeps in the exchange folder, which the
     /// sandbox lets the extension read, else the file itself.
     static func configuration() -> [String: Any]? {
-        let mirrored = URL(fileURLWithPath: exchangeDirectory()).appendingPathComponent("config.json")
+        let mirrored = URL(fileURLWithPath: exchangeDirectory).appendingPathComponent("config.json")
         let original = URL(fileURLWithPath: realHome())
             .appendingPathComponent("Library/Application Support/PyVistaQuickLook/config.json")
         for url in [mirrored, original] {
@@ -167,8 +223,8 @@ enum Helper {
         Bundle.main.bundleURL.appendingPathComponent("Contents/Library/PyVista Quick Look Extensions.app/Contents/PlugIns")
     }
 
-    /// Returns the folder the service watches: the container of the preview extension the app ships.
-    static func exchangeDirectory() -> String {
+    /// The folder the service watches: the container of the preview extension the app ships.
+    static let exchangeDirectory: String = {
         guard ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] == nil,
               let identifier = previewExtension(in: plugInsFolder())
         else {
@@ -177,12 +233,14 @@ enum Helper {
         let container = "\(realHome())/Library/Containers/\(identifier)/Data/tmp/"
         try? FileManager.default.createDirectory(atPath: container, withIntermediateDirectories: true)
         return container
-    }
+    }()
 
-    /// Files above this many bytes are not staged; the service refuses them at the same size.
-    static func maximumFileBytes() -> Int {
-        let megabytes = (configuration()?["max_file_size_mb"] as? NSNumber)?.intValue ?? 2048
-        return megabytes > 0 ? megabytes * 1_000_000 : Int.max
+    /// Returns the size and modification date of a file, of what a link points at for a link.
+    static func fileFacts(_ url: URL) -> (size: Int, modified: Date?)? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.resolvingSymlinksInPath().path) else {
+            return nil
+        }
+        return ((attributes[.size] as? NSNumber)?.intValue ?? 0, attributes[.modificationDate] as? Date)
     }
 
     /// Runs `pvql` with the given arguments and returns its exit status and output.
@@ -229,8 +287,15 @@ enum Helper {
         }
 
         let watchdog = DispatchWorkItem {
-            if process.isRunning {
-                process.terminate()
+            guard process.isRunning else {
+                return
+            }
+            process.terminate()
+            // A helper that does not act on the request is killed, so the wait below ends.
+            DispatchQueue.global().asyncAfter(deadline: .now() + killGrace) {
+                if process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
             }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + hardTimeout, execute: watchdog)
@@ -247,12 +312,6 @@ enum Helper {
         )
     }
 
-    /// Seconds to wait for the service: its own conversion timeout, and some to spare.
-    static func replyTimeout() -> TimeInterval {
-        let seconds = (configuration()?["timeout"] as? NSNumber)?.doubleValue ?? 60
-        return seconds + 30
-    }
-
     /// Asks the render service for a preview of a mesh file.
     ///
     /// `force` previews a file above the size limit. `early` is handed what the file's
@@ -262,20 +321,21 @@ enum Helper {
         _ url: URL,
         force: Bool = false,
         scene: Bool? = nil,
+        settings: Settings,
         early: (([String: Any]) -> Void)? = nil
     ) throws -> Reply {
         do {
-            return try exchange(url, force: force, copy: nil, early: early, scene: scene)
+            return try exchange(url, force: force, copy: nil, settings: settings, early: early, scene: scene)
         } catch let failure as Failure where failure.needsCopy {
-            let directory = exchangeDirectory() as NSString
+            let directory = exchangeDirectory as NSString
             let stagingPath = directory.appendingPathComponent("\(UUID().uuidString).staging")
-            guard let copy = stage(url, in: stagingPath, force: force) else {
+            guard let copy = stage(url, in: stagingPath, force: force, settings: settings) else {
                 try? FileManager.default.removeItem(atPath: stagingPath)
                 throw failure
             }
             pvqlLog("staged a copy the service can read")
             do {
-                let reply = try exchange(url, force: force, copy: copy, early: early, scene: scene)
+                let reply = try exchange(url, force: force, copy: copy, settings: settings, early: early, scene: scene)
                 try? FileManager.default.removeItem(atPath: stagingPath)
                 return reply
             } catch let underway as Failure where underway.isUnderway {
@@ -289,18 +349,18 @@ enum Helper {
     }
 
     /// Returns the service's description of a file without converting it, or nil.
-    static func requestDescription(_ url: URL) -> [String: Any]? {
-        (try? exchange(url, force: false, copy: nil, early: nil, describe: true))?.info
+    static func requestDescription(_ url: URL, settings: Settings) -> [String: Any]? {
+        (try? exchange(url, force: false, copy: nil, settings: settings, early: nil, describe: true))?.info
     }
 
     /// Copies a file where the service can read it, unless it is a folder or above the limit.
-    static func stage(_ url: URL, in stagingPath: String, force: Bool) -> String? {
+    static func stage(_ url: URL, in stagingPath: String, force: Bool, settings: Settings) -> String? {
         let manager = FileManager.default
         var isFolder: ObjCBool = false
         // A directory is never staged: its own size says nothing about what it holds.
         guard manager.fileExists(atPath: url.path, isDirectory: &isFolder), !isFolder.boolValue,
-              let size = (try? manager.attributesOfItem(atPath: url.path))?[.size] as? Int,
-              size > 0, force || size <= maximumFileBytes()
+              let size = fileFacts(url)?.size,
+              size > 0, force || size <= settings.maximumFileBytes
         else {
             return nil
         }
@@ -320,11 +380,12 @@ enum Helper {
         _ url: URL,
         force: Bool,
         copy: String?,
+        settings: Settings,
         early: (([String: Any]) -> Void)?,
         scene: Bool? = nil,
         describe: Bool = false
     ) throws -> Reply {
-        let directory = exchangeDirectory() as NSString
+        let directory = exchangeDirectory as NSString
         let token = UUID().uuidString
         let requestPath = directory.appendingPathComponent("\(token)\(requestSuffix)")
         let replyPath = directory.appendingPathComponent("\(token)\(replySuffix)")
@@ -346,9 +407,10 @@ enum Helper {
         if describe {
             body["describe"] = true
         }
-        if let attributes = try? manager.attributesOfItem(atPath: url.path) {
-            body["size"] = (attributes[.size] as? NSNumber)?.intValue ?? 0
-            if let modified = attributes[.modificationDate] as? Date {
+        // The size and date of what a link points at, so a preview expires with the target.
+        if let facts = fileFacts(url) {
+            body["size"] = facts.size
+            if let modified = facts.modified {
                 body["mtime"] = Int(modified.timeIntervalSince1970)
             }
         }
@@ -362,7 +424,7 @@ enum Helper {
             throw Failure(message: "Could not reach the render service.\n\n\(error.localizedDescription)")
         }
 
-        let deadline = Date().addingTimeInterval(replyTimeout())
+        let deadline = Date().addingTimeInterval(settings.replyTimeout)
         defer { try? manager.removeItem(atPath: earlyPath) }
         while Date() < deadline {
             if let data = manager.contents(atPath: earlyPath) {
@@ -412,9 +474,10 @@ enum Helper {
 
         // A request the service took is still being worked on; one it never took means it is gone.
         if !manager.fileExists(atPath: requestPath) {
-            pvqlLog("service is still working after \(Int(replyTimeout())) s")
+            let waited = Int(settings.replyTimeout)
+            pvqlLog("service is still working after \(waited) s")
             throw Failure(
-                message: "The render service is still working on \(url.lastPathComponent) after \(Int(replyTimeout())) seconds.\n\nSelect the file again later to see its preview.",
+                message: "The render service is still working on \(url.lastPathComponent) after \(waited) seconds.\n\nSelect the file again later to see its preview.",
                 isUnderway: true
             )
         }

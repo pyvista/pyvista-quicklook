@@ -18,11 +18,13 @@ case "${0:-}" in
   */*) HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || true) ;;
 esac
 
-DOWNLOAD="https://github.com/$REPO/releases/latest/download/$ASSET"
+# A published app is only used with the scripts of its own release; a checkout or a branch
+# builds its own, so the app and the helper never drift apart.
+DOWNLOAD=''
 if [ -n "$HERE" ] && [ -x "$HERE/scripts/install-from-source.sh" ] && [ -d "$HERE/macos" ]; then
   ROOT="$HERE"
+  say "==> installing from the checkout at $ROOT"
 else
-  # The scripts and the app come from the same release, so the two never drift.
   TAG="${PVQL_TAG:-}"
   if [ -z "$TAG" ] && [ -z "${PVQL_BRANCH:-}" ]; then
     TAG=$(curl -sI "https://github.com/$REPO/releases/latest" | tr -d '\r' \
@@ -55,7 +57,7 @@ APP=''
 mkdir -p "$SUPPORT"
 rm -rf "$ZIP" "$UNPACKED"
 
-if curl -LsSf -o "$ZIP" "$DOWNLOAD"; then
+if [ -n "$DOWNLOAD" ] && curl -LsSf -o "$ZIP" "$DOWNLOAD"; then
   say '==> unpacking the published app'
   mkdir -p "$UNPACKED"
   if ditto -x -k "$ZIP" "$UNPACKED"; then
@@ -67,7 +69,11 @@ fi
 if [ -n "$APP" ] && [ -d "$APP" ]; then
   "$ROOT/scripts/install-from-source.sh" --app "$APP" "$@" && outcome=0 || outcome=$?
 else
-  say '==> no published build for this release; building from source'
+  if [ -n "$DOWNLOAD" ]; then
+    say '==> no published build for this release; building from source'
+  else
+    say '==> building the app from source, which needs the Xcode command line tools'
+  fi
   "$ROOT/scripts/install-from-source.sh" "$@" && outcome=0 || outcome=$?
 fi
 # Nothing uses the downloads once the app and the helper are installed.

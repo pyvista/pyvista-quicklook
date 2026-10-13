@@ -12,7 +12,8 @@ final class ThumbnailProvider: QLThumbnailProvider {
         guard let png = EmbeddedThumbnail.current(request.fileURL),
               let image = NSImage(data: png), image.size.width > 0, image.size.height > 0
         else {
-            handler(nil, CocoaError(.fileReadCorruptFile))
+            // A file without a current picture is whole; Quick Look draws the type's icon instead.
+            handler(nil, CocoaError(.featureUnsupported))
             return
         }
         let scale = min(
@@ -23,7 +24,7 @@ final class ThumbnailProvider: QLThumbnailProvider {
             image.draw(in: CGRect(origin: .zero, size: size))
             return true
         })
-        // The plain flavor, so Finder draws the transparent picture without a white card behind it.
+        // The plain flavor, without a white card, set through private KVC that macOS may stop answering.
         if reply.responds(to: NSSelectorFromString("setIconFlavor:")) {
             reply.setValue(0, forKey: "iconFlavor")
         }

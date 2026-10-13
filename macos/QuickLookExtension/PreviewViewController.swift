@@ -9,8 +9,11 @@ enum Preview {
     case scene(SCNScene, Framing, MeshInfo?)
     case image(Data, MeshInfo?)
     case text(String)
-    case details(URL)
+    /// A file shown by its icon and facts, which are gathered off the main thread.
+    case details(URL, String)
     case message(String)
+    /// A file handed back to Quick Look, with the message shown when there is no handing back.
+    case declined(String)
     /// A file above the size limit, with what its header says.
     case tooLarge(String, MeshInfo?)
 }
@@ -35,8 +38,13 @@ func textContents(of url: URL) -> String? {
     guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
         return nil
     }
-    let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? data.count
-    return size > data.count ? text + "\n\n[first \(data.count / 1_000_000) MB of \(size / 1_000_000) MB]" : text
+    let size = Helper.fileFacts(url)?.size ?? data.count
+    guard size > data.count else {
+        return text
+    }
+    let shown = String(format: "%.1f", Double(data.count) / 1_000_000)
+    let whole = String(format: "%.1f", Double(size) / 1_000_000)
+    return text + "\n\n[first \(shown) MB of \(whole) MB]"
 }
 
 /// A scene view that keeps the lights turning with its camera.
@@ -60,10 +68,10 @@ final class DescriptionWait: @unchecked Sendable {
     private let done = DispatchGroup()
     private var info: [String: Any]?
 
-    init(_ url: URL) {
+    init(_ url: URL, settings: Helper.Settings) {
         done.enter()
         DispatchQueue.global(qos: .userInitiated).async {
-            self.info = Helper.requestDescription(url)
+            self.info = Helper.requestDescription(url, settings: settings)
             self.done.leave()
         }
     }
@@ -188,26 +196,8 @@ func folderFacts(_ url: URL) -> String {
     return "\(size), \(entries.count) \(entries.count == 1 ? "item" : "items")"
 }
 
-/// Builds what Quick Look shows for a file it cannot open: the icon on the left, and the
-/// name, size, and date beside it. Shown for anything claimed that holds no mesh, since
-/// an extension cannot hand a file back to Quick Look to preview in its own way.
-@MainActor
-func detailsView(_ url: URL) -> NSView {
-    // A file icon is drawn at 1024 points unless it is asked to be smaller, which is
-    // wider than the panel; the size has to be set on the image, not on the view.
-    let image = NSWorkspace.shared.icon(forFile: url.path)
-    image.size = NSSize(width: iconSide, height: iconSide)
-    let icon = NSImageView(image: image)
-    icon.imageScaling = .scaleProportionallyUpOrDown
-    icon.translatesAutoresizingMaskIntoConstraints = false
-    icon.setContentHuggingPriority(.required, for: .horizontal)
-    icon.setContentHuggingPriority(.required, for: .vertical)
-
-    let name = NSTextField(labelWithString: url.lastPathComponent)
-    name.font = NSFont.systemFont(ofSize: 28, weight: .bold)
-    name.lineBreakMode = .byTruncatingMiddle
-    name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
+/// Returns a file's size, or a folder's contents, and its date, one line each, walking the folder.
+func fileFacts(_ url: URL) -> String {
     let values = try? url.resourceValues(forKeys: [
         .fileSizeKey, .contentModificationDateKey, .isDirectoryKey,
     ])
@@ -223,11 +213,34 @@ func detailsView(_ url: URL) -> NSView {
         )
         lines.append("Last modified \(stamp)")
     }
-    let facts = NSTextField(labelWithString: lines.joined(separator: "\n"))
-    facts.font = NSFont.systemFont(ofSize: 16)
-    facts.textColor = .secondaryLabelColor
+    return lines.joined(separator: "\n")
+}
 
-    let text = NSStackView(views: [name, facts])
+/// Builds what Quick Look shows for a file it cannot open: the icon on the left, and the
+/// name and `facts` beside it. Shown for anything claimed that holds no mesh, since
+/// an extension cannot hand a file back to Quick Look to preview in its own way.
+@MainActor
+func detailsView(_ url: URL, facts: String) -> NSView {
+    // A file icon is drawn at 1024 points unless it is asked to be smaller, which is
+    // wider than the panel; the size has to be set on the image, not on the view.
+    let image = NSWorkspace.shared.icon(forFile: url.path)
+    image.size = NSSize(width: iconSide, height: iconSide)
+    let icon = NSImageView(image: image)
+    icon.imageScaling = .scaleProportionallyUpOrDown
+    icon.translatesAutoresizingMaskIntoConstraints = false
+    icon.setContentHuggingPriority(.required, for: .horizontal)
+    icon.setContentHuggingPriority(.required, for: .vertical)
+
+    let name = NSTextField(labelWithString: url.lastPathComponent)
+    name.font = NSFont.systemFont(ofSize: 28, weight: .bold)
+    name.lineBreakMode = .byTruncatingMiddle
+    name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+    let factsLabel = NSTextField(labelWithString: facts)
+    factsLabel.font = NSFont.systemFont(ofSize: 16)
+    factsLabel.textColor = .secondaryLabelColor
+
+    let text = NSStackView(views: [name, factsLabel])
     text.orientation = .vertical
     text.alignment = .leading
     text.spacing = 8
@@ -253,11 +266,11 @@ func detailsView(_ url: URL) -> NSView {
 
 /// Returns the render with the dataset's info beside it, or the render alone without info.
 @MainActor
-func withInfo(_ render: NSView, _ info: MeshInfo?) -> NSView {
+func withInfo(_ render: NSView, _ info: MeshInfo?, _ settings: Helper.Settings) -> NSView {
     guard let info, !info.isEmpty else {
         return render
     }
-    let arrangement = (Helper.configuration()?["info_panel"] as? String).flatMap(InfoArrangement.init)
+    let arrangement = settings.infoPanel.flatMap(InfoArrangement.init)
     return MeshPreviewView(render: render, info: info, arrangement: arrangement ?? .automatic)
 }
 
@@ -397,6 +410,8 @@ struct Request {
 
     /// Whether the settings let a file's own picture open first; false in the app.
     let picturesFirst: Bool
+    /// The settings as read when the panel opened.
+    let settings: Helper.Settings
 
     var name: String { url.lastPathComponent }
     /// Whether the file opens on its own picture, with a Static tab; a stale one is only a placeholder.
@@ -597,9 +612,15 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 return
             }
 
-            // False when unset, as config.py's DEFAULTS has it.
-            let forced = (Helper.configuration()?["force_interactive"] as? Bool) ?? false
-            let request = Request(url: url, force: false, carried: EmbeddedThumbnail.picture(url), picturesFirst: self.prefersPicture && !forced)
+            // Read once per panel, so a hand-edited file is picked up by the next one.
+            let settings = Helper.Settings.load()
+            let request = Request(
+                url: url,
+                force: false,
+                carried: EmbeddedThumbnail.picture(url),
+                picturesFirst: self.prefersPicture && !settings.forceInteractive,
+                settings: settings
+            )
             self.load(request, handler: handler)
         }
     }
@@ -618,7 +639,7 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             shownInfo = nil
         }
         let tabbed = request.hasPicture ? belowTabs(content, ModeTabs(mode, onSelect: switching(request))) : content
-        show(withInfo(tabbed, shownInfo?.info))
+        show(withInfo(tabbed, shownInfo?.info, request.settings))
     }
 
     /// Returns what a control in the panel calls to load the file again on a tab.
@@ -656,7 +677,7 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         if shown == .still, request.hasPicture, let png = thumbnail {
             // The description comes in under a second, and a picture shown without it would move
             // when the details arrive beside or below it.
-            let described = DescriptionWait(url)
+            let described = DescriptionWait(url, settings: request.settings)
             let early = described.wait(seconds: 2)
             DispatchQueue.main.async {
                 let picture = pictureView(png) ?? messageView(failed("Its picture could not be read."))
@@ -685,7 +706,9 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
         let outcome: Preview
         do {
             // The Interactive tab asks for the 3D view; without tabs the settings choose.
-            let reply = try Helper.requestPreview(url, force: request.force, scene: request.hasPicture ? true : nil) { info in
+            let reply = try Helper.requestPreview(
+                url, force: request.force, scene: request.hasPicture ? true : nil, settings: request.settings
+            ) { info in
                 DispatchQueue.main.async {
                     present(placeholderView(name, thumbnail), shown, MeshInfo(info))
                     completion.finish(nil)
@@ -727,18 +750,11 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             } else if !isOwnType(url) {
                 // macOS has a preview of its own for this type; let it show that, if it still can.
                 pvqlLog("declining, not a mesh: \(briefly(message))")
-                DispatchQueue.main.async {
-                    if completion.isPending {
-                        completion.finish(Self.noPreview)
-                    } else {
-                        self.show(messageView(failed(message)))
-                    }
-                }
-                return
+                outcome = .declined(failed(message))
             } else if let text = textContents(of: url) {
                 outcome = .text(text)
             } else {
-                outcome = .details(url)
+                outcome = .details(url, fileFacts(url))
             }
         }
 
@@ -755,20 +771,29 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 present(pictureView(png) ?? NSImageView(), .still, info)
                 pvqlLog("showing a rendered image in \(self.view.bounds.size)")
             case let .tooLarge(message, info):
-                let anyway = self.switching(Request(url: url, force: true, carried: request.carried, picturesFirst: request.picturesFirst))
+                let anyway = self.switching(Request(
+                    url: url, force: true, carried: request.carried, picturesFirst: request.picturesFirst,
+                    settings: request.settings
+                ))
                 let notice = largeFileView(message, thumbnail: thumbnail) { anyway(shown) }
                 present(notice, shown, info)
                 pvqlLog("showing a size notice")
             case let .text(text):
                 self.show(textView(text))
                 pvqlLog("showing text, \(text.count) characters")
-            case let .details(fileURL):
-                self.show(detailsView(fileURL))
+            case let .details(fileURL, facts):
+                self.show(detailsView(fileURL, facts: facts))
                 pvqlLog("showing file details")
             case let .message(text):
                 // Still a mesh, so the other tab may well work.
                 present(messageView(text), shown, nil)
                 pvqlLog("showing a message: \(text.prefix(120))")
+            case let .declined(text):
+                if completion.isPending {
+                    completion.finish(Self.noPreview)
+                } else {
+                    self.show(messageView(text))
+                }
             }
         }
     }
