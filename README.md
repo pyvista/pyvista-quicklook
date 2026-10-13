@@ -103,7 +103,7 @@ it below, `side` beside, `compact` keeps one line, and `hidden` leaves it out.
 | `extensions.add`, `extensions.remove` | none | Extensions to claim or stop claiming, on the next install |
 | `cache` | `true` | Reuse previously built previews |
 | `cache_check_minutes` | `1440` (a day) | How often the service deletes previews of changed or deleted files; `0` never does |
-| `warm_on_start` | `true` | Load PyVista and VTK when the render service starts |
+| `preload_on_start` | `true` | Load PyVista and VTK when the render service starts |
 | `log` | `false` | Append activity to `pvql.log` beside the config file |
 | `python` | set at install | Interpreter of the PyVista environment |
 | `pvql` | discovered | Absolute path to the `pvql` helper |
@@ -214,8 +214,8 @@ import pyvista_zstd
 pyvista_zstd.write(mesh, 'mesh.pv', thumbnail=True)
 ```
 
-A file with a current picture shows it in the Finder as its icon, and opens on it at
-once, without reading the data. **Static** and **Interactive** tabs above the preview
+A file with a current picture shows it in the Finder as its icon, and opens on it
+without reading the data. **Static** and **Interactive** tabs above the preview
 switch between the picture and the turnable surface, which opens on the same view. Every
 other file, and a `.pv` file whose picture is older than its data, goes straight to the
 turnable surface, without tabs. `pvql config set force_interactive true` opens every file
@@ -250,15 +250,16 @@ Previews are cached under `~/Library/Caches/PyVistaQuickLook`, keyed by the file
 path, size, and modification time, so editing a file invalidates its preview, and by the
 version of the converter, so an update rebuilds them rather than serving old ones. The
 render service deletes previews of files that have changed or gone when it starts and
-then once a day (`cache_check_minutes`); `pvql cache --prune` does it now and `pvql cache
---clear` empties the cache. A preview is kept whenever the service cannot tell: its file
+then once a day (`cache_check_minutes`); `pvql cache --prune` does it now, dropping previews built by an older version too,
+and `pvql cache --clear` empties the cache. Changing a setting that previews depend on,
+such as the theme, leaves the previews built under the old one until they are pruned or cleared. A preview is kept whenever the service cannot tell: its file
 is on a disk that is not plugged in, a share that is not mounted, or in a folder macOS
 keeps private and no preview has read since the service started, so a check never
 raises a permission prompt of its own.
 
 The service loads PyVista and VTK in the background when it starts, which is at login
 and whenever it is reinstalled, so the first preview does not wait for them. `pvql
-warmup` does the same on demand.
+preload` does the same on demand.
 
 Surfaces are sent whole up to `max_scene_points`. Above that, images and volumes are
 thinned on their lattice and other surfaces are decimated.
@@ -354,8 +355,8 @@ says what to do about anything that fails.
 pvql config           # list settings; get, set, or unset one
 pvql doctor           # check every part of the installation
 pvql preview FILE     # build a preview and print its cached path
-pvql warm DIR         # build previews for a directory ahead of time
-pvql warmup           # load PyVista and VTK ahead of the first preview
+pvql prebuild DIR     # build previews for a folder ahead of time
+pvql preload          # load PyVista and VTK ahead of the first preview
 pvql types            # list claimed extensions
 pvql cache --prune    # delete previews of files that have changed or gone
 pvql cache --clear    # delete every cached preview
@@ -367,7 +368,7 @@ pvql uninstall        # remove everything, asking first
 ## What the installer does
 
 1. Downloads the latest release: the installer scripts, about 1 MB, and the prebuilt
-   app, about 200 KB.
+   app, a 200 KB zip.
 2. Installs [uv](https://docs.astral.sh/uv/) if it is missing or updates it if it is too
    old, then a Python 3.14 if uv finds none on the machine.
 3. Installs the `pvql` helper as a uv tool.
@@ -395,8 +396,8 @@ No system Python and no existing environment is used or changed.
 | `~/.local/bin/pvql`, `~/.local/bin/pyvista-quicklook` | Links to the helper | |
 | `~/Library/LaunchAgents/org.pyvista.pvqld.plist` | The render service | 4 KB |
 | `~/Library/Logs/pvqld.log` | The service's output | grows slowly |
-| `~/Library/Containers/org.pyvista.PyVistaQuickLook.QuickLook/Data/tmp` | The extension's log and staged copies, in a sandbox folder that macOS creates and keeps | small |
-| `~/Library/Caches/PyVistaQuickLook` | One built preview per file previewed | grows with use |
+| `~/Library/Containers/org.pyvista.PyVistaQuickLook.QuickLook/Data/tmp` | The extension's log, its requests to the service, staged copies and a copy of the settings, in a sandbox folder that macOS creates and keeps | small |
+| `~/Library/Caches/PyVistaQuickLook` | Built previews, one per file and settings | grows with use |
 | `~/.local/bin/uv`, `~/Library/Application Support/uv` | uv, and Python 3.14 if uv had to fetch one | 45 MB, plus Python |
 | `~/.cache/uv` | uv's download cache; the environment's files are clones of it, not copies | shared |
 
@@ -417,7 +418,7 @@ From a checkout, `./scripts/install-from-source.sh` does the same and builds the
 from source, which needs the Xcode command line tools (`xcode-select --install`):
 
 ```bash
-./scripts/install-from-source.sh --prefix /Applications                # install for all users
+./scripts/install-from-source.sh --prefix /Applications                # put the app there instead of ~/Applications
 ./scripts/install-from-source.sh --app /path/to/PyVistaQuickLook.app   # skip the build
 ```
 

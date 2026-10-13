@@ -47,5 +47,5 @@ Launch Services record keeps Quick Look from starting the extension at all.
 
 Releases are published by CI: push a `v*` tag and the `publish` job uploads the helper
 to PyPI through trusted publishing from the `release` environment, while the `release`
-job attaches the built app to the tag's GitHub release, which is what the installer
-downloads.
+job creates the tag's GitHub release if there is none and attaches the built app to it,
+which is what the installer downloads. The two jobs are independent, so check both.

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import zlib
 
+from conftest import compiled
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -38,16 +39,9 @@ print(EmbeddedThumbnail.current(url) == nil ? "declined" : "current")
 
 
 @pytest.fixture(scope='module')
-def reader(tmp_path_factory):
+def reader():
     """Compile a tool that reports what EmbeddedThumbnail finds in a file."""
-    folder = tmp_path_factory.mktemp('reader')
-    (folder / 'main.swift').write_text(MAIN)
-    tool = folder / 'read-thumbnail'
-    subprocess.run(
-        ['swiftc', str(READER), str(folder / 'main.swift'), '-o', str(tool)],
-        check=True,
-        capture_output=True,
-    )
+    tool = compiled('read-thumbnail', (READER,), main=MAIN)
     return lambda path: subprocess.run(
         [str(tool), str(path)], check=True, capture_output=True, text=True
     ).stdout.split('\n')[:2]
@@ -108,3 +102,10 @@ def test_other_files_hold_no_picture(reader, tmp_path):
     assert reader(other) == ['none', 'declined']
     renamed = pv_file(tmp_path / 'mesh.vtu')
     assert reader(renamed) == ['none', 'declined']
+
+
+@pytest.mark.parametrize('index', [b'', b'i' * 16], ids=['no frames', 'one frame'])
+def test_an_index_too_short_to_hold_a_checksum_means_a_stale_picture(reader, tmp_path, index):
+    """An index with fewer than two frames cannot vouch for the picture, so it counts as stale."""
+    pv_file(tmp_path / 'mesh.pv', index=index)
+    assert reader(tmp_path / 'mesh.pv') == [f'{len(PNG)} stale=true', 'declined']

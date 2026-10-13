@@ -134,8 +134,8 @@ PYTHON="$VENV/bin/python"
 echo "==> recording configuration"
 "$HELPER" config --init --helper "$HELPER" --python "$PYTHON" >/dev/null
 
-echo "==> warming PyVista and VTK"
-"$HELPER" warmup || echo "warm-up skipped; the first preview will be slower" >&2
+echo "==> preloading PyVista and VTK"
+"$HELPER" preload || echo "preload skipped; the first preview will be slower" >&2
 
 if [[ -n "$PREBUILT" ]]; then
   SOURCE_APP="$PREBUILT"

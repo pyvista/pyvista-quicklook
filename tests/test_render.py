@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+from conftest import compiled
 import numpy as np
 import pytest
 import pyvista as pv
@@ -21,43 +22,29 @@ pytestmark = pytest.mark.skipif(sys.platform != 'darwin', reason='SceneKit is ma
 CAMERA = ROOT / 'macos' / 'Shared' / 'Camera.swift'
 TOOL_SOURCE = ROOT / 'macos' / 'Tools' / 'RenderScene.swift'
 TOOL_PLIST = ROOT / 'macos' / 'Tools' / 'RenderScene-Info.plist'
-SOURCES = (CAMERA, TOOL_SOURCE, TOOL_PLIST)
 
 
 @pytest.fixture(scope='session', autouse=True)
 def render_tool():
     """Compile the off-screen renderer unless a build at least as new as its sources exists."""
-    if TOOL.exists() and TOOL.stat().st_mtime >= max(path.stat().st_mtime for path in SOURCES):
-        return TOOL
-    TOOL.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            'swiftc',
-            '-O',
-            '-parse-as-library',
-            str(CAMERA),
-            str(TOOL_SOURCE),
-            '-o',
-            str(TOOL),
-            '-framework',
-            'AppKit',
-            '-framework',
-            'SceneKit',
-            # Blends colours as the panel does; build.sh embeds the same property list.
-            '-Xlinker',
-            '-sectcreate',
-            '-Xlinker',
-            '__TEXT',
-            '-Xlinker',
-            '__info_plist',
-            '-Xlinker',
-            str(TOOL_PLIST),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+    flags = (
+        '-O',
+        '-parse-as-library',
+        '-framework',
+        'AppKit',
+        '-framework',
+        'SceneKit',
+        # Blends colours as the panel does; build.sh embeds the same property list.
+        '-Xlinker',
+        '-sectcreate',
+        '-Xlinker',
+        '__TEXT',
+        '-Xlinker',
+        '__info_plist',
+        '-Xlinker',
+        TOOL_PLIST,
     )
-    return TOOL
+    return compiled(TOOL.name, (CAMERA, TOOL_SOURCE), flags)
 
 
 def rendered(mesh, tmp_path, name='scene', side=192):
@@ -108,7 +95,7 @@ def lit_percentiles(pixels):
 
 
 @pytest.fixture(scope='module')
-def warmed_up():
+def preloaded():
     """Discard one off-screen render, since the first in a process can come out blank on macOS."""
     plotter = pv.Plotter(off_screen=True)
     plotter.screenshot()
@@ -123,7 +110,7 @@ def cell_coloured_cube():
     return cube
 
 
-@pytest.mark.usefixtures('warmed_up')
+@pytest.mark.usefixtures('preloaded')
 @pytest.mark.parametrize(
     'mesh',
     [
@@ -159,7 +146,7 @@ def highlight(pixels):
     )
 
 
-@pytest.mark.usefixtures('warmed_up')
+@pytest.mark.usefixtures('preloaded')
 def test_the_light_falls_where_pyvista_puts_it(tmp_path):
     """The lights sit around the camera as PyVista's do, so the highlight lands where it does."""
     sphere = pv.Sphere(theta_resolution=64, phi_resolution=64)
@@ -199,7 +186,7 @@ def picture_outline(dataset, margin=0.05):
     return outline(square)
 
 
-@pytest.mark.usefixtures('warmed_up')
+@pytest.mark.usefixtures('preloaded')
 def test_the_scene_opens_framed_as_the_picture_is(tmp_path):
     """An off-centre shape sits in the same place in the 3D view as in the file's picture."""
     bracket = pv.Box(bounds=(0, 3, 0, 1, 0, 0.3)).merge(pv.Box(bounds=(0, 0.3, 0, 1, 0, 2)))

@@ -6,11 +6,9 @@ import sys
 
 import pytest
 
-from pyvista_quicklook import cache
 from pyvista_quicklook import config
 from pyvista_quicklook import environment
 from pyvista_quicklook import render
-from pyvista_quicklook import warmup
 
 
 def test_log_appends_only_when_enabled(tmp_path, monkeypatch):
@@ -32,6 +30,8 @@ def test_log_never_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'APP_SUPPORT', blocker / 'support')
     monkeypatch.setattr(config, 'LOG_PATH', blocker / 'support' / 'pvql.log')
     environment.log({'log': True}, 'lost')
+    assert blocker.read_text() == 'x'
+    assert not config.LOG_PATH.exists()
 
 
 def test_run_reports_a_timeout():
@@ -39,14 +39,6 @@ def test_run_reports_a_timeout():
     command = [sys.executable, '-c', 'import time; time.sleep(10)']
     with pytest.raises(environment.RenderError, match=r'Sleeping timed out after 0\.1 s'):
         environment.run({}, command, task='Sleeping', timeout=0.1)
-
-
-def test_fill_rejects_an_empty_build(tmp_path):
-    """A build that writes nothing is an error, and leaves nothing behind."""
-    out = tmp_path / 'preview.png'
-    with pytest.raises(environment.RenderError, match='Nothing was written'):
-        cache.fill(out, {}, 'mesh.vtu', lambda scratch: scratch.touch(), ('mesh.vtu', 1, 1))
-    assert not list(tmp_path.iterdir())
 
 
 def test_preview_needs_the_pyvista_command(tmp_path, monkeypatch):
@@ -59,16 +51,6 @@ def test_preview_needs_the_pyvista_command(tmp_path, monkeypatch):
         render.preview(source, dict(config.DEFAULTS))
 
 
-def test_warm_succeeds_without_a_writable_cache(tmp_path, monkeypatch):
-    """Failing to record the warm-up does not fail the warm-up itself."""
-    blocker = tmp_path / 'file'
-    blocker.write_text('x')
-    monkeypatch.setattr(config, 'CACHE_DIR', blocker / 'cache')
-    monkeypatch.setattr(warmup.environment, 'interpreter', lambda cfg: sys.executable)
-    monkeypatch.setattr(warmup.environment, 'run', lambda *a, **k: None)
-    assert warmup.warm({}) >= 0
-
-
 def test_what_a_successful_run_reports_is_logged(tmp_path, monkeypatch):
     """A run that succeeds but writes to stderr, as a fallback does, leaves that in the log."""
     monkeypatch.setattr(config, 'APP_SUPPORT', tmp_path / 'support')
@@ -76,3 +58,19 @@ def test_what_a_successful_run_reports_is_logged(tmp_path, monkeypatch):
     command = [sys.executable, '-c', 'import sys; sys.stderr.write("header skipped: X\\n")']
     environment.run({'log': True}, command, task='Reading the header')
     assert config.LOG_PATH.read_text().rstrip().endswith('Reading the header: header skipped: X')
+
+
+@pytest.mark.parametrize(
+    ('size', 'refused'), [(2_048_000_000, False), (2_048_000_001, True), (2_510_000_000, True)]
+)
+def test_the_limit_counts_megabytes_as_the_finder_does(size, refused):
+    """Sizes are decimal megabytes, so the message agrees with Get Info."""
+    identity = ('/data/big.pv', 0, size)
+    if not refused:
+        assert environment.check_size(identity, {'max_file_size_mb': 2048}) is None
+        return
+    with pytest.raises(environment.RenderError) as raised:
+        environment.check_size(identity, {'max_file_size_mb': 2048})
+    if size == 2_510_000_000:
+        assert str(raised.value).startswith('big.pv is 2510 MB, above the 2048 MB preview limit.')
+        assert str(raised.value).endswith('pvql config set max_file_size_mb 2560')

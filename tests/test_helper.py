@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+from conftest import compiled
 import pytest
 
 from pyvista_quicklook import plist
@@ -22,16 +23,9 @@ print(Helper.previewExtension(in: URL(fileURLWithPath: CommandLine.arguments[1])
 
 
 @pytest.fixture(scope='module')
-def finder(tmp_path_factory):
+def finder():
     """Compile a tool that reports which embedded extension the app sends requests through."""
-    folder = tmp_path_factory.mktemp('helper')
-    (folder / 'main.swift').write_text(MAIN)
-    tool = folder / 'find-extension'
-    subprocess.run(
-        ['swiftc', str(HELPER), str(folder / 'main.swift'), '-o', str(tool)],
-        check=True,
-        capture_output=True,
-    )
+    tool = compiled('find-extension', (HELPER,), main=MAIN)
     return lambda path: subprocess.run(
         [str(tool), str(path)], check=True, capture_output=True, text=True
     ).stdout.strip()

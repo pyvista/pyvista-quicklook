@@ -27,7 +27,7 @@ def has_a_display() -> bool:
 
 
 def main() -> int:
-    """Warm the modules and caches that a preview needs."""
+    """Load the modules and caches that a preview needs."""
     import_vtk_modules()
 
     import pyvista as pv
@@ -37,7 +37,7 @@ def main() -> int:
         directory = Path(scratch)
         # The interactive path: extract a surface and write it out.
         mesh.extract_surface(algorithm='dataset_surface').triangulate().save(
-            directory / 'warm.ply'
+            directory / 'preload.ply'
         )
         # The still-image path, absent from builds without the rendering modules.
         # Without a display VTK aborts the process rather than raising, so ask first.
@@ -48,7 +48,7 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             return 0
         plotter.add_mesh(mesh)
-        plotter.screenshot(str(directory / 'warm.png'))
+        plotter.screenshot(str(directory / 'preload.png'))
         plotter.close()
     return 0
 
