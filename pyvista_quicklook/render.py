@@ -1,7 +1,8 @@
-"""Render mesh files to cached PNG previews with the ``pyvista`` command-line interface."""
+"""Render mesh files to cached PNG stills, on a transparent background or with ``pyvista plot``."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
 
@@ -11,7 +12,9 @@ from . import environment
 
 if TYPE_CHECKING:
     import os
-    from pathlib import Path
+
+# Draws a still as pyvista-zstd draws the picture a .pv file carries.
+STILL = Path(__file__).with_name('_still.py')
 
 
 def cache_key(identity: tuple[str, int, int], config: dict[str, Any]) -> str:
@@ -20,6 +23,7 @@ def cache_key(identity: tuple[str, int, int], config: dict[str, Any]) -> str:
         repr(config.get('window_size')),
         repr(config.get('background')),
         repr(config.get('extra_args')),
+        'transparent',
     ]
     return cache.digest(identity, settings)
 
@@ -27,6 +31,17 @@ def cache_key(identity: tuple[str, int, int], config: dict[str, Any]) -> str:
 def preview_path(identity: tuple[str, int, int], config: dict[str, Any]) -> Path:
     """Return where a file's still image is cached."""
     return config_mod.CACHE_DIR / f'{cache_key(identity, config)}.png'
+
+
+def uses_pyvista_plot(config: dict[str, Any]) -> bool:
+    """Return whether the settings ask ``pyvista plot`` to draw stills, by passing it arguments."""
+    return bool(config.get('background') or config.get('extra_args'))
+
+
+def still_command(interpreter: str, path: Path, out: Path, config: dict[str, Any]) -> list[str]:
+    """Return the command that draws a still on a transparent background."""
+    width, height = config.get('window_size') or [1024, 1024]
+    return [interpreter, str(STILL), str(path), str(out), str(int(width)), str(int(height))]
 
 
 def build_command(executable: str, path: Path, out: Path, config: dict[str, Any]) -> list[str]:
@@ -65,6 +80,10 @@ def preview(
     environment.check_size(identity, config)
 
     def build(scratch: Path) -> None:
+        if not uses_pyvista_plot(config):
+            command = still_command(environment.interpreter(config), path, scratch, config)
+            environment.run(config, command, task=f'Rendering {path.name}', cwd=path.parent)
+            return
         executable = config_mod.resolve_pyvista(config)
         if executable is None:
             message = 'No pyvista command-line interface beside the configured interpreter.'

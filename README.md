@@ -315,9 +315,9 @@ They are kept in `~/Library/Application Support/PyVistaQuickLook/config.json`.
 | `max_conversion_memory_mb` | half the memory | Memory previews may use while built side by side; `0` for no limit |
 | `timeout` | `60` | Seconds before a conversion is abandoned |
 | `warm_on_start` | `true` | Load PyVista and VTK when the render service starts |
-| `window_size` | `1024 1024` | Still image size in pixels |
-| `background` | none | Background colour passed to `pyvista plot` |
-| `extra_args` | none | Extra arguments appended to `pyvista plot` |
+| `window_size` | `1024 1024` | Size the still is drawn at, in pixels, before it is cropped to the dataset |
+| `background` | none | Draw stills with `pyvista plot` on this background colour instead of a transparent one |
+| `extra_args` | none | Draw stills with `pyvista plot`, appending these arguments |
 | `extensions.add`, `extensions.remove` | none | Extensions to claim or stop claiming, on the next install |
 | `cache` | `true` | Reuse previously built previews |
 | `log` | `false` | Append activity to `pvql.log` beside the config file |

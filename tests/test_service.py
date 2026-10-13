@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 
+import numpy as np
 import pytest
 import pyvista as pv
 
@@ -114,18 +115,38 @@ def test_warm_runs_the_warmer_and_leaves_a_stamp(env):
 
 
 @pytest.mark.skipif(sys.platform != 'darwin', reason='rendering needs a display server on Linux')
-def test_still_images_come_from_the_pyvista_command(tmp_path, env, monkeypatch):
-    """The environment can render a still image, which is what non-interactive mode shows."""
+def test_still_images_are_drawn_on_a_transparent_background(tmp_path, env, monkeypatch):
+    """The environment renders a still, cropped to the dataset with nothing drawn behind it."""
     source = tmp_path / 'sphere.vtp'
     pv.Sphere().save(source)
+    png = render.preview(source, {**env, 'window_size': [128, 128]})
+    alpha = pixels(png)[..., 3]
+    assert alpha[0, 0] == 0
+    assert alpha[alpha.shape[0] // 2, alpha.shape[1] // 2] == 255
     png = render.preview(source, env)
-    assert png.suffix == '.png'
-    assert png.stat().st_size > 0
     assert daemon.produce(source, {**env, 'interactive': False}) == png
     assert convert.describe(source, env)['type'] == 'PolyData'
     # The description belongs to the file, so other render settings do not read it again.
     monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: pytest.fail('read again'))
     assert convert.describe(source, {**env, 'window_size': [64, 64]})['type'] == 'PolyData'
+
+
+def pixels(png):
+    """Return a PNG's pixels as rows, top row first."""
+    picture = pv.read(png)
+    width, height = picture.dimensions[:2]
+    return np.flipud(np.asarray(picture.active_scalars).reshape(height, width, -1))
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='rendering needs a display server on Linux')
+def test_a_background_draws_the_still_with_the_pyvista_command(tmp_path, env):
+    """Asking for a background colour draws the still opaque with ``pyvista plot``."""
+    source = tmp_path / 'sphere.vtp'
+    pv.Sphere().save(source)
+    png = render.preview(source, {**env, 'window_size': [64, 64], 'background': 'white'})
+    corner = pixels(png)[0, 0]
+    assert pixels(png).shape[:2] == (64, 64)
+    assert (corner[:3] == 255).all()
 
 
 def test_header_is_read_by_the_exporter_without_the_values(tmp_path, env):

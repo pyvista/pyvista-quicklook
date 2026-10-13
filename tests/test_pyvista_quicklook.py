@@ -192,6 +192,15 @@ def test_build_command_renders_off_screen():
     ]
 
 
+def test_stills_are_drawn_transparent_unless_pyvista_plot_is_given_arguments():
+    """``pyvista plot`` draws stills only when a background or extra arguments ask it to."""
+    assert not render.uses_pyvista_plot({})
+    assert render.uses_pyvista_plot({'background': 'white'})
+    assert render.uses_pyvista_plot({'extra_args': ['--show-edges']})
+    command = render.still_command('/bin/python', 'in.vtu', 'out.png', {'window_size': [64, 32]})
+    assert command == ['/bin/python', str(render.STILL), 'in.vtu', 'out.png', '64', '32']
+
+
 def test_build_command_passes_background_and_extra_args():
     """Optional settings reach the command line."""
     config = {'window_size': [1, 1], 'background': 'black', 'extra_args': ['--zoom', '2']}
