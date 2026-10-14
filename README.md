@@ -109,7 +109,7 @@ it below, `side` beside, `compact` keeps one line, and `hidden` leaves it out.
 | `background` | none | Background colour of still images |
 | `extra_args` | none | Extra arguments appended to `pyvista plot` for still images |
 | `extensions.add`, `extensions.remove` | none | Extensions to claim or stop claiming, on the next install |
-| `native_formats` | `false` | Preview `.ply`, `.stl`, `.obj`, USD and `.abc` here instead of in macOS's own 3D viewer, on the next install |
+| `native_formats` | `false` | Preview `.ply`, `.stl`, `.obj`, USD and `.abc` here instead of in macOS's own 3D viewer |
 | `cache` | `true` | Reuse previously built previews |
 | `cache_check_minutes` | `1440` (a day) | How often the service deletes previews of changed or deleted files; `0` never does |
 | `preload_on_start` | `true` | Load PyVista and VTK when the render service starts |
@@ -169,7 +169,7 @@ the last suffix of a compressed dataset:
 A folder of DICOM slices is claimed the same way, through `public.folder`.
 
 7 more have a type and a preview of their own in macOS, which Quick Look prefers;
-the `native_formats` setting claims them (see [Native formats](#native-formats)):
+the `native_formats` setting previews them here (see [Native formats](#native-formats)):
 
 - `.abc` (`public.alembic`)
 - `.obj` (`public.geometry-definition-format`)
@@ -212,13 +212,13 @@ claiming those types. To preview them here instead:
 pvql config set native_formats true
 ```
 
-then run the installer again. The setting stands macOS's viewer down for your account
+The setting stands macOS's viewer down for your account
 (`pluginkit -e ignore -i com.apple.HydraQLPreviewExtension`), which also takes away its
-preview of MaterialX files, and the reinstalled extension claims the types. USD and
-Alembic files are read through macOS's own Model I/O by a tool the app carries, one block
-per mesh named by its path in the file; USDZ packages stay with AR Quick Look.
-`pvql doctor` reports the state. Setting it back to `false` restores the viewer at once;
-the extension stops claiming the types on the next install.
+preview of MaterialX files; the extension claims the types already, and the claim counts
+once the viewer is down. USD and Alembic files are read through macOS's own Model I/O by
+a tool the app carries, one block per mesh named by its path in the file; USDZ packages
+stay with AR Quick Look. `pvql doctor` reports the state. Setting it back to `false`
+restores the viewer at once.
 
 Without the setting, the app is still offered for them under Open With: select a `.ply`
 in the Finder, press ⌘I, choose PyVista Quick Look under Open With, and click Change All.

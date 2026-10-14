@@ -236,7 +236,6 @@ echo "Installed. Select a .vtu, .vtp, or .vtk file in the Finder and press space
 if [[ "$("$HELPER" config get native_formats 2>/dev/null)" != true ]]; then
   echo "PLY, OBJ, STL, USD and Alembic files keep macOS's own preview; to preview them here, run:"
   echo "    pvql config set native_formats true"
-  echo "and install again."
 fi
 if ! command -v pvql >/dev/null 2>&1; then
   echo "The pvql command lives at $HELPER; add ~/.local/bin to PATH to use it by name."

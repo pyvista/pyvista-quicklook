@@ -296,7 +296,7 @@ def test_config_set_native_formats_stands_the_macos_viewer_down(capsys, home, mo
     commands = []
     monkeypatch.setattr(cli, '_succeeds', lambda command: commands.append(command) or True)
     assert cli.cmd_config(config_args('set', 'native_formats', 'true')) == 0
-    assert 'installer again' in capsys.readouterr().out
+    assert 'press space to try it' in capsys.readouterr().out
     assert commands == [['/usr/bin/pluginkit', '-e', 'ignore', '-i', cli.NATIVE_VIEWER]]
     assert cli.cmd_config(config_args('unset', 'native_formats')) == 0
     assert commands[-1] == ['/usr/bin/pluginkit', '-e', 'default', '-i', cli.NATIVE_VIEWER]
@@ -424,20 +424,22 @@ def test_doctor_passes_a_healthy_installation(capsys, doctor, tmp_path):
 
 
 @pytest.mark.parametrize(
-    ('listing', 'problems', 'line'),
+    ('listing', 'claims', 'problems', 'line'),
     [
+        (f'-    {cli.NATIVE_VIEWER}(1.0)', True, 0, '✓ native     .ply, .stl, .obj, USD and .abc'),
+        (f'+    {cli.NATIVE_VIEWER}(1.0)', True, 1, '✗ native     macOS still previews'),
         (
             f'-    {cli.NATIVE_VIEWER}(1.0)',
-            0,
-            '✓ native     .ply, .stl, .obj, USD and .abc previewed here',
+            False,
+            1,
+            '✗ native     the installed extension predates',
         ),
-        (f'+    {cli.NATIVE_VIEWER}(1.0)', 1, '✗ native     macOS still previews'),
     ],
 )
 def test_doctor_checks_the_native_viewer_when_the_setting_is_on(
-    capsys, doctor, monkeypatch, tmp_path, listing, problems, line
+    capsys, doctor, home, monkeypatch, tmp_path, listing, claims, problems, line
 ):
-    """With native formats on, the doctor passes only when macOS's viewer is stood down."""
+    """With native formats on, the doctor needs the viewer down and an extension that claims."""
     rendered = tmp_path / 'smoke.ply'
 
     def preview(sample, timeout):
@@ -446,6 +448,12 @@ def test_doctor_checks_the_native_viewer_when_the_setting_is_on(
 
     doctor(healthy=True, preview=preview)
     config.put('native_formats', True)
+    app = home / 'Applications' / plist.APP_BUNDLE
+    info = plist.plugins_folder(app) / f'{plist.EXT_EXECUTABLE}.appex' / 'Contents' / 'Info.plist'
+    written = plist.extension_plist(['.vtu'])
+    if not claims:
+        written['NSExtension']['NSExtensionAttributes']['QLSupportedContentTypes'] = ['x']
+    plist.write(written, info)
     run = cli._run
     monkeypatch.setattr(
         cli,
