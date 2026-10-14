@@ -1031,3 +1031,46 @@ def test_plist_leaves_the_helper_out_when_asked(tmp_path, monkeypatch, helper):
         assert stored['PVQLHelperPath'] == '/found/pvql'
     else:
         assert 'PVQLHelperPath' not in stored
+
+
+@pytest.mark.parametrize(
+    ('version', 'url', 'tag'),
+    [
+        ('0.10.1', f'{cli.RELEASES}/download/v0.10.1/install.sh', 'v0.10.1'),
+        ('0.10.2.dev3+g1234567', f'{cli.RELEASES}/latest/download/install.sh', None),
+    ],
+)
+def test_install_runs_the_installer_of_its_own_release(monkeypatch, capsys, version, url, tag):
+    """A release runs its own installer, pinned to its tag; a development build the latest."""
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[0] == '/usr/bin/curl':
+            Path(command[command.index('-o') + 1]).write_text('exit 0\n')
+        return SimpleNamespace(returncode=0, stderr='')
+
+    monkeypatch.setattr(cli, '__version__', version)
+    monkeypatch.setattr(cli.subprocess, 'run', run)
+    monkeypatch.delenv('PVQL_TAG', raising=False)
+    assert cli.main(['install', '--prefix', '/tmp/apps']) == 0
+    (fetch, _), (install, options) = calls
+    assert fetch[-1] == url
+    assert install[0] == '/bin/sh'
+    assert install[2:] == ['--prefix', '/tmp/apps']
+    assert options['env'].get('PVQL_TAG') == tag
+    assert ('latest' in capsys.readouterr().out) == (tag is None)
+
+
+def test_install_reports_a_failed_download(monkeypatch, capsys):
+    """A download that fails says why and runs nothing."""
+    calls = []
+
+    def run(command, **_):
+        calls.append(command)
+        return SimpleNamespace(returncode=22, stderr='curl: (22) The requested URL returned 404\n')
+
+    monkeypatch.setattr(cli.subprocess, 'run', run)
+    assert cli.main(['install']) == 1
+    assert len(calls) == 1
+    assert 'returned 404' in capsys.readouterr().err
