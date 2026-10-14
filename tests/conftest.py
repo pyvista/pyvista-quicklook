@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 import subprocess
 import time
 
 import pytest
+import pyvista as pv
 
 from pyvista_quicklook import cli
 from pyvista_quicklook import config
@@ -128,3 +130,11 @@ def compiled(name, sources, flags=(), main=None):
         text=True,
     )
     return tool
+
+
+@pytest.fixture
+def theme():
+    """Restore PyVista's global theme after a test changes it."""
+    saved = copy.deepcopy(pv.global_theme)
+    yield pv.global_theme
+    pv.global_theme.load_theme(saved)

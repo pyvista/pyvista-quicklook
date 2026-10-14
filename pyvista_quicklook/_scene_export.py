@@ -351,10 +351,20 @@ def drawable(surface: pv.PolyData) -> tuple[pv.PolyData, str]:
         loose = surface.n_verts + surface.n_lines
         return (surface.remove_cells(np.arange(loose)) if loose else surface), 'faces'
     if surface.n_lines:
-        return segments(surface), 'lines'
-    points = pv.PolyData(surface.points)
-    points.point_data.update(surface.point_data)
-    return points, 'points'
+        drawn = segments(surface)
+        # Line cells of a single point have no segment; their points still show.
+        if drawn.n_faces:
+            return drawn, 'lines'
+    return keep_points(surface, slice(None)), 'points'
+
+
+def keep_points(surface: pv.PolyData, kept: slice | np.ndarray) -> pv.PolyData:
+    """Return a bare point cloud of the surface's points, carrying their data."""
+    points = pv.PolyData(surface.points[kept])
+    for name in surface.point_data:
+        points.point_data[name] = np.asarray(surface.point_data[name])[kept]
+    points.set_active_scalars(surface.active_scalars_name)
+    return points
 
 
 def segments(lines: pv.PolyData) -> pv.PolyData:
@@ -366,7 +376,8 @@ def segments(lines: pv.PolyData) -> pv.PolyData:
     cells: list[int] = []
     connectivity = lines.lines
     offset = 0
-    cell = 0
+    # Cell data lists the vertex cells first, then the lines.
+    cell = lines.n_verts
     while offset < len(connectivity):
         count = int(connectivity[offset])
         ids = connectivity[offset + 1 : offset + 1 + count]
@@ -501,7 +512,7 @@ def export(source: str, destination: str, max_points: int, info: str | None = No
             surface = surface.decimate_pro(ratio, preserve_topology=True)
     elif primitive == 'points' and max_points and surface.n_points > max_points:
         kept = np.arange(0, surface.n_points, surface.n_points // max_points + 1)
-        surface = pv.PolyData(surface.points[kept])
+        surface = keep_points(surface, kept)
 
     surface = recentre(to_point_scalars(surface))
     colours = colours_for(surface)

@@ -340,6 +340,7 @@ struct SceneStyle: Decodable {
         """
     }
 
+    // SceneKit's PLY loader indexes with 16 or 32 bits and stores colours as bytes or floats.
     private func index(_ element: SCNGeometryElement, at position: Int) -> Int {
         element.data.withUnsafeBytes { raw in
             element.bytesPerIndex == 2
@@ -371,14 +372,15 @@ struct SceneStyle: Decodable {
         }
     }
 
-    private func source<Vector>(_ vectors: [Vector], semantic: SCNGeometrySource.Semantic) -> SCNGeometrySource {
-        let components = MemoryLayout<Vector>.size / MemoryLayout<Float>.size
-        return SCNGeometrySource(
+    private func source<Vector: SIMD>(
+        _ vectors: [Vector], semantic: SCNGeometrySource.Semantic
+    ) -> SCNGeometrySource where Vector.Scalar == Float {
+        SCNGeometrySource(
             data: vectors.withUnsafeBytes { Data($0) },
             semantic: semantic,
             vectorCount: vectors.count,
             usesFloatComponents: true,
-            componentsPerVector: components,
+            componentsPerVector: Vector.scalarCount,
             bytesPerComponent: MemoryLayout<Float>.size,
             dataOffset: 0,
             dataStride: MemoryLayout<Vector>.stride

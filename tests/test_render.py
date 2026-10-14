@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 from pathlib import Path
 import subprocess
 import sys
@@ -263,24 +262,20 @@ def test_lines_are_drawn(tmp_path):
     assert covered(rendered(line, tmp_path, name='line')) > 0.005
 
 
-def test_lines_and_points_take_the_themes_sizes(tmp_path):
+def test_lines_and_points_take_the_themes_sizes(tmp_path, theme):
     """A theme's line width and point size set how much of the frame they cover, as VTK's do."""
-    saved = copy.deepcopy(pv.global_theme)
-    try:
-        line = pv.PolyData(np.array([[0.0, 0, 0], [1, 0, 0]]), lines=np.array([2, 0, 1]))
-        thin = covered(rendered(line, tmp_path, name='thin'))
-        pv.global_theme.line_width = 8
-        thick = covered(rendered(line, tmp_path, name='thick'))
-        # The default line is two pixels wide, smeared a little further by antialiasing.
-        assert 2.5 < thick / thin < 6
+    line = pv.PolyData(np.array([[0.0, 0, 0], [1, 0, 0]]), lines=np.array([2, 0, 1]))
+    thin = covered(rendered(line, tmp_path, name='thin'))
+    theme.line_width = 8
+    thick = covered(rendered(line, tmp_path, name='thick'))
+    # The default line is two pixels wide, smeared a little further by antialiasing.
+    assert 2.5 < thick / thin < 6
 
-        cloud = pv.PolyData(np.array([[0.0, 0, 0], [1, 0, 0]]))
-        small = covered(rendered(cloud, tmp_path, name='small'))
-        pv.global_theme.point_size = 20
-        large = covered(rendered(cloud, tmp_path, name='large'))
-        assert 8 < large / small < 24
-    finally:
-        pv.global_theme.load_theme(saved)
+    cloud = pv.PolyData(np.array([[0.0, 0, 0], [1, 0, 0]]))
+    theme.point_size = 20
+    # Two discs twenty pixels across cover two times pi times ten squared pixels.
+    discs = covered(rendered(cloud, tmp_path, name='large', side=400)) * 400 * 400
+    assert abs(discs - 2 * np.pi * 10**2) < 0.15 * 2 * np.pi * 10**2
 
 
 def test_slices_are_visible_from_the_default_camera(tmp_path):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 from pathlib import Path
 
@@ -100,19 +99,29 @@ def test_lines_become_folded_triangles(tmp_path):
 
 
 def test_line_cell_data_follows_each_segment():
-    """A polyline's cell data is repeated on each of its segments."""
+    """A polyline's cell data is repeated on each segment, counted past any vertex cells."""
     points = np.array([[0.0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]])
-    lines = pv.PolyData(points, lines=np.array([3, 0, 1, 2, 2, 2, 3]))
-    lines.cell_data['part'] = np.array([7.0, 9.0])
+    lines = pv.PolyData(points, lines=np.array([3, 0, 1, 2, 2, 2, 3]), verts=np.array([1, 0]))
+    lines.cell_data['part'] = np.array([100.0, 7.0, 9.0])
     drawn = export_mod.segments(lines)
     assert drawn.cell_data['part'].tolist() == [7.0, 7.0, 9.0]
 
 
+def test_single_point_lines_are_drawn_as_points(tmp_path):
+    """Line cells of one point each make no segment, so the points are drawn instead."""
+    dots = pv.PolyData(np.random.default_rng(0).random((3, 3)), lines=np.array([1, 0, 1, 1, 1, 2]))
+    out = written(dots, tmp_path, name='dots.ply')
+    assert out.n_points == 3
+    assert style_of(tmp_path / 'dots.ply')['primitive'] == 'points'
+
+
 def test_a_point_cloud_over_budget_is_thinned(tmp_path):
-    """A cloud larger than the point budget keeps a spread of its points."""
+    """A cloud larger than the point budget keeps a spread of its points, still coloured."""
     cloud = pv.PolyData(np.random.default_rng(0).random((5000, 3)))
+    cloud['h'] = cloud.points[:, 2]
     out = written(cloud, tmp_path, name='cloud.ply', max_points=500)
     assert 250 < out.n_points <= 500
+    assert coloured(out)
 
 
 def test_point_scalars_are_carried_as_colour(tmp_path):
@@ -645,14 +654,6 @@ def test_a_failed_selective_read_falls_back_and_says_so(tmp_path, capsys, monkey
 def test_a_file_that_cannot_be_opened_does_not_look_like_text(tmp_path):
     """Text is only claimed for a file whose opening can be read."""
     assert not export_mod.looks_like_text(str(tmp_path / 'gone.dat'))
-
-
-@pytest.fixture
-def theme():
-    """Restore PyVista's global theme after a test changes it."""
-    saved = copy.deepcopy(pv.global_theme)
-    yield pv.global_theme
-    pv.global_theme.load_theme(saved)
 
 
 def style_of(path):
