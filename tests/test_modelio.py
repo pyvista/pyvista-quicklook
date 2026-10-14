@@ -80,7 +80,7 @@ def test_the_manifest_names_each_block(monkeypatch, tmp_path):
 
 
 @needs_macos
-@pytest.mark.parametrize('name', ['scene.usda', 'scene.usdc', 'scene.usdz'])
+@pytest.mark.parametrize('name', ['scene.usda', 'scene.usdc'])
 def test_usd_files_are_read_as_named_blocks_in_world_space(modelio, name):
     """A USD stage reads as one block per mesh, named by its prim path, moved by its transform."""
     blocks = pv.read(DATA / name)
@@ -101,7 +101,7 @@ def test_usd_files_are_read_as_named_blocks_in_world_space(modelio, name):
 def test_usd_files_export_in_colour(modelio, tmp_path):
     """The exporter draws a USD file coloured by its display colours."""
     out = tmp_path / 'out.ply'
-    export_mod.export(str(DATA / 'scene.usdz'), str(out), 2_000_000)
+    export_mod.export(str(DATA / 'scene.usdc'), str(out), 2_000_000)
     scene = pv.read(out)
     assert scene.n_faces == 13
     assert len(np.unique(scene['RGB'], axis=0)) > 1

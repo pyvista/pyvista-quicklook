@@ -168,7 +168,7 @@ the last suffix of a compressed dataset:
 
 A folder of DICOM slices is claimed the same way, through `public.folder`.
 
-8 more have a type and a preview of their own in macOS, which Quick Look prefers;
+7 more have a type and a preview of their own in macOS, which Quick Look prefers;
 the `native_formats` setting claims them (see [Native formats](#native-formats)):
 
 - `.abc` (`public.alembic`)
@@ -178,7 +178,6 @@ the `native_formats` setting claims them (see [Native formats](#native-formats))
 - `.usd` (`com.pixar.universal-scene-description`)
 - `.usda` (`com.pixar.universal-scene-description-utf8`)
 - `.usdc` (`com.pixar.universal-scene-description-binary`)
-- `.usdz` (`com.pixar.universal-scene-description-mobile`)
 
 PyVista can also read these, which are not claimed:
 
@@ -217,7 +216,7 @@ then run the installer again. The setting stands macOS's viewer down for your ac
 (`pluginkit -e ignore -i com.apple.HydraQLPreviewExtension`), which also takes away its
 preview of MaterialX files, and the reinstalled extension claims the types. USD and
 Alembic files are read through macOS's own Model I/O by a tool the app carries, one block
-per mesh named by its path in the file. `pvql doctor` reports the state. Setting it back
+per mesh named by its path in the file; USDZ packages stay with AR Quick Look. `pvql doctor` reports the state. Setting it back
 to `false` restores the viewer at once; the extension stops claiming the types on the
 next install.
 

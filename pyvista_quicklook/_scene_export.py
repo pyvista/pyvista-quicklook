@@ -83,7 +83,7 @@ def read_iges(source: str) -> object:
 
 
 # Formats Model I/O reads for the exporter, through the pvql-modelio tool the app carries.
-MODELIO_SUFFIXES = ('.usd', '.usda', '.usdc', '.usdz', '.abc')
+MODELIO_SUFFIXES = ('.usd', '.usda', '.usdc', '.abc')
 MODELIO_TOOL = 'pvql-modelio'
 APP_TOOL_PATHS = (
     Path.home() / 'Applications' / 'PyVista Quick Look.app' / 'Contents' / 'MacOS' / MODELIO_TOOL,
