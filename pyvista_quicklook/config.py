@@ -40,6 +40,8 @@ DEFAULTS: dict[str, Any] = {
     'theme': None,
     'extra_args': [],
     'extensions': {'add': [], 'remove': []},
+    # Whether to preview .ply, .stl and .obj in place of macOS's own 3D viewer.
+    'native_formats': False,
     'cache': True,
     # How often the service drops previews of files that have changed or gone; 0 never.
     'cache_check_minutes': 1440,
@@ -120,6 +122,7 @@ KINDS: dict[str, str] = {
     'extra_args': 'words',
     'extensions.add': 'extensions',
     'extensions.remove': 'extensions',
+    'native_formats': 'switch',
     'cache': 'switch',
     'cache_check_minutes': 'minutes',
     'log': 'switch',

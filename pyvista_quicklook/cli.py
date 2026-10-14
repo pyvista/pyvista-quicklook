@@ -199,6 +199,22 @@ def cmd_prebuild(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+# Apple's Quick Look extension for .ply, .stl, .obj and USD files. Quick Look scores it above
+# any other extension claiming those types, so previewing them here means standing it down.
+NATIVE_VIEWER = 'com.apple.HydraQLPreviewExtension'
+
+
+def stand_down_native_viewer(stood_down: bool) -> None:
+    """Stand macOS's own 3D previewer down for this user, or back up, with pluginkit."""
+    election = 'ignore' if stood_down else 'default'
+    _run(['/usr/bin/pluginkit', '-e', election, '-i', NATIVE_VIEWER])
+
+
+def native_viewer_stood_down() -> bool:
+    """Return whether pluginkit lists macOS's own 3D previewer as ignored."""
+    return _run(['/usr/bin/pluginkit', '-m', '-i', NATIVE_VIEWER]).startswith('-')
+
+
 def cmd_types(args: argparse.Namespace) -> int:
     """List the file extensions the Quick Look extension claims."""
     config = config_mod.load()
@@ -213,10 +229,11 @@ def cmd_types(args: argparse.Namespace) -> int:
             else f'  not claimed: {UNCLAIMED.get(ext, "removed in the config")}'
         )
         print(f'{mark} {ext:<10} {description:<32} {uti_for(ext)}{note}')
-    # Quick Look previews these with its own viewer; the app only offers to open them.
+    # Quick Look previews these with its own viewer unless that viewer is stood down.
+    native = bool(config.get('native_formats'))
     for ext, uti in NATIVE_TYPES.items():
-        note = '  not previewed: macOS previews it; the app can open it'
-        print(f'→ {ext:<10} {"macOS type":<32} {uti}{note}')
+        note = '' if native else '  not previewed: macOS previews it; set native_formats'
+        print(f'{"✓" if native else "→"} {ext:<10} {"macOS type":<32} {uti}{note}')
     for uti, description in SYSTEM_TYPES.items():
         print(f'✓ {"":<10} {description:<32} {uti}')
     if not args.all:
@@ -234,7 +251,8 @@ def cmd_plist(args: argparse.Namespace) -> int:
         plist_mod.write(plist_mod.app_plist(extensions, helper), args.app)
         print(args.app)
     if args.extension:
-        plist_mod.write(plist_mod.extension_plist(extensions, helper), args.extension)
+        native = bool(config.get('native_formats'))
+        plist_mod.write(plist_mod.extension_plist(extensions, helper, native), args.extension)
         print(args.extension)
     if args.thumbnail:
         plist_mod.write(plist_mod.thumbnail_plist(extensions), args.thumbnail)
@@ -276,6 +294,9 @@ def cmd_config(args: argparse.Namespace) -> int:
             print(f'{key} = {shown(config_mod.current(key))}')
             if key.startswith('extensions.'):
                 print('Run the installer again to claim the changed extensions.')
+            if key == 'native_formats':
+                stand_down_native_viewer(bool(config_mod.current(key)))
+                print('Run the installer again to claim .ply, .stl and .obj.')
             return 0
     except config_mod.SettingError as error:
         print(error, file=sys.stderr)
@@ -389,6 +410,14 @@ def cmd_doctor(_: argparse.Namespace) -> int:
         print('  pyvista    none in this environment; still images unavailable')
 
     print(f'✓ formats    {len(claimed_extensions(config))} extensions claimed')
+    if config.get('native_formats'):
+        if native_viewer_stood_down():
+            print('✓ native     .ply, .stl and .obj previewed here; macOS viewer stood down')
+        else:
+            problems += 1
+            print(
+                '✗ native     macOS still previews .ply, .stl and .obj; set native_formats again'
+            )
 
     installed = installed_apps()
     if installed:

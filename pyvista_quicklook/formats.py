@@ -121,8 +121,9 @@ VIA_SYSTEM_TYPE: dict[str, str] = {
     '.vol.gz': 'org.gnu.gnu-zip-archive',
 }
 
-# Formats macOS has a type and a preview of its own for, which Quick Look always uses; the
-# app declares them as documents so it can be chosen to open them.
+# Formats macOS has a type and a preview of its own for, which Quick Look prefers; the app
+# declares them as documents so it can be chosen to open them, and the extension claims
+# them only when the native_formats setting is on.
 NATIVE_TYPES: dict[str, str] = {
     '.ply': 'public.polygon-file-format',
     '.stl': 'public.standard-tesselated-geometry-format',
