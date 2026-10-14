@@ -200,20 +200,25 @@ def cmd_prebuild(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
-# Apple's Quick Look extension for .ply, .stl, .obj and USD files. Quick Look scores it above
-# any other extension claiming those types, so previewing them here means standing it down.
-NATIVE_VIEWER = 'com.apple.HydraQLPreviewExtension'
+# Apple's Quick Look extensions for the native formats: Hydra draws .ply, .stl, .obj, USD and
+# Alembic, AR Quick Look draws .usdz. Quick Look scores them above any other extension
+# claiming those types, so previewing the formats here means standing both down.
+NATIVE_VIEWERS = ('com.apple.HydraQLPreviewExtension', 'com.apple.RAQLPreviewExtension')
 
 
-def stand_down_native_viewer(stood_down: bool) -> None:
-    """Stand macOS's own 3D previewer down for this user, or back up, with pluginkit."""
+def stand_down_native_viewers(stood_down: bool) -> None:
+    """Stand macOS's own 3D previewers down for this user, or back up, with pluginkit."""
     election = 'ignore' if stood_down else 'default'
-    _run(['/usr/bin/pluginkit', '-e', election, '-i', NATIVE_VIEWER])
+    for viewer in NATIVE_VIEWERS:
+        _run(['/usr/bin/pluginkit', '-e', election, '-i', viewer])
 
 
-def native_viewer_stood_down() -> bool:
-    """Return whether pluginkit lists macOS's own 3D previewer as ignored."""
-    return _run(['/usr/bin/pluginkit', '-m', '-i', NATIVE_VIEWER]).startswith('-')
+def native_viewers_stood_down() -> bool:
+    """Return whether pluginkit lists every one of macOS's own 3D previewers as ignored."""
+    return all(
+        _run(['/usr/bin/pluginkit', '-m', '-i', viewer]).startswith('-')
+        for viewer in NATIVE_VIEWERS
+    )
 
 
 def cmd_types(args: argparse.Namespace) -> int:
@@ -296,7 +301,7 @@ def cmd_config(args: argparse.Namespace) -> int:
             if key.startswith('extensions.'):
                 print('Run the installer again to claim the changed extensions.')
             if key == 'native_formats':
-                stand_down_native_viewer(bool(config_mod.current(key)))
+                stand_down_native_viewers(bool(config_mod.current(key)))
                 print('Run the installer again to claim .ply, .stl, .obj, USD and .abc.')
             return 0
     except config_mod.SettingError as error:
@@ -412,7 +417,7 @@ def cmd_doctor(_: argparse.Namespace) -> int:
 
     print(f'✓ formats    {len(claimed_extensions(config))} extensions claimed')
     if config.get('native_formats'):
-        if native_viewer_stood_down():
+        if native_viewers_stood_down():
             print('✓ native     .ply, .stl, .obj, USD and .abc previewed here')
         else:
             problems += 1
