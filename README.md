@@ -69,8 +69,9 @@ PyVista's own plots.
 ### Turning the surface
 
 The mouse moves the camera as it does in PyVista: drag to turn the surface, drag with
-shift held or with the middle button to pan, drag with the right button, roll the wheel
-or pinch to zoom, and drag with control held to spin it about the line of sight.
+shift held or with the middle button to pan, drag with the right button, with shift and
+control held, roll the wheel or pinch to zoom, and drag with control held to spin it
+about the line of sight.
 
 ### Turnable or still
 

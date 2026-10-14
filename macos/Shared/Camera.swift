@@ -103,8 +103,10 @@ struct Trackball {
 
     /// VTK's `MotionFactor`, which scales every mouse motion.
     static let motionFactor: Float = 10
-    /// How much a wheel notch, or a full pinch, brings the camera in, as VTK's 1.1.
-    static let wheelFactor: Float = 1.1
+    /// The base VTK raises to the motion to bring the camera in.
+    static let dollyBase: Float = 1.1
+    /// VTK's `MouseWheelMotionFactor`, a wheel notch's share of the motion factor.
+    static let wheelMotionFactor: Float = 0.2
 
     /// From the camera toward the focal point.
     var forward: SIMD3<Float> {
@@ -133,7 +135,7 @@ struct Trackball {
     }
 
     /// Moves the camera and the focal point together across the view.
-    mutating func pan(right dx: Float, up dy: Float) {
+    mutating func translate(right dx: Float, up dy: Float) {
         let move = right * dx + simd_normalize(up) * dy
         position += move
         target += move
@@ -173,17 +175,17 @@ struct Trackball {
         let depth = simd_distance(position, target)
         let span = 2 * depth * tan(fieldOfView / 2 * .pi / 180)
         let perPoint = span / (vertical ? viewport.y : viewport.x)
-        pan(right: -dx * perPoint, up: -dy * perPoint)
+        translate(right: -dx * perPoint, up: -dy * perPoint)
     }
 
     /// A drag with the right button: VTK's `Dolly`, 1.1 to the motion factor over half the view.
     mutating func dolly(dy: Float, viewport: SIMD2<Float>) {
-        dolly(pow(Self.wheelFactor, Self.motionFactor * dy / (viewport.y / 2)))
+        dolly(pow(Self.dollyBase, Self.motionFactor * dy / (viewport.y / 2)))
     }
 
-    /// A wheel notch, or a share of one: forward brings the camera in.
+    /// A wheel notch, or a share of one: forward brings the camera in, as VTK's `OnMouseWheelForward`.
     mutating func wheel(_ notches: Float) {
-        dolly(pow(Self.wheelFactor, notches))
+        dolly(pow(Self.dollyBase, Self.motionFactor * Self.wheelMotionFactor * notches))
     }
 }
 

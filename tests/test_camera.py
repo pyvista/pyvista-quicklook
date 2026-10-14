@@ -107,9 +107,9 @@ def test_a_drag_rotates_by_vtks_sensitivity(moved):
 
 
 def test_a_wheel_notch_and_a_right_drag_zoom_by_vtks_factors(moved):
-    """A notch dollies by 1.1; a right drag by 1.1 to the motion factor over half the height."""
+    """A notch dollies as VTK's wheel does, a right drag by 1.1 to the motion over half a view."""
     camera = vtk_camera()
-    camera.Dolly(1.1**2)
+    camera.Dolly(1.1 ** (10 * 0.2 * 2))
     assert_matches(moved('wheel=2'), camera)
     camera = vtk_camera()
     camera.Dolly(1.1 ** (10 * 30 / 300))
@@ -134,3 +134,6 @@ def test_a_pan_keeps_the_point_under_the_mouse_under_it(moved):
     # With the view angle across the width instead, the same drag moves the scene its width.
     across = moved(f'pan=800,0,{width},{height},{fov},0', start=start)
     np.testing.assert_allclose(across['target'], [-span, 0, 0], atol=1e-4)
+    # Dragged up the height of the view, the scene follows upward.
+    upward = moved(f'pan=0,600,{width},{height},{fov},1', start=start)
+    np.testing.assert_allclose(upward['target'], [0, -span, 0], atol=1e-4)

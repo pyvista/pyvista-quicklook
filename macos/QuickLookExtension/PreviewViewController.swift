@@ -51,17 +51,17 @@ func textContents(of url: URL) -> String? {
 final class LitSceneView: SCNView {
     /// Held here, since a view only keeps a weak reference to its delegate.
     var lights: LightsFollowCamera?
-    /// The camera the scene opens with, framed as the still is.
-    var framed: SCNNode?
     /// The point the camera turns about and moves toward, as VTK's focal point.
     var target = SIMD3<Float>(0, 0, 0)
-    private var last = NSPoint.zero
+    /// Whether the reader has moved the camera from where the scene opened.
+    private var moved = false
+    private var lastMouse = NSPoint.zero
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        // The still fits the shorter side, so the view angle spans that side until the scene is turned.
-        if let framed, pointOfView === framed {
-            framed.camera?.projectionDirection = newSize.width < newSize.height ? .horizontal : .vertical
+        // The still fits the shorter side, so the view angle spans that side until the scene is moved.
+        if !moved {
+            pointOfView?.camera?.projectionDirection = newSize.width < newSize.height ? .horizontal : .vertical
         }
     }
 
@@ -76,6 +76,7 @@ final class LitSceneView: SCNView {
         node.simdWorldPosition = camera.position
         node.simdLook(at: camera.target, up: camera.up, localFront: SIMD3(0, 0, -1))
         target = camera.target
+        moved = true
     }
 
     private func point(_ event: NSEvent) -> NSPoint {
@@ -83,26 +84,28 @@ final class LitSceneView: SCNView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        last = point(event)
+        lastMouse = point(event)
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        last = point(event)
+        lastMouse = point(event)
     }
 
     override func otherMouseDown(with event: NSEvent) {
-        last = point(event)
+        lastMouse = point(event)
     }
 
     override func mouseDragged(with event: NSEvent) {
         let now = point(event)
-        let dx = Float(now.x - last.x)
-        let dy = Float(now.y - last.y)
-        let was = SIMD2(Float(last.x), Float(last.y))
-        last = now
+        let dx = Float(now.x - lastMouse.x)
+        let dy = Float(now.y - lastMouse.y)
+        let was = SIMD2(Float(lastMouse.x), Float(lastMouse.y))
+        lastMouse = now
         let flags = event.modifierFlags
         move { camera, viewport in
-            if flags.contains(.shift) {
+            if flags.contains(.shift), flags.contains(.control) {
+                camera.dolly(dy: dy, viewport: viewport)
+            } else if flags.contains(.shift) {
                 self.pan(&camera, dx: dx, dy: dy, viewport: viewport)
             } else if flags.contains(.control) {
                 camera.spin(from: was, to: SIMD2(Float(now.x), Float(now.y)), viewport: viewport)
@@ -114,16 +117,16 @@ final class LitSceneView: SCNView {
 
     override func rightMouseDragged(with event: NSEvent) {
         let now = point(event)
-        let dy = Float(now.y - last.y)
-        last = now
+        let dy = Float(now.y - lastMouse.y)
+        lastMouse = now
         move { camera, viewport in camera.dolly(dy: dy, viewport: viewport) }
     }
 
     override func otherMouseDragged(with event: NSEvent) {
         let now = point(event)
-        let dx = Float(now.x - last.x)
-        let dy = Float(now.y - last.y)
-        last = now
+        let dx = Float(now.x - lastMouse.x)
+        let dy = Float(now.y - lastMouse.y)
+        lastMouse = now
         move { camera, viewport in self.pan(&camera, dx: dx, dy: dy, viewport: viewport) }
     }
 
@@ -184,9 +187,9 @@ func sceneView(for scene: SCNScene, framing: Framing) -> SCNView {
     view.backgroundColor = .clear
 
     view.pointOfView = framing.node
-    view.framed = framing.node
     view.target = framing.target
-    // The camera comes as near as the reader likes without the scene cutting off.
+    // The camera comes as near as the reader likes without the scene cutting off; the
+    // range previewCamera sets still serves the stills.
     framing.node.camera?.automaticallyAdjustsZRange = true
     view.lights = LightsFollowCamera(lightLikePyVista(scene))
     view.delegate = view.lights
