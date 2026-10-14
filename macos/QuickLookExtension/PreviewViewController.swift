@@ -51,15 +51,107 @@ func textContents(of url: URL) -> String? {
 final class LitSceneView: SCNView {
     /// Held here, since a view only keeps a weak reference to its delegate.
     var lights: LightsFollowCamera?
-    /// The camera the scene opens with, framed as the still is.
-    var framed: SCNNode?
+    /// The point the camera turns about and moves toward, as VTK's focal point.
+    var target = SIMD3<Float>(0, 0, 0)
+    /// Whether the reader has moved the camera from where the scene opened.
+    private var moved = false
+    private var lastMouse = NSPoint.zero
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        // The still fits the shorter side, so the view angle spans that side until the scene is turned.
-        if let framed, pointOfView === framed {
-            framed.camera?.projectionDirection = newSize.width < newSize.height ? .horizontal : .vertical
+        // The still fits the shorter side, so the view angle spans that side until the scene is moved.
+        if !moved {
+            pointOfView?.camera?.projectionDirection = newSize.width < newSize.height ? .horizontal : .vertical
         }
+    }
+
+    /// Reads the camera, moves it, and writes it back; the lights follow it at the next frame.
+    private func move(_ change: (inout Trackball, SIMD2<Float>) -> Void) {
+        guard let node = pointOfView else {
+            return
+        }
+        let worldUp = simd_act(node.simdWorldOrientation, SIMD3<Float>(0, 1, 0))
+        var camera = Trackball(position: node.simdWorldPosition, target: target, up: worldUp)
+        change(&camera, SIMD2(Float(bounds.width), Float(bounds.height)))
+        node.simdWorldPosition = camera.position
+        node.simdLook(at: camera.target, up: camera.up, localFront: SIMD3(0, 0, -1))
+        target = camera.target
+        moved = true
+    }
+
+    private func point(_ event: NSEvent) -> NSPoint {
+        convert(event.locationInWindow, from: nil)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        lastMouse = point(event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        lastMouse = point(event)
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        lastMouse = point(event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        let now = point(event)
+        let dx = Float(now.x - lastMouse.x)
+        let dy = Float(now.y - lastMouse.y)
+        let was = SIMD2(Float(lastMouse.x), Float(lastMouse.y))
+        lastMouse = now
+        let flags = event.modifierFlags
+        move { camera, viewport in
+            if flags.contains(.shift), flags.contains(.control) {
+                camera.dolly(dy: dy, viewport: viewport)
+            } else if flags.contains(.shift) {
+                self.pan(&camera, dx: dx, dy: dy, viewport: viewport)
+            } else if flags.contains(.control) {
+                camera.spin(from: was, to: SIMD2(Float(now.x), Float(now.y)), viewport: viewport)
+            } else {
+                camera.rotate(dx: dx, dy: dy, viewport: viewport)
+            }
+        }
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        let now = point(event)
+        let dy = Float(now.y - lastMouse.y)
+        lastMouse = now
+        move { camera, viewport in camera.dolly(dy: dy, viewport: viewport) }
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        let now = point(event)
+        let dx = Float(now.x - lastMouse.x)
+        let dy = Float(now.y - lastMouse.y)
+        lastMouse = now
+        move { camera, viewport in self.pan(&camera, dx: dx, dy: dy, viewport: viewport) }
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        // A wheel counts in notches; a trackpad in points, of which this many make a notch.
+        let notches = Float(event.scrollingDeltaY) / (event.hasPreciseScrollingDeltas ? 30 : 1)
+        move { camera, _ in camera.wheel(notches) }
+    }
+
+    override func magnify(with event: NSEvent) {
+        let factor = 1 + Float(event.magnification)
+        move { camera, _ in camera.dolly(max(factor, 0.1)) }
+    }
+
+    private func pan(_ camera: inout Trackball, dx: Float, dy: Float, viewport: SIMD2<Float>) {
+        guard let lens = pointOfView?.camera else {
+            return
+        }
+        camera.pan(
+            dx: dx,
+            dy: dy,
+            viewport: viewport,
+            fieldOfView: Float(lens.fieldOfView),
+            vertical: lens.projectionDirection == .vertical
+        )
     }
 }
 
@@ -91,13 +183,14 @@ final class DescriptionWait: @unchecked Sendable {
 func sceneView(for scene: SCNScene, framing: Framing) -> SCNView {
     let view = LitSceneView()
     view.scene = scene
-    view.allowsCameraControl = true
     view.antialiasingMode = .multisampling4X
     view.backgroundColor = .clear
 
     view.pointOfView = framing.node
-    view.framed = framing.node
-    view.defaultCameraController.target = SCNVector3(framing.target)
+    view.target = framing.target
+    // The camera comes as near as the reader likes without the scene cutting off; the
+    // range previewCamera sets still serves the stills.
+    framing.node.camera?.automaticallyAdjustsZRange = true
     view.lights = LightsFollowCamera(lightLikePyVista(scene))
     view.delegate = view.lights
     // Hidden, and drawn continuously, until a few frames are out: the first can show a blank.
