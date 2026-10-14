@@ -423,6 +423,39 @@ def test_doctor_passes_a_healthy_installation(capsys, doctor, tmp_path):
     assert not rendered.exists()
 
 
+@pytest.mark.parametrize(
+    ('listing', 'problems', 'line'),
+    [
+        (
+            f'-    {cli.NATIVE_VIEWER}(1.0)',
+            0,
+            '✓ native     .ply, .stl, .obj, USD and .abc previewed here',
+        ),
+        (f'+    {cli.NATIVE_VIEWER}(1.0)', 1, '✗ native     macOS still previews'),
+    ],
+)
+def test_doctor_checks_the_native_viewer_when_the_setting_is_on(
+    capsys, doctor, monkeypatch, tmp_path, listing, problems, line
+):
+    """With native formats on, the doctor passes only when macOS's viewer is stood down."""
+    rendered = tmp_path / 'smoke.ply'
+
+    def preview(sample, timeout):
+        rendered.write_bytes(b'x')
+        return rendered
+
+    doctor(healthy=True, preview=preview)
+    config.put('native_formats', True)
+    run = cli._run
+    monkeypatch.setattr(
+        cli,
+        '_run',
+        lambda command: listing if command[:2] == ['/usr/bin/pluginkit', '-m'] else run(command),
+    )
+    assert cli.cmd_doctor(argparse.Namespace()) == problems
+    assert line in capsys.readouterr().out
+
+
 def test_doctor_notes_a_pyvista_command_that_does_not_run(capsys, doctor, tmp_path):
     """A pyvista command that fails to run only rules out still images."""
     rendered = tmp_path / 'smoke.ply'
