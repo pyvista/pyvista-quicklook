@@ -428,7 +428,7 @@ def test_exporter_writes_the_description(tmp_path):
     source = tmp_path / 'sphere.vtp'
     pv.Sphere().save(source)
     info = tmp_path / 'info.json'
-    export_mod.export(str(source), str(tmp_path / 'out.ply'), 0, 0, str(info))
+    export_mod.export(str(source), str(tmp_path / 'out.ply'), 0, str(info))
     assert json.loads(info.read_text())['type'] == 'PolyData'
 
 
@@ -443,7 +443,7 @@ def test_a_failed_description_leaves_the_preview(tmp_path, monkeypatch, capsys):
     source = tmp_path / 'sphere.vtp'
     pv.Sphere().save(source)
     info = tmp_path / 'info.json'
-    export_mod.export(str(source), str(tmp_path / 'out.ply'), 0, 0, str(info))
+    export_mod.export(str(source), str(tmp_path / 'out.ply'), 0, str(info))
     assert not info.exists()
     assert (tmp_path / 'out.ply').is_file()
     assert 'info skipped: ValueError: no' in capsys.readouterr().err

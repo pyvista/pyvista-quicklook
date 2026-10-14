@@ -7,7 +7,6 @@ import sys
 
 import pytest
 
-from pyvista_quicklook import config
 from pyvista_quicklook import convert
 from pyvista_quicklook import environment
 from pyvista_quicklook import render
@@ -16,24 +15,21 @@ from pyvista_quicklook import render
 def test_scene_key_differs_from_the_image_key():
     """A file's scene and its rendered image are cached separately."""
     identity = ('/mesh.vtu', 1, 2)
-    settings = {'window_size': [8, 8], 'max_scene_points': 100, 'max_glyph_points': 20}
+    settings = {'window_size': [8, 8], 'max_scene_points': 100}
     assert convert.scene_key(identity, settings) != render.cache_key(identity, settings)
 
 
-def test_scene_key_follows_conversion_settings():
-    """Changing either point budget invalidates the scene."""
+def test_scene_key_follows_the_point_budget():
+    """Changing the point budget invalidates the scene."""
     identity = ('/mesh.vtu', 1, 2)
-    base = {'max_scene_points': 100, 'max_glyph_points': 20}
+    base = {'max_scene_points': 100}
     assert convert.scene_key(identity, base) != convert.scene_key(
         identity, {**base, 'max_scene_points': 200}
     )
-    assert convert.scene_key(identity, base) != convert.scene_key(
-        identity, {**base, 'max_glyph_points': 40}
-    )
 
 
-def test_scene_passes_a_zero_glyph_budget_through(tmp_path, monkeypatch):
-    """A glyph budget of zero means no cap, and must not fall back to the default."""
+def test_scene_passes_a_zero_point_budget_through(tmp_path, monkeypatch):
+    """A point budget of zero means no cap, and must not fall back to the default."""
     sample = tmp_path / 'mesh.vtu'
     sample.write_text('x')
     seen = {}
@@ -44,11 +40,10 @@ def test_scene_passes_a_zero_glyph_budget_through(tmp_path, monkeypatch):
 
     monkeypatch.setattr(convert.environment, 'run', fake_run)
     monkeypatch.setattr(convert.config_mod, 'CACHE_DIR', tmp_path / 'cache')
-    settings = {'python': sys.executable, 'max_glyph_points': 0, 'cache': False}
+    settings = {'python': sys.executable, 'max_scene_points': 0, 'cache': False}
     out = convert.scene(sample, settings)
     command = seen['command']
-    assert command[command.index('--max-glyphs') + 1] == '0'
-    assert command[command.index('--max-points') + 1] == str(config.DEFAULTS['max_scene_points'])
+    assert command[command.index('--max-points') + 1] == '0'
     assert out.read_bytes() == b'ply'
 
 
