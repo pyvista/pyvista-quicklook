@@ -297,13 +297,9 @@ def test_config_set_native_formats_stands_the_macos_viewer_down(capsys, home, mo
     monkeypatch.setattr(cli, '_run', lambda command: commands.append(command) or '')
     assert cli.cmd_config(config_args('set', 'native_formats', 'true')) == 0
     assert 'installer again' in capsys.readouterr().out
-    assert commands == [
-        ['/usr/bin/pluginkit', '-e', 'ignore', '-i', viewer] for viewer in cli.NATIVE_VIEWERS
-    ]
+    assert commands == [['/usr/bin/pluginkit', '-e', 'ignore', '-i', cli.NATIVE_VIEWER]]
     assert cli.cmd_config(config_args('unset', 'native_formats')) == 0
-    assert commands[-len(cli.NATIVE_VIEWERS) :] == [
-        ['/usr/bin/pluginkit', '-e', 'default', '-i', viewer] for viewer in cli.NATIVE_VIEWERS
-    ]
+    assert commands[-1] == ['/usr/bin/pluginkit', '-e', 'default', '-i', cli.NATIVE_VIEWER]
 
 
 def test_config_set_refuses_a_broken_file(capsys, home):

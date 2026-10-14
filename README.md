@@ -213,10 +213,9 @@ claiming those types. To preview them here instead:
 pvql config set native_formats true
 ```
 
-then run the installer again. The setting stands macOS's two viewers down for your
-account with `pluginkit -e ignore`, the Hydra one that draws these formats and the AR
-Quick Look one that draws `.usdz`, which also takes away their previews of MaterialX and
-Reality files, and the reinstalled extension claims the types. USD and
+then run the installer again. The setting stands macOS's viewer down for your account
+(`pluginkit -e ignore -i com.apple.HydraQLPreviewExtension`), which also takes away its
+preview of MaterialX files, and the reinstalled extension claims the types. USD and
 Alembic files are read through macOS's own Model I/O by a tool the app carries, one block
 per mesh named by its path in the file. `pvql doctor` reports the state. Setting it back
 to `false` restores the viewer at once; the extension stops claiming the types on the
