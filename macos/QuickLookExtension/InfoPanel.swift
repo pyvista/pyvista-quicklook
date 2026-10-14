@@ -565,6 +565,128 @@ func factsSectionView(_ heading: String, _ body: NSView) -> NSStackView {
     return section
 }
 
+/// How the reader last left the info panel, kept across previews.
+enum InfoPanelMemory {
+    static var defaults = UserDefaults.standard
+    static let sideWidthKey = "info_side_width"
+    static let belowHeightKey = "info_below_height"
+    static let collapsedKey = "info_collapsed"
+
+    /// The width dragged to beside the render, if any.
+    static var sideWidth: CGFloat? {
+        get { stored(sideWidthKey) }
+        set { store(sideWidthKey, newValue) }
+    }
+
+    /// The height dragged to below the render, if any.
+    static var belowHeight: CGFloat? {
+        get { stored(belowHeightKey) }
+        set { store(belowHeightKey, newValue) }
+    }
+
+    /// Whether the panel was folded away: to the line alone beside the render, or to the
+    /// one-line summary below it.
+    static var collapsed: Bool {
+        get { defaults.bool(forKey: collapsedKey) }
+        set { defaults.set(newValue, forKey: collapsedKey) }
+    }
+
+    private static func stored(_ key: String) -> CGFloat? {
+        defaults.object(forKey: key) == nil ? nil : CGFloat(defaults.double(forKey: key))
+    }
+
+    private static func store(_ key: String, _ value: CGFloat?) {
+        if let value {
+            defaults.set(Double(value), forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
+        }
+    }
+}
+
+/// The line between the render and the info, which drags to resize and folds the info away.
+final class InfoDivider: NSView {
+    /// Whether the line stands beside the render rather than below it.
+    var vertical = false
+    /// Called with how far the mouse moved across the line, in points.
+    var onDrag: ((CGFloat) -> Void)?
+    var onDragEnd: (() -> Void)?
+    var onToggle: (() -> Void)?
+    /// How wide the grab area is around the one-point line; the button sits inside it.
+    static let thickness: CGFloat = 23
+    static let buttonSide: CGFloat = 21
+    private var last = NSPoint.zero
+    private let line = NSBox()
+    let toggle = NSButton()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        line.boxType = .separator
+        addSubview(line)
+        toggle.bezelStyle = .circular
+        toggle.imagePosition = .imageOnly
+        toggle.imageScaling = .scaleProportionallyDown
+        toggle.setButtonType(.momentaryPushIn)
+        toggle.target = self
+        toggle.action = #selector(toggled)
+        addSubview(toggle)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not used")
+    }
+
+    private var chevron = ""
+
+    /// Shows a chevron pointing where the info goes when the button is pressed.
+    func showChevron(_ name: String, tip: String) {
+        guard name != chevron else {
+            return
+        }
+        chevron = name
+        let symbol = NSImage(systemSymbolName: name, accessibilityDescription: tip)
+        toggle.image = symbol?.withSymbolConfiguration(.init(pointSize: 9, weight: .bold))
+        toggle.toolTip = tip
+    }
+
+    override func layout() {
+        super.layout()
+        let middle = (Self.thickness - 1) / 2
+        let side = Self.buttonSide
+        line.frame = vertical
+            ? NSRect(x: middle, y: 0, width: 1, height: bounds.height)
+            : NSRect(x: 0, y: middle, width: bounds.width, height: 1)
+        // On the line, at its top or its right, and opaque, so the line stops under it.
+        toggle.frame = vertical
+            ? NSRect(x: (bounds.width - side) / 2, y: bounds.height - side - 2, width: side, height: side)
+            : NSRect(x: bounds.width - side - 4, y: (bounds.height - side) / 2, width: side, height: side)
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: vertical ? .resizeLeftRight : .resizeUpDown)
+        addCursorRect(toggle.frame, cursor: .arrow)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        last = superview?.convert(event.locationInWindow, from: nil) ?? .zero
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        let point = superview?.convert(event.locationInWindow, from: nil) ?? .zero
+        onDrag?(vertical ? point.x - last.x : point.y - last.y)
+        last = point
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        onDragEnd?()
+    }
+
+    @objc private func toggled() {
+        onToggle?()
+    }
+}
+
 /// Shows a render with the dataset's info beside it, below it, or summarised under it.
 final class MeshPreviewView: NSView {
     let render: NSView
@@ -572,7 +694,7 @@ final class MeshPreviewView: NSView {
     let arrangement: InfoArrangement
     private let scroll = NSScrollView()
     private let summary: NSTextField
-    private let divider = NSBox()
+    private let divider = InfoDivider()
     /// What the content was last built for, so it is rebuilt only when that changes.
     private var built: (wide: Bool, width: CGFloat)?
 
@@ -585,6 +707,12 @@ final class MeshPreviewView: NSView {
     static let minSideWidth: CGFloat = 260
     /// Space around the info inside its scrolling column.
     static let inset: CGFloat = 16
+    /// Dragged this far past the narrowest the column may be, the info folds away.
+    static let foldPast: CGFloat = 60
+    /// The shortest the row below the render may be dragged to; past it, the info folds away.
+    static let foldHeight: CGFloat = 48
+    /// The size a drag is taking the info to, unclamped, so it can pass the fold.
+    private var dragging: CGFloat?
 
     init(render: NSView, info: MeshInfo, arrangement: InfoArrangement = .automatic) {
         self.render = render
@@ -598,7 +726,9 @@ final class MeshPreviewView: NSView {
         summary.lineBreakMode = .byWordWrapping
         summary.maximumNumberOfLines = 0
         super.init(frame: .zero)
-        divider.boxType = .separator
+        divider.onDrag = { [weak self] delta in self?.dragged(delta) }
+        divider.onDragEnd = { [weak self] in self?.dragEnded() }
+        divider.onToggle = { [weak self] in self?.toggleCollapsed() }
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -613,8 +743,33 @@ final class MeshPreviewView: NSView {
         fatalError("init(coder:) is not used")
     }
 
-    /// The arrangement for the current size.
+    /// Where the info is shown, or nothing while it is folded away or left out.
+    var infoFrame: NSRect {
+        scroll.isHidden ? .zero : scroll.frame
+    }
+
+    /// Where the line and its button are, or nothing when there is no line.
+    var dividerFrame: NSRect {
+        divider.isHidden ? .zero : divider.frame
+    }
+
+    /// Whether the reader folded the info away: beside the render that leaves only the
+    /// line and its button, below it the one-line summary.
+    var isFolded: Bool {
+        arrangement != .hidden && InfoPanelMemory.collapsed
+    }
+
+    /// The arrangement for the current size, and for whether the info was folded away.
     var resolved: InfoArrangement {
+        let fitted = fitting
+        if isFolded, fitted != .side {
+            return .compact
+        }
+        return fitted
+    }
+
+    /// The arrangement for the current size alone.
+    var fitting: InfoArrangement {
         guard arrangement == .automatic else {
             return arrangement
         }
@@ -629,6 +784,77 @@ final class MeshPreviewView: NSView {
     /// The width of the column beside the render in a panel this wide.
     static func sideColumn(_ width: CGFloat) -> CGFloat {
         min(sideWidth, width * 0.42)
+    }
+
+    /// The column's width: as dragged to, within what the panel allows, else the usual share.
+    private func columnWidth() -> CGFloat {
+        let wanted = InfoPanelMemory.sideWidth ?? Self.sideColumn(bounds.width)
+        return min(max(wanted, Self.minSideWidth), bounds.width * 0.6)
+    }
+
+    /// The info's height below the render: as dragged to, within what the panel allows, else
+    /// what the content needs, so a short table does not take half the panel.
+    private func rowHeight() -> CGFloat {
+        let most = bounds.height * 0.7
+        if let dragged = InfoPanelMemory.belowHeight {
+            return min(max(dragged, Self.foldHeight), most)
+        }
+        let wanted = min(contentHeight(), bounds.height * 0.5)
+        return max(wanted, min(120, bounds.height * 0.3))
+    }
+
+    /// Resizes the info by a drag across the divider, folding it away when dragged too small.
+    func dragged(_ delta: CGFloat) {
+        guard !isFolded else {
+            return
+        }
+        switch resolved {
+        case .side:
+            let width = (dragging ?? columnWidth()) - delta
+            dragging = width
+            if width < Self.minSideWidth - Self.foldPast {
+                InfoPanelMemory.sideWidth = nil
+                fold()
+            } else {
+                InfoPanelMemory.sideWidth = width
+            }
+        case .below:
+            let height = (dragging ?? rowHeight()) + delta
+            dragging = height
+            if height < Self.foldHeight {
+                InfoPanelMemory.belowHeight = nil
+                fold()
+            } else {
+                InfoPanelMemory.belowHeight = height
+            }
+        case .compact, .hidden, .automatic:
+            return
+        }
+        needsLayout = true
+    }
+
+    /// Settles a dragged size on what the panel allowed, so the next preview starts there.
+    func dragEnded() {
+        dragging = nil
+        guard !isFolded else {
+            return
+        }
+        switch resolved {
+        case .side: InfoPanelMemory.sideWidth = columnWidth()
+        case .below: InfoPanelMemory.belowHeight = rowHeight()
+        case .compact, .hidden, .automatic: break
+        }
+    }
+
+    private func fold() {
+        dragging = nil
+        InfoPanelMemory.collapsed = true
+    }
+
+    /// Folds the info down to its summary, or opens it again.
+    func toggleCollapsed() {
+        InfoPanelMemory.collapsed.toggle()
+        needsLayout = true
     }
 
     /// Builds the scrolling content for a column, as tables when asked and they fit, else as lists.
@@ -667,35 +893,55 @@ final class MeshPreviewView: NSView {
         super.layout()
         let bounds = self.bounds
         let mode = resolved
+        let folded = isFolded
+        // Compact for want of room has nothing to unfold, so it has no button.
+        let unfoldable = mode == .compact && folded && fitting != .compact
         summary.isHidden = mode != .compact
-        scroll.isHidden = mode == .compact || mode == .hidden
-        divider.isHidden = scroll.isHidden
+        scroll.isHidden = mode == .compact || mode == .hidden || folded
+        divider.isHidden = mode == .hidden || mode == .automatic || (mode == .compact && !unfoldable)
+        let grab = InfoDivider.thickness
+        let half = (grab - 1) / 2
         switch mode {
         case .hidden, .automatic:
             render.frame = bounds
         case .compact:
-            let width = bounds.width - 16
+            let room = unfoldable ? InfoDivider.buttonSide + 10 : 0
+            let width = bounds.width - 16 - 2 * room
             let font = summary.font ?? NSFont.systemFont(ofSize: 11)
             summary.stringValue = packed(info.summaryParts, width: width, font: font).joined(separator: "\n")
             let fit = NSRect(x: 0, y: 0, width: width, height: .greatestFiniteMagnitude)
             let height = ceil(summary.cell?.cellSize(forBounds: fit).height ?? 16)
-            summary.frame = NSRect(x: 8, y: 6, width: width, height: height)
+            summary.frame = NSRect(x: 8 + room, y: 6, width: width, height: height)
             let below = height + 10
+            if unfoldable {
+                divider.vertical = false
+                divider.showChevron("chevron.up", tip: "Show the details")
+                divider.frame = NSRect(x: 0, y: below - half, width: bounds.width, height: grab)
+            }
             render.frame = NSRect(x: 0, y: below, width: bounds.width, height: bounds.height - below)
         case .side:
-            let width = Self.sideColumn(bounds.width)
-            fill(wide: false, column: width)
-            scroll.frame = NSRect(x: bounds.width - width, y: 0, width: width, height: bounds.height)
-            divider.frame = NSRect(x: bounds.width - width - 1, y: 0, width: 1, height: bounds.height)
-            render.frame = NSRect(x: 0, y: 0, width: bounds.width - width - 1, height: bounds.height)
+            let width = folded ? 0 : columnWidth()
+            if !folded {
+                fill(wide: false, column: width)
+                scroll.frame = NSRect(x: bounds.width - width, y: 0, width: width, height: bounds.height)
+            }
+            divider.vertical = true
+            divider.showChevron(folded ? "chevron.left" : "chevron.right", tip: folded ? "Show the details" : "Hide the details")
+            // Folded, the strip stands whole at the edge; open, the line is the column's edge.
+            let edge = folded ? bounds.width - grab : bounds.width - width - 1 - half
+            divider.frame = NSRect(x: edge, y: 0, width: grab, height: bounds.height)
+            render.frame = NSRect(x: 0, y: 0, width: edge + half, height: bounds.height)
         case .below:
             fill(wide: true, column: bounds.width)
             scroll.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height * 0.45)
-            let wanted = min(contentHeight(), bounds.height * 0.5)
-            let height = max(wanted, min(120, bounds.height * 0.3))
+            let height = rowHeight()
             scroll.frame = NSRect(x: 0, y: 0, width: bounds.width, height: height)
-            divider.frame = NSRect(x: 0, y: height, width: bounds.width, height: 1)
+            divider.vertical = false
+            divider.showChevron("chevron.down", tip: "Hide the details")
+            divider.frame = NSRect(x: 0, y: height - half, width: bounds.width, height: grab)
             render.frame = NSRect(x: 0, y: height + 1, width: bounds.width, height: bounds.height - height - 1)
         }
+        divider.needsLayout = true
+        window?.invalidateCursorRects(for: divider)
     }
 }

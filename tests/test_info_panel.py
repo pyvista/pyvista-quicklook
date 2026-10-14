@@ -40,12 +40,15 @@ def probe():
 def panel(probe, tmp_path):
     """Return a function laying out a dataset's panel and reporting its labels."""
 
-    def laid_out(dataset, arrangement='automatic', size=(1400, 900), source='mesh.vtk'):
+    def laid_out(dataset, arrangement='automatic', size=(1400, 900), source='mesh.vtk', **kept):
         described = info_mod.describe(dataset, source)
         info = tmp_path / 'info.json'
         info.write_text(json.dumps(described))
+        drags = kept.pop('drags', ())
+        remembered = [f'{key}={value}' for key, value in kept.items()]
+        remembered += [f'drag={delta}' for delta in drags]
         finished = subprocess.run(
-            [str(probe), str(info), str(size[0]), str(size[1]), arrangement],
+            [str(probe), str(info), str(size[0]), str(size[1]), arrangement, *remembered],
             capture_output=True,
             text=True,
             timeout=60,
@@ -257,3 +260,80 @@ def test_headings_count_every_array_and_block(panel):
     assert 'BLOCKS (62)' in shown
     shown = texts(panel(many_arrays(), size=(1400, 900)))
     assert f'ARRAYS ({info_mod.MAX_ARRAYS + 6})' in shown
+
+
+def test_a_folded_panel_leaves_the_line_beside_or_the_summary_below(panel):
+    """Folded by the reader, the info beside the render goes, and below it becomes one line."""
+    beside = panel(pv.Sphere(), 'side', collapsed=1)
+    assert beside['arrangement'] == 'side'
+    assert beside['folded'] is True
+    assert beside['info_width'] == 0
+    assert texts(beside) == []
+    # The line and its button stand whole at the right edge.
+    x, _, width, height = beside['divider']
+    assert (x + width, height) == (1400, 900)
+    below = panel(pv.Sphere(), 'below', collapsed=1)
+    assert below['arrangement'] == 'compact'
+    assert below['info_height'] == 0
+    assert below['divider'][2] == 1400
+    hidden = panel(pv.Sphere(), 'hidden', collapsed=1)
+    assert (hidden['arrangement'], hidden['folded']) == ('hidden', False)
+
+
+def test_a_panel_compact_for_want_of_room_has_no_fold_button(panel):
+    """With nothing to unfold into, the summary keeps its full width and there is no line."""
+    small = panel(pv.Sphere(), size=(400, 600))
+    assert small['arrangement'] == 'compact'
+    assert small['divider'] == [0, 0, 0, 0]
+    # Nor does a fold left over from a larger panel put one there.
+    assert panel(pv.Sphere(), size=(400, 600), collapsed=1)['divider'] == [0, 0, 0, 0]
+
+
+def test_dragging_the_line_resizes_the_info_and_is_remembered(panel):
+    """Beside the render the line moves left to widen the column; below, up to heighten the row."""
+    wider = panel(pv.Sphere(), 'side', drags=[-100])
+    assert wider['info_width'] == 440
+    assert wider['remembered']['side_width'] == 440
+    narrower = panel(pv.Sphere(), 'side', drags=[50])
+    assert narrower['info_width'] == 290
+    taller = panel(pv.Sphere(), 'below', size=(900, 900), below_height=200, drags=[30, 30])
+    assert taller['info_height'] == 260
+    assert taller['remembered']['below_height'] == 260
+    # Dragged past what fits, the stored size settles on what the panel allowed.
+    widest = panel(pv.Sphere(), 'side', drags=[-2000])
+    assert widest['remembered']['side_width'] == 840
+
+
+def test_dragging_the_info_too_small_folds_it(panel):
+    """Pushed past the narrowest column, or the shortest row, in steps, the info folds away."""
+    beside = panel(pv.Sphere(), 'side', drags=[40] * 4)
+    assert (beside['folded'], beside['info_width']) == (True, 0)
+    assert beside['remembered']['side_width'] is None
+    # Short of the fold, the column only stops at its narrowest.
+    held = panel(pv.Sphere(), 'side', drags=[40] * 2)
+    assert (held['folded'], held['info_width']) == (False, 260)
+    below = panel(pv.Sphere(), 'below', size=(900, 900), below_height=100, drags=[-30, -30])
+    assert (below['folded'], below['arrangement']) == (True, 'compact')
+
+
+@pytest.mark.parametrize(
+    ('dragged', 'width'),
+    [(300, 300), (50, 260), (5000, 840)],
+    ids=['as dragged', 'no narrower than the minimum', 'no wider than most of the panel'],
+)
+def test_the_column_is_as_wide_as_dragged_within_what_fits(panel, dragged, width):
+    """A width the reader dragged to is kept, between the minimum and 60 % of the panel."""
+    report = panel(pv.Sphere(), 'side', size=(1400, 900), side_width=dragged)
+    assert report['info_width'] == width
+    assert panel(pv.Sphere(), 'side', size=(1400, 900))['info_width'] == 340
+
+
+@pytest.mark.parametrize(
+    ('dragged', 'height'),
+    [(200, 200), (10, 48), (5000, 630)],
+    ids=['as dragged', 'no shorter than the fold', 'no taller than most of the panel'],
+)
+def test_the_row_is_as_tall_as_dragged_within_what_fits(panel, dragged, height):
+    """A height the reader dragged to is kept, between the fold and 70 % of the panel."""
+    report = panel(pv.Sphere(), 'below', size=(900, 900), below_height=dragged)
+    assert report['info_height'] == height
