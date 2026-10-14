@@ -66,6 +66,12 @@ pvql config set theme mytheme.json
 Editing the file redraws previews on the next look. Without a theme, previews look like
 PyVista's own plots.
 
+### Turning the surface
+
+The mouse moves the camera as it does in PyVista: drag to turn the surface, drag with
+shift held or with the middle button to pan, drag with the right button, roll the wheel
+or pinch to zoom, and drag with control held to spin it about the line of sight.
+
 ### Turnable or still
 
 By default every preview is a surface to turn and zoom. To get still images instead,

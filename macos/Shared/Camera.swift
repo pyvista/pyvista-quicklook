@@ -94,6 +94,99 @@ func previewCamera(for scene: SCNScene) -> Framing {
     return (node, target)
 }
 
+/// A camera moved as VTK's trackball camera moves PyVista's: turned about a focal point,
+/// panned with it, and brought toward it.
+struct Trackball {
+    var position: SIMD3<Float>
+    var target: SIMD3<Float>
+    var up: SIMD3<Float>
+
+    /// VTK's `MotionFactor`, which scales every mouse motion.
+    static let motionFactor: Float = 10
+    /// How much a wheel notch, or a full pinch, brings the camera in, as VTK's 1.1.
+    static let wheelFactor: Float = 1.1
+
+    /// From the camera toward the focal point.
+    var forward: SIMD3<Float> {
+        simd_normalize(target - position)
+    }
+
+    /// The camera's right, as VTK's cross of the direction of projection and the view up.
+    var right: SIMD3<Float> {
+        simd_normalize(simd_cross(forward, up))
+    }
+
+    /// Turns the camera about the view up, through the focal point; VTK's `Azimuth`.
+    mutating func azimuth(_ degrees: Float) {
+        turn(about: simd_normalize(up), by: degrees)
+    }
+
+    /// Lifts or lowers the camera about its right, through the focal point; VTK's `Elevation`.
+    mutating func elevation(_ degrees: Float) {
+        turn(about: right, by: -degrees)
+        up = simd_normalize(simd_cross(right, forward))
+    }
+
+    /// Rolls the camera about its line of sight; VTK's `Roll`.
+    mutating func roll(_ degrees: Float) {
+        up = simd_act(simd_quatf(angle: degrees * .pi / 180, axis: forward), up)
+    }
+
+    /// Moves the camera and the focal point together across the view.
+    mutating func pan(right dx: Float, up dy: Float) {
+        let move = right * dx + simd_normalize(up) * dy
+        position += move
+        target += move
+    }
+
+    /// Brings the camera toward the focal point by a factor, or away for one below 1; VTK's `Dolly`.
+    mutating func dolly(_ factor: Float) {
+        position = target + (position - target) / factor
+    }
+
+    private mutating func turn(about axis: SIMD3<Float>, by degrees: Float) {
+        let rotation = simd_quatf(angle: degrees * .pi / 180, axis: axis)
+        position = target + simd_act(rotation, position - target)
+        up = simd_act(rotation, up)
+    }
+
+    // What VTK's `vtkInteractorStyleTrackballCamera` makes of the mouse, with dx and dy the
+    // mouse's motion in points, y upward, and the view's size in points.
+
+    /// A drag: VTK's `Rotate`, 20 degrees times the motion factor across the view.
+    mutating func rotate(dx: Float, dy: Float, viewport: SIMD2<Float>) {
+        azimuth(dx * -20 / viewport.x * Self.motionFactor)
+        elevation(dy * -20 / viewport.y * Self.motionFactor)
+    }
+
+    /// A drag with control held: VTK's `Spin`, rolling by the angle swept about the view's centre.
+    mutating func spin(from: SIMD2<Float>, to: SIMD2<Float>, viewport: SIMD2<Float>) {
+        let centre = viewport / 2
+        let was = atan2(from.y - centre.y, from.x - centre.x)
+        let now = atan2(to.y - centre.y, to.x - centre.x)
+        roll((now - was) * 180 / .pi)
+    }
+
+    /// A drag with shift held, or with the middle button: VTK's `Pan`, keeping the point
+    /// under the mouse under it, at the focal point's depth.
+    mutating func pan(dx: Float, dy: Float, viewport: SIMD2<Float>, fieldOfView: Float, vertical: Bool) {
+        let depth = simd_distance(position, target)
+        let span = 2 * depth * tan(fieldOfView / 2 * .pi / 180)
+        let perPoint = span / (vertical ? viewport.y : viewport.x)
+        pan(right: -dx * perPoint, up: -dy * perPoint)
+    }
+
+    /// A drag with the right button: VTK's `Dolly`, 1.1 to the motion factor over half the view.
+    mutating func dolly(dy: Float, viewport: SIMD2<Float>) {
+        dolly(pow(Self.wheelFactor, Self.motionFactor * dy / (viewport.y / 2)))
+    }
+
+    /// A wheel notch, or a share of one: forward brings the camera in.
+    mutating func wheel(_ notches: Float) {
+        dolly(pow(Self.wheelFactor, notches))
+    }
+}
+
 /// How a scene's theme shades and lights it; `_scene_export.py`'s STYLE_COMMENT writes it.
 struct SceneStyle: Decodable {
     var shading = "flat"
