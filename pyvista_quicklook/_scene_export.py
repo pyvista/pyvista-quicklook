@@ -11,6 +11,7 @@ import json
 import math
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 from typing import Any
@@ -73,6 +74,47 @@ def read_iges(source: str) -> object:
         model = Path(folder) / 'model.glb'
         model.write_bytes(glb)
         return pv.read(model)
+
+
+# Formats Model I/O reads for the exporter, through the pvql-modelio tool the app carries.
+MODELIO_SUFFIXES = ('.usd', '.usda', '.usdc', '.usdz', '.abc')
+MODELIO_TOOL = 'pvql-modelio'
+APP_TOOL_PATHS = (
+    Path.home() / 'Applications' / 'PyVista Quick Look.app' / 'Contents' / 'MacOS' / MODELIO_TOOL,
+    Path('/Applications') / 'PyVista Quick Look.app' / 'Contents' / 'MacOS' / MODELIO_TOOL,
+    Path(__file__).resolve().parents[1] / 'build' / MODELIO_TOOL,
+)
+
+
+def modelio_tool() -> Path:
+    """Return the pvql-modelio tool, named by PVQL_MODELIO or found in the installed app."""
+    named = os.environ.get('PVQL_MODELIO')
+    for candidate in ([Path(named)] if named else []) + list(APP_TOOL_PATHS):
+        if candidate.is_file():
+            return candidate
+    message = f'the {MODELIO_TOOL} tool is not installed; reinstall PyVista Quick Look'
+    raise ImportError(message)
+
+
+def read_modelio(source: str, **_: Any) -> pv.MultiBlock:
+    """Read a USD or Alembic file with Model I/O, one block per mesh, named by its path."""
+    tool = modelio_tool()
+    with tempfile.TemporaryDirectory() as folder:
+        completed = subprocess.run(
+            [str(tool), source, folder], capture_output=True, text=True, check=False
+        )
+        if completed.returncode != 0:
+            message = completed.stderr.strip() or f'{MODELIO_TOOL} failed'
+            raise ValueError(message)
+        manifest = json.loads((Path(folder) / 'manifest.json').read_text())
+        blocks = pv.MultiBlock()
+        for entry in manifest:
+            blocks.append(pv.read(Path(folder) / entry['file']), entry['name'])
+    return blocks
+
+
+for _suffix in MODELIO_SUFFIXES:
+    pv.register_reader(_suffix, read_modelio)
 
 
 def read(source: str) -> object:

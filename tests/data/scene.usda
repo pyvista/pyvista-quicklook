@@ -1,0 +1,30 @@
+#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Xform "Root"
+{
+    def Mesh "Cube"
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4, 1, 2, 6, 5, 2, 3, 7, 6, 3, 0, 4, 7]
+        point3f[] points = [(-1, -1, -1), (1, -1, -1), (1, 1, -1), (-1, 1, -1), (-1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1)]
+        color3f[] primvars:displayColor = [(0, 0.2, 1), (0.14285715, 0.2, 0.85714287), (0.2857143, 0.2, 0.71428573), (0.42857143, 0.2, 0.5714286), (0.5714286, 0.2, 0.42857143), (0.71428573, 0.2, 0.2857143), (0.85714287, 0.2, 0.14285715), (1, 0.2, 0)] (
+            interpolation = "vertex"
+        )
+    }
+
+    def Mesh "Wing"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (2, 0, 0), (0, 2, 0)]
+        color3f[] primvars:displayColor = [(1, 0.5, 0)] (
+            interpolation = "constant"
+        )
+        double3 xformOp:translate = (3, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}
+

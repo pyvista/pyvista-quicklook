@@ -128,6 +128,24 @@ NATIVE_TYPES: dict[str, str] = {
     '.ply': 'public.polygon-file-format',
     '.stl': 'public.standard-tesselated-geometry-format',
     '.obj': 'public.geometry-definition-format',
+    # Read through Model I/O by the pvql-modelio tool, which the app carries.
+    '.usd': 'com.pixar.universal-scene-description',
+    '.usda': 'com.pixar.universal-scene-description-utf8',
+    '.usdc': 'com.pixar.universal-scene-description-binary',
+    '.usdz': 'com.pixar.universal-scene-description-mobile',
+    '.abc': 'public.alembic',
+}
+
+# What the native formats hold, for listings; FORMATS names the rest.
+NATIVE_NAMES: dict[str, str] = {
+    '.ply': 'Polygon File',
+    '.stl': 'STL Model',
+    '.obj': 'Wavefront OBJ Model',
+    '.usd': 'Universal Scene Description',
+    '.usda': 'Universal Scene Description',
+    '.usdc': 'Universal Scene Description',
+    '.usdz': 'Universal Scene Description',
+    '.abc': 'Alembic Scene',
 }
 
 # Extensions the environment can read that are deliberately not claimed, and why.

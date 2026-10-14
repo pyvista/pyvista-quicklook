@@ -76,7 +76,7 @@ def test_the_app_can_open_its_own_types_and_the_native_ones():
     exported = [d['UTTypeIdentifier'] for d in app['UTExportedTypeDeclarations']]
     [documents] = app['CFBundleDocumentTypes']
     for ext_name, uti in formats.NATIVE_TYPES.items():
-        assert uti.startswith('public.'), ext_name
+        assert uti.startswith(('public.', 'com.pixar.')), ext_name
         # Quick Look prefers macOS's viewer for these, so they are claimed only when asked.
         assert uti not in supported
         assert uti not in exported

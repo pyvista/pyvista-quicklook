@@ -23,6 +23,7 @@ from . import plist as plist_mod
 from . import preload as preload_mod
 from .environment import RenderError
 from .formats import FORMATS
+from .formats import NATIVE_NAMES
 from .formats import NATIVE_TYPES
 from .formats import SYSTEM_TYPES
 from .formats import UNCLAIMED
@@ -233,7 +234,7 @@ def cmd_types(args: argparse.Namespace) -> int:
     native = bool(config.get('native_formats'))
     for ext, uti in NATIVE_TYPES.items():
         note = '' if native else '  not previewed: macOS previews it; set native_formats'
-        print(f'{"✓" if native else "→"} {ext:<10} {"macOS type":<32} {uti}{note}')
+        print(f'{"✓" if native else "→"} {ext:<10} {NATIVE_NAMES[ext]:<32} {uti}{note}')
     for uti, description in SYSTEM_TYPES.items():
         print(f'✓ {"":<10} {description:<32} {uti}')
     if not args.all:
@@ -296,7 +297,7 @@ def cmd_config(args: argparse.Namespace) -> int:
                 print('Run the installer again to claim the changed extensions.')
             if key == 'native_formats':
                 stand_down_native_viewer(bool(config_mod.current(key)))
-                print('Run the installer again to claim .ply, .stl and .obj.')
+                print('Run the installer again to claim .ply, .stl, .obj, USD and .abc.')
             return 0
     except config_mod.SettingError as error:
         print(error, file=sys.stderr)
@@ -412,12 +413,10 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     print(f'✓ formats    {len(claimed_extensions(config))} extensions claimed')
     if config.get('native_formats'):
         if native_viewer_stood_down():
-            print('✓ native     .ply, .stl and .obj previewed here; macOS viewer stood down')
+            print('✓ native     .ply, .stl, .obj, USD and .abc previewed here')
         else:
             problems += 1
-            print(
-                '✗ native     macOS still previews .ply, .stl and .obj; set native_formats again'
-            )
+            print('✗ native     macOS still previews .ply, .stl, .obj, USD and .abc; set it again')
 
     installed = installed_apps()
     if installed:
