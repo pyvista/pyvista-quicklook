@@ -101,7 +101,7 @@ def test_usd_files_are_read_as_named_blocks_in_world_space(modelio, name):
 def test_usd_files_export_in_colour(modelio, tmp_path):
     """The exporter draws a USD file coloured by its display colours."""
     out = tmp_path / 'out.ply'
-    export_mod.export(str(DATA / 'scene.usdz'), str(out), 2_000_000, 20_000)
+    export_mod.export(str(DATA / 'scene.usdz'), str(out), 2_000_000)
     scene = pv.read(out)
     assert scene.n_faces == 13
     assert len(np.unique(scene['RGB'], axis=0)) > 1
@@ -113,7 +113,7 @@ def test_a_file_without_meshes_is_empty(modelio, tmp_path):
     empty = tmp_path / 'empty.usda'
     empty.write_text('#usda 1.0\ndef Xform "Root" {}\n')
     with pytest.raises(export_mod.NotAMeshError, match='no surface to show'):
-        export_mod.export(str(empty), str(tmp_path / 'out.ply'), 2_000_000, 20_000)
+        export_mod.export(str(empty), str(tmp_path / 'out.ply'), 2_000_000)
 
 
 @needs_macos
