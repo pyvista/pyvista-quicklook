@@ -302,6 +302,9 @@ def to_surface(dataset: object) -> pv.PolyData:
         if not leaves:
             return pv.PolyData()
         dataset = pv.MultiBlock(leaves).combine()
+    if isinstance(dataset, pv.PointSet):
+        # A PointSet has no cells to extract a surface from; its points are the whole of it.
+        return dataset.cast_to_polydata(deep=False)
     if isinstance(dataset, pv.PolyData):
         return dataset
     if hasattr(dataset, 'extract_surface'):

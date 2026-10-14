@@ -69,6 +69,20 @@ def test_a_point_cloud_is_written_as_bare_points(tmp_path):
     assert style_of(tmp_path / 'cloud.ply')['primitive'] == 'points'
 
 
+def test_a_point_set_is_written_as_points(tmp_path):
+    """A PointSet, which has no cells at all, is drawn as points coloured by its scalars."""
+    points = pv.PointSet(np.random.default_rng(0).random((50, 3)))
+    points['height'] = points.points[:, 2]
+    points.save(tmp_path / 'points.pv')
+    out = tmp_path / 'points.ply'
+    export_mod.export(str(tmp_path / 'points.pv'), str(out), 0)
+    scene = pv.read(out)
+    assert scene.n_points == 50
+    assert scene.n_faces == 0
+    assert style_of(out)['primitive'] == 'points'
+    assert coloured(scene)
+
+
 def bare_polyline():
     """Return a polyline carrying no data arrays of its own."""
     points = np.array([[0.0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 1]])
