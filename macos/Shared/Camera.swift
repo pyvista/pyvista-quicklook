@@ -197,10 +197,13 @@ struct SceneStyle: Decodable {
     var diffuse: CGFloat = 1
     var specular: CGFloat = 0
     var specularPower: CGFloat = 100
+    var primitive = "faces"
+    var pointSize: CGFloat = 5
 
     enum CodingKeys: String, CodingKey {
-        case shading, lighting, ambient, diffuse, specular
+        case shading, lighting, ambient, diffuse, specular, primitive
         case specularPower = "specular_power"
+        case pointSize = "point_size"
     }
 
     /// The style a scene file's header names, or PyVista's defaults when it names none.
@@ -222,6 +225,15 @@ struct SceneStyle: Decodable {
 
     /// Gives every material the theme's shading and its share of each kind of light.
     func apply(to scene: SCNScene) {
+        if primitive != "faces" {
+            // Points and lines are drawn in their own colour, unlit, as PyVista draws them.
+            scene.rootNode.enumerateHierarchy { node, _ in
+                guard let geometry = node.geometry else { return }
+                node.geometry = primitive == "points" ? points(of: geometry) : lines(of: geometry)
+                node.geometry?.materials.forEach { $0.lightingModel = .constant }
+            }
+            return
+        }
         if lighting && ambient > 0 {
             // VTK's ambient light is white; the theme's ambient share sets how much reaches a face.
             let light = SCNLight()
@@ -249,6 +261,49 @@ struct SceneStyle: Decodable {
                 material.shininess = specularPower
             }
         }
+    }
+
+    /// The geometry's vertices as round points of the theme's size in pixels.
+    private func points(of geometry: SCNGeometry) -> SCNGeometry {
+        let count = geometry.sources(for: .vertex).first?.vectorCount ?? 0
+        let element = SCNGeometryElement(
+            data: nil, primitiveType: .point, primitiveCount: count, bytesPerIndex: 4
+        )
+        // SceneKit's "radius" comes out as roughly the point's diameter in pixels.
+        element.pointSize = pointSize
+        element.minimumPointScreenSpaceRadius = pointSize
+        element.maximumPointScreenSpaceRadius = pointSize
+        return rebuilt(geometry, with: [element])
+    }
+
+    /// Each folded-back triangle (a, b, a) the exporter wrote, as the line segment a-b.
+    private func lines(of geometry: SCNGeometry) -> SCNGeometry {
+        let elements = geometry.elements.compactMap { element -> SCNGeometryElement? in
+            guard element.primitiveType == .triangles else { return nil }
+            var ends: [UInt32] = []
+            ends.reserveCapacity(element.primitiveCount * 2)
+            element.data.withUnsafeBytes { raw in
+                for triangle in 0..<element.primitiveCount {
+                    let base = triangle * 3
+                    if element.bytesPerIndex == 2 {
+                        let ids = raw.bindMemory(to: UInt16.self)
+                        ends += [UInt32(ids[base]), UInt32(ids[base + 1])]
+                    } else {
+                        let ids = raw.bindMemory(to: UInt32.self)
+                        ends += [ids[base], ids[base + 1]]
+                    }
+                }
+            }
+            return SCNGeometryElement(indices: ends, primitiveType: .line)
+        }
+        return rebuilt(geometry, with: elements)
+    }
+
+    private func rebuilt(_ geometry: SCNGeometry, with elements: [SCNGeometryElement]) -> SCNGeometry {
+        let sources = geometry.sources.filter { $0.semantic != .normal }
+        let made = SCNGeometry(sources: sources, elements: elements)
+        made.materials = geometry.materials
+        return made
     }
 }
 

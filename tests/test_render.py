@@ -51,7 +51,7 @@ def rendered(mesh, tmp_path, name='scene', side=192):
     source = tmp_path / f'{name}.vtk'
     mesh.save(source)
     scene = tmp_path / f'{name}.ply'
-    export_mod.export(str(source), str(scene), 2_000_000, 20_000)
+    export_mod.export(str(source), str(scene), 2_000_000)
 
     image = tmp_path / f'{name}.png'
     finished = subprocess.run(
@@ -249,13 +249,14 @@ def test_a_point_cloud_is_drawn(tmp_path):
 
 
 def test_a_sparse_point_cloud_is_drawn(tmp_path):
-    """Three points in a small space are still large enough to see."""
+    """Three points in a small space are drawn at the theme's point size, so they show."""
     cloud = pv.PolyData(np.array([[0.0, 0, 0], [0.004, 0.002, 0], [0.002, 0.004, 0.003]]))
-    assert covered(rendered(cloud, tmp_path, name='sparse')) > 0.003
+    # Three round points of five pixels cover some sixty pixels of the frame.
+    assert covered(rendered(cloud, tmp_path, name='sparse')) > 0.001
 
 
 def test_lines_are_drawn(tmp_path):
-    """Tubed lines reach the frame instead of rendering blank."""
+    """Lines reach the frame instead of rendering blank."""
     points = np.array([[0.0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 1]])
     line = pv.PolyData(points, lines=np.array([4, 0, 1, 2, 3]))
     assert covered(rendered(line, tmp_path, name='line')) > 0.005

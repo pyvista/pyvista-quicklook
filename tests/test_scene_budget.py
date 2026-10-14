@@ -14,7 +14,7 @@ def exported(mesh, tmp_path, max_points=0, name='in.vtp'):
     source = tmp_path / name
     mesh.save(source)
     destination = tmp_path / 'out.ply'
-    export_mod.export(str(source), str(destination), max_points, 20_000)
+    export_mod.export(str(source), str(destination), max_points)
     return pv.read(destination)
 
 
@@ -43,7 +43,7 @@ def test_a_list_colormap_spans_the_ramp(tmp_path, monkeypatch):
 
 
 def test_a_stripped_surface_keeps_its_faces(tmp_path):
-    """Triangle strips are faces to draw, not loose points to glyph."""
+    """Triangle strips are faces to draw, not loose points to draw as points."""
     sphere = pv.Sphere(theta_resolution=8, phi_resolution=8)
     stripped = sphere.strip()
     assert stripped.n_faces == 0
