@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 from pathlib import Path
@@ -1040,12 +1041,18 @@ def test_plist_leaves_the_helper_out_when_asked(tmp_path, monkeypatch, helper):
         ('0.10.2.dev3+g1234567', f'{cli.RELEASES}/latest/download/install.sh', None),
     ],
 )
-def test_install_runs_the_installer_of_its_own_release(monkeypatch, capsys, version, url, tag):
+def test_install_runs_the_installer_of_its_own_release(monkeypatch, version, url, tag):
     """A release runs its own installer, pinned to its tag; a development build the latest."""
     calls = []
+    # Buffered as a pipe is, so what pvql said reaches it only when flushed.
+    written = io.BytesIO()
+    monkeypatch.setattr(cli.sys, 'stdout', io.TextIOWrapper(written, write_through=False))
 
     def run(command, **kwargs):
         calls.append((command, kwargs))
+        # What pvql said comes before what the installer says.
+        if command[0] == '/bin/sh':
+            assert b'fetching' in written.getvalue()
         if command[0] == '/usr/bin/curl':
             Path(command[command.index('-o') + 1]).write_text('exit 0\n')
         return SimpleNamespace(returncode=0, stderr='')
@@ -1055,11 +1062,11 @@ def test_install_runs_the_installer_of_its_own_release(monkeypatch, capsys, vers
     monkeypatch.delenv('PVQL_TAG', raising=False)
     assert cli.main(['install', '--prefix', '/tmp/apps']) == 0
     (fetch, _), (install, options) = calls
+    assert ('latest' in fetch[-1]) == (tag is None)
     assert fetch[-1] == url
     assert install[0] == '/bin/sh'
     assert install[2:] == ['--prefix', '/tmp/apps']
     assert options['env'].get('PVQL_TAG') == tag
-    assert ('latest' in capsys.readouterr().out) == (tag is None)
 
 
 def test_install_reports_a_failed_download(monkeypatch, capsys):

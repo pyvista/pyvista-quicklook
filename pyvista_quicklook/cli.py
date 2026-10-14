@@ -580,6 +580,8 @@ def cmd_install(args: argparse.Namespace) -> int:
             reason = fetched.stderr.strip().splitlines()[-1:] or ['no response']
             print(f'pvql: could not download {url}: {reason[0]}', file=sys.stderr)
             return 1
+        # The installer writes straight to the terminal, after anything still buffered here.
+        sys.stdout.flush()
         # Pinned, the installer sets up the app of this release rather than the newest.
         env = {**os.environ, 'PVQL_TAG': tag} if tag else dict(os.environ)
         extra = ['--prefix', args.prefix] if args.prefix else []
