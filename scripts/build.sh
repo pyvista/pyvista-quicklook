@@ -121,6 +121,12 @@ compile "$BUILD/RenderScene" -O -parse-as-library \
   -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
   -Xlinker "$ROOT/macos/Tools/RenderScene-Info.plist"
 
+echo "==> compiling pvql-modelio"
+compile "$APP/Contents/MacOS/pvql-modelio" -O -parse-as-library \
+  "$ROOT/macos/Tools/ModelIOExport.swift" \
+  -framework ModelIO
+cp "$APP/Contents/MacOS/pvql-modelio" "$BUILD/pvql-modelio"
+
 echo "==> compiling $EXT_NAME"
 compile "$APPEX/Contents/MacOS/$EXT_NAME" -O -parse-as-library \
   "${SHARED_SOURCES[@]}" \
@@ -140,6 +146,7 @@ compile "$THUMBEX/Contents/MacOS/$THUMB_NAME" -O -parse-as-library \
 echo "==> signing"
 codesign --force --sign - --identifier "$EXT_ID" --timestamp=none --entitlements "$ENTITLEMENTS" "$APPEX"
 codesign --force --sign - --identifier "$THUMB_ID" --timestamp=none --entitlements "$ENTITLEMENTS" "$THUMBEX"
+codesign --force --sign - --identifier "$APP_ID.modelio" --timestamp=none "$APP/Contents/MacOS/pvql-modelio"
 codesign --force --sign - --identifier "$HOLDER_ID" --timestamp=none "$HOLDER"
 codesign --force --sign - --identifier "$APP_ID" --timestamp=none "$APP"
 codesign --verify --deep --strict "$APP"

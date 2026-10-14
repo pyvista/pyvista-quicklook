@@ -76,8 +76,8 @@ def test_the_app_can_open_its_own_types_and_the_native_ones():
     exported = [d['UTTypeIdentifier'] for d in app['UTExportedTypeDeclarations']]
     [documents] = app['CFBundleDocumentTypes']
     for ext_name, uti in formats.NATIVE_TYPES.items():
-        assert uti.startswith('public.'), ext_name
-        # Quick Look never asks the extension for these, so it does not offer to preview them.
+        assert uti.startswith(('public.', 'com.pixar.')), ext_name
+        # Quick Look prefers macOS's viewer for these, so they are claimed only when asked.
         assert uti not in supported
         assert uti not in exported
     # Listed under Open With, below an app that declares a type as its default.
@@ -87,6 +87,16 @@ def test_the_app_can_open_its_own_types_and_the_native_ones():
     )
     assert set(formats.NATIVE_TYPES).isdisjoint(formats.FORMATS)
     assert set(formats.NATIVE_TYPES).isdisjoint(formats.UNCLAIMED)
+
+
+def test_the_extension_claims_the_native_types_only_when_asked():
+    """With native formats on, the extension claims the native types; the app's types stay."""
+    ext = plist.extension_plist(['.vtu'], native=True)
+    supported = ext['NSExtension']['NSExtensionAttributes']['QLSupportedContentTypes']
+    assert set(formats.NATIVE_TYPES.values()) <= set(supported)
+    assert plist.uti_for('.vtu') in supported
+    off = plist.extension_plist(['.vtu'])['NSExtension']['NSExtensionAttributes']
+    assert set(formats.NATIVE_TYPES.values()).isdisjoint(off['QLSupportedContentTypes'])
 
 
 def test_plists_are_writable(tmp_path):

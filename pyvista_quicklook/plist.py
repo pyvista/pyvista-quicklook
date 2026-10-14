@@ -110,7 +110,9 @@ def app_plist(extensions: list[str], helper: str | None = None) -> dict[str, Any
     return plist
 
 
-def extension_plist(extensions: list[str], helper: str | None = None) -> dict[str, Any]:
+def extension_plist(
+    extensions: list[str], helper: str | None = None, native: bool = False
+) -> dict[str, Any]:
     """Return the Quick Look extension's Info.plist contents."""
     plist: dict[str, Any] = {
         'CFBundleName': APP_NAME,
@@ -130,7 +132,9 @@ def extension_plist(extensions: list[str], helper: str | None = None) -> dict[st
             'NSExtensionPointIdentifier': 'com.apple.quicklook.preview',
             'NSExtensionPrincipalClass': EXT_PRINCIPAL_CLASS,
             'NSExtensionAttributes': {
-                'QLSupportedContentTypes': [uti_for(e) for e in extensions] + list(SYSTEM_TYPES),
+                'QLSupportedContentTypes': [uti_for(e) for e in extensions]
+                + list(SYSTEM_TYPES)
+                + (list(NATIVE_TYPES.values()) if native else []),
                 'QLSupportsSearchableItems': False,
             },
         },

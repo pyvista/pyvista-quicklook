@@ -121,12 +121,30 @@ VIA_SYSTEM_TYPE: dict[str, str] = {
     '.vol.gz': 'org.gnu.gnu-zip-archive',
 }
 
-# Formats macOS has a type and a preview of its own for, which Quick Look always uses; the
-# app declares them as documents so it can be chosen to open them.
+# Formats macOS has a type and a preview of its own for, which Quick Look prefers; the app
+# declares them as documents so it can be chosen to open them, and the extension claims
+# them only when the native_formats setting is on.
 NATIVE_TYPES: dict[str, str] = {
     '.ply': 'public.polygon-file-format',
     '.stl': 'public.standard-tesselated-geometry-format',
     '.obj': 'public.geometry-definition-format',
+    # Read through Model I/O by the pvql-modelio tool, which the app carries. A .usdz is
+    # left to AR Quick Look, which claims it apart from the viewer for the rest.
+    '.usd': 'com.pixar.universal-scene-description',
+    '.usda': 'com.pixar.universal-scene-description-utf8',
+    '.usdc': 'com.pixar.universal-scene-description-binary',
+    '.abc': 'public.alembic',
+}
+
+# What the native formats hold, for listings; FORMATS names the rest.
+NATIVE_NAMES: dict[str, str] = {
+    '.ply': 'Polygon File',
+    '.stl': 'STL Model',
+    '.obj': 'Wavefront OBJ Model',
+    '.usd': 'Universal Scene Description',
+    '.usda': 'Universal Scene Description',
+    '.usdc': 'Universal Scene Description',
+    '.abc': 'Alembic Scene',
 }
 
 # Extensions the environment can read that are deliberately not claimed, and why.

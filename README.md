@@ -109,6 +109,7 @@ it below, `side` beside, `compact` keeps one line, and `hidden` leaves it out.
 | `background` | none | Background colour of still images |
 | `extra_args` | none | Extra arguments appended to `pyvista plot` for still images |
 | `extensions.add`, `extensions.remove` | none | Extensions to claim or stop claiming, on the next install |
+| `native_formats` | `false` | Preview `.ply`, `.stl`, `.obj`, USD and `.abc` here instead of in macOS's own 3D viewer, on the next install |
 | `cache` | `true` | Reuse previously built previews |
 | `cache_check_minutes` | `1440` (a day) | How often the service deletes previews of changed or deleted files; `0` never does |
 | `preload_on_start` | `true` | Load PyVista and VTK when the render service starts |
@@ -167,12 +168,16 @@ the last suffix of a compressed dataset:
 
 A folder of DICOM slices is claimed the same way, through `public.folder`.
 
-3 more have a type and a preview of their own in macOS, which Quick Look always uses;
-the app can open them instead (see [Native formats](#native-formats)):
+7 more have a type and a preview of their own in macOS, which Quick Look prefers;
+the `native_formats` setting claims them (see [Native formats](#native-formats)):
 
+- `.abc` (`public.alembic`)
 - `.obj` (`public.geometry-definition-format`)
 - `.ply` (`public.polygon-file-format`)
 - `.stl` (`public.standard-tesselated-geometry-format`)
+- `.usd` (`com.pixar.universal-scene-description`)
+- `.usda` (`com.pixar.universal-scene-description-utf8`)
+- `.usdc` (`com.pixar.universal-scene-description-binary`)
 
 PyVista can also read these, which are not claimed:
 
@@ -199,12 +204,26 @@ pvql config set extensions.remove .dat
 
 ### Native formats
 
-macOS previews `.ply`, `.stl` and `.obj` itself, showing the shape but nothing about the
-data, and Quick Look uses that viewer for any 3D file before it consults extensions, so
-pressing space on one never shows this preview. The app is offered for them under Open
-With instead: select a `.ply` in the Finder, press ⌘I, choose PyVista Quick Look under
-Open With, and click Change All. Double-clicking such a file then opens this preview,
-render and dataset panel alike, in a window of its own.
+macOS previews `.ply`, `.stl`, `.obj`, USD and Alembic files itself, showing the shape
+but nothing about the data, and Quick Look ranks its own viewer above any extension
+claiming those types. To preview them here instead:
+
+```bash
+pvql config set native_formats true
+```
+
+then run the installer again. The setting stands macOS's viewer down for your account
+(`pluginkit -e ignore -i com.apple.HydraQLPreviewExtension`), which also takes away its
+preview of MaterialX files, and the reinstalled extension claims the types. USD and
+Alembic files are read through macOS's own Model I/O by a tool the app carries, one block
+per mesh named by its path in the file; USDZ packages stay with AR Quick Look.
+`pvql doctor` reports the state. Setting it back to `false` restores the viewer at once;
+the extension stops claiming the types on the next install.
+
+Without the setting, the app is still offered for them under Open With: select a `.ply`
+in the Finder, press ⌘I, choose PyVista Quick Look under Open With, and click Change All.
+Double-clicking such a file then opens this preview, render and dataset panel alike, in a
+window of its own.
 
 The claimed formats open the same way. The app is their default opener unless another
 app that reads them, such as ParaView, says it is, and Open With chooses between them.

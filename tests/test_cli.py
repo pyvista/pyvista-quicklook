@@ -291,6 +291,24 @@ def test_config_set_changes_claimed_extensions(capsys, home):
     assert json.loads(config.CONFIG_PATH.read_text()) == {}
 
 
+def test_config_set_native_formats_stands_the_macos_viewer_down(capsys, home, monkeypatch):
+    """Native formats on ignores macOS's 3D previewer, off restores it; both say to reinstall."""
+    commands = []
+    monkeypatch.setattr(cli, '_succeeds', lambda command: commands.append(command) or True)
+    assert cli.cmd_config(config_args('set', 'native_formats', 'true')) == 0
+    assert 'installer again' in capsys.readouterr().out
+    assert commands == [['/usr/bin/pluginkit', '-e', 'ignore', '-i', cli.NATIVE_VIEWER]]
+    assert cli.cmd_config(config_args('unset', 'native_formats')) == 0
+    assert commands[-1] == ['/usr/bin/pluginkit', '-e', 'default', '-i', cli.NATIVE_VIEWER]
+
+
+def test_config_set_native_formats_reports_a_failed_election(capsys, home, monkeypatch):
+    """When pluginkit cannot change the viewer, the command says so and fails."""
+    monkeypatch.setattr(cli, '_succeeds', lambda command: False)
+    assert cli.cmd_config(config_args('set', 'native_formats', 'true')) == 1
+    assert 'pluginkit could not' in capsys.readouterr().err
+
+
 def test_config_set_refuses_a_broken_file(capsys, home):
     """A file that is not JSON is never overwritten, so nothing in it is lost."""
     config.CONFIG_PATH.parent.mkdir(parents=True)
@@ -403,6 +421,39 @@ def test_doctor_passes_a_healthy_installation(capsys, doctor, tmp_path):
     assert 'interactive scene, 2 KB' in out
     assert 'all checks passed' in out
     assert not rendered.exists()
+
+
+@pytest.mark.parametrize(
+    ('listing', 'problems', 'line'),
+    [
+        (
+            f'-    {cli.NATIVE_VIEWER}(1.0)',
+            0,
+            '✓ native     .ply, .stl, .obj, USD and .abc previewed here',
+        ),
+        (f'+    {cli.NATIVE_VIEWER}(1.0)', 1, '✗ native     macOS still previews'),
+    ],
+)
+def test_doctor_checks_the_native_viewer_when_the_setting_is_on(
+    capsys, doctor, monkeypatch, tmp_path, listing, problems, line
+):
+    """With native formats on, the doctor passes only when macOS's viewer is stood down."""
+    rendered = tmp_path / 'smoke.ply'
+
+    def preview(sample, timeout):
+        rendered.write_bytes(b'x')
+        return rendered
+
+    doctor(healthy=True, preview=preview)
+    config.put('native_formats', True)
+    run = cli._run
+    monkeypatch.setattr(
+        cli,
+        '_run',
+        lambda command: listing if command[:2] == ['/usr/bin/pluginkit', '-m'] else run(command),
+    )
+    assert cli.cmd_doctor(argparse.Namespace()) == problems
+    assert line in capsys.readouterr().out
 
 
 def test_doctor_notes_a_pyvista_command_that_does_not_run(capsys, doctor, tmp_path):
