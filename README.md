@@ -216,9 +216,9 @@ then run the installer again. The setting stands macOS's viewer down for your ac
 (`pluginkit -e ignore -i com.apple.HydraQLPreviewExtension`), which also takes away its
 preview of MaterialX files, and the reinstalled extension claims the types. USD and
 Alembic files are read through macOS's own Model I/O by a tool the app carries, one block
-per mesh named by its path in the file; USDZ packages stay with AR Quick Look. `pvql doctor` reports the state. Setting it back
-to `false` restores the viewer at once; the extension stops claiming the types on the
-next install.
+per mesh named by its path in the file; USDZ packages stay with AR Quick Look.
+`pvql doctor` reports the state. Setting it back to `false` restores the viewer at once;
+the extension stops claiming the types on the next install.
 
 Without the setting, the app is still offered for them under Open With: select a `.ply`
 in the Finder, press ⌘I, choose PyVista Quick Look under Open With, and click Change All.

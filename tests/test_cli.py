@@ -294,12 +294,19 @@ def test_config_set_changes_claimed_extensions(capsys, home):
 def test_config_set_native_formats_stands_the_macos_viewer_down(capsys, home, monkeypatch):
     """Native formats on ignores macOS's 3D previewer, off restores it; both say to reinstall."""
     commands = []
-    monkeypatch.setattr(cli, '_run', lambda command: commands.append(command) or '')
+    monkeypatch.setattr(cli, '_succeeds', lambda command: commands.append(command) or True)
     assert cli.cmd_config(config_args('set', 'native_formats', 'true')) == 0
     assert 'installer again' in capsys.readouterr().out
     assert commands == [['/usr/bin/pluginkit', '-e', 'ignore', '-i', cli.NATIVE_VIEWER]]
     assert cli.cmd_config(config_args('unset', 'native_formats')) == 0
     assert commands[-1] == ['/usr/bin/pluginkit', '-e', 'default', '-i', cli.NATIVE_VIEWER]
+
+
+def test_config_set_native_formats_reports_a_failed_election(capsys, home, monkeypatch):
+    """When pluginkit cannot change the viewer, the command says so and fails."""
+    monkeypatch.setattr(cli, '_succeeds', lambda command: False)
+    assert cli.cmd_config(config_args('set', 'native_formats', 'true')) == 1
+    assert 'pluginkit could not' in capsys.readouterr().err
 
 
 def test_config_set_refuses_a_broken_file(capsys, home):

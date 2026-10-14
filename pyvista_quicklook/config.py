@@ -39,7 +39,7 @@ DEFAULTS: dict[str, Any] = {
     'theme': None,
     'extra_args': [],
     'extensions': {'add': [], 'remove': []},
-    # Whether to preview .ply, .stl and .obj in place of macOS's own 3D viewer.
+    # Whether to preview .ply, .stl, .obj, USD and .abc in place of macOS's own 3D viewer.
     'native_formats': False,
     'cache': True,
     # How often the service drops previews of files that have changed or gone; 0 never.

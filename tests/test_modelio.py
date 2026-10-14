@@ -38,7 +38,7 @@ def test_the_modelio_formats_are_native_types_with_a_reader():
     """Every Model I/O format is a native type, named, and registered with PyVista."""
     for suffix in export_mod.MODELIO_SUFFIXES:
         assert suffix in formats.NATIVE_TYPES
-        assert suffix in formats.NATIVE_NAMES
+    assert set(formats.NATIVE_NAMES) == set(formats.NATIVE_TYPES)
     registered = {entry.extension for entry in pv.registered_readers()}
     assert set(export_mod.MODELIO_SUFFIXES) <= registered
 
@@ -114,6 +114,46 @@ def test_a_file_without_meshes_is_empty(modelio, tmp_path):
     empty.write_text('#usda 1.0\ndef Xform "Root" {}\n')
     with pytest.raises(export_mod.NotAMeshError, match='no surface to show'):
         export_mod.export(str(empty), str(tmp_path / 'out.ply'), 2_000_000)
+
+
+@needs_macos
+def test_normals_turn_with_the_mesh_and_a_flattened_mesh_has_none(modelio, tmp_path):
+    """Normals follow a rotation; a mesh scaled flat, whose normals would be NaN, loses them."""
+    stage = tmp_path / 'normals.usda'
+    stage.write_text(
+        '#usda 1.0\n'
+        'def Mesh "Turned" {\n'
+        '    float3[] extent = [(0, 0, 0), (1, 1, 0)]\n'
+        '    int[] faceVertexCounts = [3]\n'
+        '    int[] faceVertexIndices = [0, 1, 2]\n'
+        '    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]\n'
+        '    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1)]\n'
+        '    float xformOp:rotateX = 90\n'
+        '    uniform token[] xformOpOrder = ["xformOp:rotateX"]\n'
+        '}\n'
+        'def Mesh "Flat" {\n'
+        '    int[] faceVertexCounts = [3]\n'
+        '    int[] faceVertexIndices = [0, 1, 2]\n'
+        '    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]\n'
+        '    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1)]\n'
+        '    float3 xformOp:scale = (1, 1, 0)\n'
+        '    uniform token[] xformOpOrder = ["xformOp:scale"]\n'
+        '}\n'
+    )
+    blocks = pv.read(stage)
+    turned, flat = blocks['Turned'], blocks['Flat']
+    assert turned['Normals'][0] == pytest.approx((0, -1, 0), abs=1e-5)
+    assert 'Normals' not in flat.point_data
+    assert np.isfinite(flat.points).all()
+
+
+@needs_macos
+def test_a_file_modelio_cannot_read_is_reported(modelio, tmp_path):
+    """Garbage in a USD file fails with the tool's report, not as an empty dataset."""
+    broken = tmp_path / 'broken.usda'
+    broken.write_text('this is not a stage')
+    with pytest.raises(ValueError, match=r'could not read broken\.usda'):
+        pv.read(broken)
 
 
 @needs_macos

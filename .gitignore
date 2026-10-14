@@ -9,3 +9,4 @@ pyvista_quicklook/_version.py
 .coverage.*
 .idea/
 coverage.xml
+.DS_Store

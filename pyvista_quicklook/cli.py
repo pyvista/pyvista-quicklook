@@ -200,15 +200,16 @@ def cmd_prebuild(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
-# Apple's Quick Look extension for .ply, .stl, .obj and USD files. Quick Look scores it above
-# any other extension claiming those types, so previewing them here means standing it down.
+# Apple's Quick Look extension for .ply, .stl, .obj, USD and Alembic files. Quick Look scores
+# it above any other extension claiming those types, so previewing them here means standing
+# it down.
 NATIVE_VIEWER = 'com.apple.HydraQLPreviewExtension'
 
 
-def stand_down_native_viewer(stood_down: bool) -> None:
+def stand_down_native_viewer(stood_down: bool) -> bool:
     """Stand macOS's own 3D previewer down for this user, or back up, with pluginkit."""
     election = 'ignore' if stood_down else 'default'
-    _run(['/usr/bin/pluginkit', '-e', election, '-i', NATIVE_VIEWER])
+    return _succeeds(['/usr/bin/pluginkit', '-e', election, '-i', NATIVE_VIEWER])
 
 
 def native_viewer_stood_down() -> bool:
@@ -296,7 +297,12 @@ def cmd_config(args: argparse.Namespace) -> int:
             if key.startswith('extensions.'):
                 print('Run the installer again to claim the changed extensions.')
             if key == 'native_formats':
-                stand_down_native_viewer(bool(config_mod.current(key)))
+                if not stand_down_native_viewer(bool(config_mod.current(key))):
+                    print(
+                        "pluginkit could not change macOS's 3D previewer; see pvql doctor",
+                        file=sys.stderr,
+                    )
+                    return 1
                 print('Run the installer again to claim .ply, .stl, .obj, USD and .abc.')
             return 0
     except config_mod.SettingError as error:

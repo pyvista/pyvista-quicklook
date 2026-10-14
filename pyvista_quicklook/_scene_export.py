@@ -88,6 +88,7 @@ MODELIO_TOOL = 'pvql-modelio'
 APP_TOOL_PATHS = (
     Path.home() / 'Applications' / 'PyVista Quick Look.app' / 'Contents' / 'MacOS' / MODELIO_TOOL,
     Path('/Applications') / 'PyVista Quick Look.app' / 'Contents' / 'MacOS' / MODELIO_TOOL,
+    # The source tree's build folder, for a checkout and for the tests.
     Path(__file__).resolve().parents[1] / 'build' / MODELIO_TOOL,
 )
 
@@ -107,11 +108,12 @@ def read_modelio(source: str, **_: Any) -> pv.MultiBlock:
     tool = modelio_tool()
     with tempfile.TemporaryDirectory() as folder:
         completed = subprocess.run(
-            [str(tool), source, folder], capture_output=True, text=True, check=False
+            [str(tool), source, folder], capture_output=True, text=True, check=False, timeout=600
         )
         if completed.returncode != 0:
-            message = completed.stderr.strip() or f'{MODELIO_TOOL} failed'
-            raise ValueError(message)
+            # The tool's own report comes last, after whatever Model I/O logged.
+            lines = [line for line in completed.stderr.splitlines() if line.strip()]
+            raise ValueError(lines[-1].strip() if lines else f'{MODELIO_TOOL} failed')
         manifest = json.loads((Path(folder) / 'manifest.json').read_text())
         blocks = pv.MultiBlock()
         for entry in manifest:

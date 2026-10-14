@@ -90,7 +90,7 @@ def test_the_app_can_open_its_own_types_and_the_native_ones():
 
 
 def test_the_extension_claims_the_native_types_only_when_asked():
-    """With native formats on, the extension claims .ply, .stl and .obj; the app's types stay."""
+    """With native formats on, the extension claims the native types; the app's types stay."""
     ext = plist.extension_plist(['.vtu'], native=True)
     supported = ext['NSExtension']['NSExtensionAttributes']['QLSupportedContentTypes']
     assert set(formats.NATIVE_TYPES.values()) <= set(supported)

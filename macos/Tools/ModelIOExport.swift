@@ -16,6 +16,10 @@ enum ModelIOExport {
             fail("Model I/O does not read .\(source.pathExtension) files", status: 2)
         }
         let asset = MDLAsset(url: source)
+        // Model I/O only logs what went wrong; a file it could not read yields no objects.
+        guard asset.count > 0 else {
+            fail("pvql-modelio: Model I/O could not read \(source.lastPathComponent)", status: 1)
+        }
         var manifest: [[String: String]] = []
         for index in 0..<asset.count {
             walk(asset.object(at: index), path: "", into: &manifest, folder: folder)
@@ -41,7 +45,7 @@ enum ModelIOExport {
         if let mesh = object as? MDLMesh {
             let file = "mesh-\(manifest.count).ply"
             let transform = MDLTransform.globalTransform(with: object, atTime: 0)
-            if let ply = PLY(mesh: mesh, transform: transform), ply.faceCount > 0 {
+            if let ply = PLY(mesh: mesh, transform: transform) {
                 do {
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                     try ply.data.write(to: folder.appendingPathComponent(file))
@@ -66,21 +70,24 @@ struct PLY {
         guard let positions = mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributePosition, as: .float3) else {
             return nil
         }
-        let normals = mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributeNormal, as: .float3)
+        var normals = mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributeNormal, as: .float3)
         let colors = mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributeColor, as: .float3)
         let count = mesh.vertexCount
-        // Normals turn with the mesh but do not stretch with it.
-        let rotation = simd_float3x3(columns: (
+        guard positions.bufferSize >= count * positions.stride else { return nil }
+        // Normals turn with the mesh but do not stretch with it; a flattened mesh has none.
+        let linear = simd_float3x3(columns: (
             simd_make_float3(transform.columns.0),
             simd_make_float3(transform.columns.1),
             simd_make_float3(transform.columns.2)
-        )).inverse.transpose
+        ))
+        if linear.determinant == 0 { normals = nil }
+        let rotation = linear.inverse.transpose
 
         var faces = Data()
         for case let submesh as MDLSubmesh in mesh.submeshes ?? [] {
             append(submesh, to: &faces)
         }
-        guard faceCount > 0 else { return }
+        guard faceCount > 0 else { return nil }
 
         var header = "ply\nformat binary_little_endian 1.0\n"
         header += "comment pvql modelio export\n"
@@ -154,7 +161,7 @@ extension MDLSubmesh {
         let map = indexBuffer.map()
         let count = indexCount
         switch indexType {
-        case .uInt8, .invalid:
+        case .uInt8:
             let bytes = map.bytes.assumingMemoryBound(to: UInt8.self)
             return (0..<count).map { UInt32(bytes[$0]) }
         case .uInt16:
@@ -163,6 +170,8 @@ extension MDLSubmesh {
         case .uInt32:
             let ints = map.bytes.assumingMemoryBound(to: UInt32.self)
             return (0..<count).map { ints[$0] }
+        case .invalid:
+            return []
         @unknown default:
             return []
         }
