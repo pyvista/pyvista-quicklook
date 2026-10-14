@@ -29,6 +29,8 @@ else:
 
 # Opens the PLY comment holding the theme's shading and lighting, which SceneStyle reads.
 STYLE_COMMENT = 'pvql style'
+# The thinnest line drawn, in pixels, whatever the theme's line width.
+MIN_LINE_WIDTH = 2.0
 # Readers tried in turn for extensions two formats share; None is PyVista's own choice.
 ATTEMPTS = {'.inp': (None, 'abaqus'), '.msh': (None, 'ansys')}
 
@@ -59,7 +61,8 @@ def scene_style() -> dict[str, Any]:
         'specular': float(light.specular),
         'specular_power': float(light.specular_power),
         'point_size': float(theme.point_size),
-        'line_width': float(theme.line_width),
+        # A one-pixel line is a hairline on a Retina display; draw no thinner than two.
+        'line_width': max(float(theme.line_width), MIN_LINE_WIDTH),
     }
 
 

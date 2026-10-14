@@ -271,8 +271,8 @@ def test_lines_and_points_take_the_themes_sizes(tmp_path):
         thin = covered(rendered(line, tmp_path, name='thin'))
         pv.global_theme.line_width = 8
         thick = covered(rendered(line, tmp_path, name='thick'))
-        # A one-pixel line still smears across two or three with antialiasing.
-        assert 3 < thick / thin < 12
+        # The default line is two pixels wide, smeared a little further by antialiasing.
+        assert 2.5 < thick / thin < 6
 
         cloud = pv.PolyData(np.array([[0.0, 0, 0], [1, 0, 0]]))
         small = covered(rendered(cloud, tmp_path, name='small'))

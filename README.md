@@ -250,7 +250,8 @@ own renders; faces are drawn flat unless the theme shades smoothly.
 Point data is interpolated across each face. Cell data is drawn flat: the cells are
 split apart first, so each keeps its own colour. Lines and point clouds are drawn as
 PyVista draws them: unlit, lines at the theme's `line_width` and points as round points of
-its `point_size`, both in pixels, so a saved theme sets them. A volume that carries scalars
+its `point_size`, both in pixels, so a saved theme sets them. Lines are never drawn
+thinner than two pixels, since one pixel is a hairline on a Retina display. A volume that carries scalars
 is cut into three slices through its centre; one without is shown as its outer surface.
 Both sides of every face are drawn and lit, as PyVista draws them, so an open surface
 or a slice shows from wherever the camera looks.

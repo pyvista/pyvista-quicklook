@@ -678,9 +678,19 @@ def test_the_scene_carries_the_theme_lighting(tmp_path, theme):
         'specular': 0.5,
         'specular_power': 30.0,
         'point_size': 5.0,
-        'line_width': 1.0,
+        'line_width': 2.0,
         'primitive': 'faces',
     }
+
+
+def test_a_thin_themed_line_is_widened_to_the_minimum(tmp_path, theme):
+    """A theme's line width below the minimum draws at the minimum; a wider one is kept."""
+    theme.line_width = 0.5
+    written(bare_polyline(), tmp_path, name='thin.ply')
+    assert style_of(tmp_path / 'thin.ply')['line_width'] == export_mod.MIN_LINE_WIDTH
+    theme.line_width = 4
+    written(bare_polyline(), tmp_path, name='wide.ply')
+    assert style_of(tmp_path / 'wide.ply')['line_width'] == 4.0
 
 
 def test_a_named_theme_is_applied(theme):
