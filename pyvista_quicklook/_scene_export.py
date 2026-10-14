@@ -7,6 +7,7 @@ imports only PyVista and its own dependencies.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import math
 import os
@@ -29,6 +30,8 @@ else:
 
 # Opens the PLY comment holding the theme's shading and lighting, which SceneStyle reads.
 STYLE_COMMENT = 'pvql style'
+# The thinnest line drawn, in pixels, whatever the theme's line width.
+MIN_LINE_WIDTH = 2.0
 # Readers tried in turn for extensions two formats share; None is PyVista's own choice.
 ATTEMPTS = {'.inp': (None, 'abaqus'), '.msh': (None, 'ansys')}
 
@@ -58,6 +61,9 @@ def scene_style() -> dict[str, Any]:
         'diffuse': float(light.diffuse),
         'specular': float(light.specular),
         'specular_power': float(light.specular_power),
+        'point_size': float(theme.point_size),
+        # A one-pixel line is a hairline on a Retina display; draw no thinner than two.
+        'line_width': max(float(theme.line_width), MIN_LINE_WIDTH),
     }
 
 
@@ -338,6 +344,9 @@ def to_surface(dataset: object) -> pv.PolyData:
         if not leaves:
             return pv.PolyData()
         dataset = pv.MultiBlock(leaves).combine()
+    if isinstance(dataset, pv.PointSet):
+        # A PointSet has no cells to extract a surface from; its points are the whole of it.
+        return dataset.cast_to_polydata(deep=False)
     if isinstance(dataset, pv.PolyData):
         return dataset
     if hasattr(dataset, 'extract_surface'):
@@ -377,35 +386,53 @@ def ramp() -> np.ndarray:
     return np.asarray(table.values)[:, :3].astype(np.uint8)
 
 
-def solidify(surface: pv.PolyData, max_glyphs: int) -> pv.PolyData:
-    """Give lines and loose points a surface, so there is something to draw."""
+def drawable(surface: pv.PolyData) -> tuple[pv.PolyData, str]:
+    """Return what of a surface is drawn, and as which primitive: faces, lines or points."""
     if surface.n_faces or surface.n_strips:
         # Vertex and line cells come first in a PolyData, and only the faces are drawn.
         loose = surface.n_verts + surface.n_lines
-        return surface.remove_cells(np.arange(loose)) if loose else surface
-
-    size = surface.length or 1.0
+        return (surface.remove_cells(np.arange(loose)) if loose else surface), 'faces'
     if surface.n_lines:
-        tubed = surface.tube(radius=size * 0.004, n_sides=8)
-        # tube() names its normals differently from everything that reads them.
-        if 'TubeNormals' in tubed.point_data:
-            tubed.point_data['Normals'] = tubed.point_data['TubeNormals']
-            tubed.point_data.active_normals_name = 'Normals'
-        return tubed
+        drawn = segments(surface)
+        # Line cells of a single point have no segment; their points still show.
+        if drawn.n_faces:
+            return drawn, 'lines'
+    return keep_points(surface, slice(None)), 'points'
 
-    if surface.n_points:
-        points = surface
-        if max_glyphs and surface.n_points > max_glyphs:
-            step = surface.n_points // max_glyphs + 1
-            kept = np.arange(0, surface.n_points, step)
-            points = to_surface(surface.extract_points(kept))
-        # Scale with the spacing between points, so a handful of them still read.
-        spacing = size / max(points.n_points, 1) ** (1 / 3)
-        radius = min(size * 0.2, spacing * 0.15)
-        sphere = pv.Sphere(radius=radius, theta_resolution=6, phi_resolution=6)
-        return points.glyph(geom=sphere, scale=False, orient=False)
 
-    return surface
+def keep_points(surface: pv.PolyData, kept: slice | np.ndarray) -> pv.PolyData:
+    """Return a bare point cloud of the surface's points, carrying their data."""
+    points = pv.PolyData(surface.points[kept])
+    for name in surface.point_data:
+        points.point_data[name] = np.asarray(surface.point_data[name])[kept]
+    points.set_active_scalars(surface.active_scalars_name)
+    return points
+
+
+def segments(lines: pv.PolyData) -> pv.PolyData:
+    """Return each segment of a mesh's lines as a face of three points, the first one twice.
+
+    A PLY carries faces alone, and the scene draws a face that folds back on itself as a line.
+    """
+    faces: list[int] = []
+    cells: list[int] = []
+    connectivity = lines.lines
+    offset = 0
+    # Cell data lists the vertex cells first, then the lines.
+    cell = lines.n_verts
+    while offset < len(connectivity):
+        count = int(connectivity[offset])
+        ids = connectivity[offset + 1 : offset + 1 + count]
+        for a, b in itertools.pairwise(ids):
+            faces += [3, int(a), int(b), int(a)]
+            cells.append(cell)
+        offset += 1 + count
+        cell += 1
+    drawn = pv.PolyData(lines.points, faces=np.array(faces, dtype=np.int64))
+    drawn.point_data.update(lines.point_data)
+    for name in lines.cell_data:
+        drawn.cell_data[name] = np.asarray(lines.cell_data[name])[cells]
+    return drawn
 
 
 def triangles(surface: pv.PolyData) -> pv.PolyData:
@@ -500,35 +527,34 @@ def write_info(
     Path(destination).write_text(json.dumps(info))
 
 
-def export(
-    source: str,
-    destination: str,
-    max_points: int,
-    max_glyphs: int,
-    info: str | None = None,
-) -> None:
+def export(source: str, destination: str, max_points: int, info: str | None = None) -> None:
     """Write a mesh file out as a PLY with vertex colours; a budget of zero is no cap."""
     dataset, header = read_for_preview(source)
     if info:
         write_info(dataset, source, info, header)
     if isinstance(dataset, pv.DataSet):
         dataset = slice_volume(choose_scalars(thin(dataset, max_points)))
-    # Triangulating first would discard the vertex and line cells solidify needs.
+    # Triangulating first would discard the vertex and line cells drawable looks for.
     surface = choose_scalars(to_surface(dataset))
     wanted = surface.active_scalars_name
-    surface = triangles(solidify(surface, max_glyphs))
-    # tube() and glyph() add arrays of their own; colour only by what the file had.
+    surface, primitive = drawable(surface)
+    if primitive == 'faces':
+        surface = triangles(surface)
     surface.set_active_scalars(wanted if wanted in surface.array_names else None)
     if surface.n_points == 0:
         raise empty(source)
 
-    if not isinstance(dataset, pv.PolyData):
-        # The surface filter leaves a volume's faces unjoined at their edges.
-        surface = surface.clean()
-    projected = projected_points(surface)
-    if max_points and projected > max_points:
-        ratio = 1.0 - (max_points / projected)
-        surface = surface.decimate_pro(ratio, preserve_topology=True)
+    if primitive == 'faces':
+        if not isinstance(dataset, pv.PolyData):
+            # The surface filter leaves a volume's faces unjoined at their edges.
+            surface = surface.clean()
+        projected = projected_points(surface)
+        if max_points and projected > max_points:
+            ratio = 1.0 - (max_points / projected)
+            surface = surface.decimate_pro(ratio, preserve_topology=True)
+    elif primitive == 'points' and max_points and surface.n_points > max_points:
+        kept = np.arange(0, surface.n_points, surface.n_points // max_points + 1)
+        surface = keep_points(surface, kept)
 
     surface = recentre(to_point_scalars(surface))
     colours = colours_for(surface)
@@ -543,17 +569,18 @@ def export(
         surface.point_data['Normals'] = normals
         surface.point_data.active_normals_name = 'Normals'
     surface['RGB'] = colours
-    save_scene(surface, destination)
+    save_scene(surface, destination, primitive)
 
 
-def save_scene(surface: pv.PolyData, destination: str) -> None:
+def save_scene(surface: pv.PolyData, destination: str, primitive: str = 'faces') -> None:
     """Write a binary PLY coloured by its ``RGB`` array, noting the theme's lighting."""
     writer = _vtk.vtkPLYWriter()
     writer.SetFileName(destination)
     writer.SetInputData(surface)
     writer.SetFileTypeToBinary()
     writer.SetArrayName('RGB')
-    writer.AddComment(f'{STYLE_COMMENT} {json.dumps(scene_style(), separators=(",", ":"))}')
+    style = {**scene_style(), 'primitive': primitive}
+    writer.AddComment(f'{STYLE_COMMENT} {json.dumps(style, separators=(",", ":"))}')
     if not writer.Write():
         message = f'could not write {destination}'
         raise OSError(message)
@@ -571,7 +598,6 @@ def main() -> int:
     parser.add_argument('source')
     parser.add_argument('destination', nargs='?', help='the scene; leave out to only describe')
     parser.add_argument('--max-points', type=int, default=0)
-    parser.add_argument('--max-glyphs', type=int, default=0)
     parser.add_argument('--info')
     parser.add_argument('--header', help='describe from the header alone, reading no values')
     parser.add_argument('--theme', help="a theme's name, or the path of a theme saved as JSON")
@@ -583,7 +609,7 @@ def main() -> int:
         if args.header is not None:
             Path(args.header).write_text(json.dumps(_dataset_info.header_info(args.source)))
         if args.destination is not None:
-            export(args.source, args.destination, args.max_points, args.max_glyphs, args.info)
+            export(args.source, args.destination, args.max_points, args.info)
         elif args.info is not None:
             dataset, header = read_for_preview(args.source)
             write_info(dataset, args.source, args.info, header)

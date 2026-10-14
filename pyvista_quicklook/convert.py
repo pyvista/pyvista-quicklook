@@ -41,7 +41,6 @@ def scene_key(identity: tuple[str, int, int], config: dict[str, Any]) -> str:
     settings = [
         SCENE_VERSION,
         repr(config.get('max_scene_points')),
-        repr(config.get('max_glyph_points')),
         config_mod.theme_token(config),
     ]
     return cache.digest(identity, settings)
@@ -172,8 +171,6 @@ def scene(
             str(scratch),
             '--max-points',
             str(budget(config, 'max_scene_points')),
-            '--max-glyphs',
-            str(budget(config, 'max_glyph_points')),
         ]
         if config.get('theme'):
             command += ['--theme', str(config['theme'])]

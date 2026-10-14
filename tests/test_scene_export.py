@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 from pathlib import Path
 
@@ -32,7 +31,6 @@ def written(mesh_or_path, tmp_path, name='out.ply', **kwargs):
         str(source),
         str(destination),
         kwargs.pop('max_points', 2_000_000),
-        kwargs.pop('max_glyphs', 20_000),
         **kwargs,
     )
     return pv.read(destination)
@@ -61,13 +59,27 @@ def test_a_volume_becomes_its_boundary(tmp_path):
     assert out.n_faces > 0
 
 
-def test_a_point_cloud_becomes_glyphs(tmp_path):
-    """Loose points are drawn as spheres, so the preview is not empty."""
+def test_a_point_cloud_is_written_as_bare_points(tmp_path):
+    """Loose points are written as they are, for the scene to draw as round points."""
     cloud = pv.PolyData(np.random.default_rng(0).random((200, 3)))
-    assert cloud.n_faces == 0
     out = written(cloud, tmp_path, name='cloud.ply')
-    assert out.n_faces > 0
-    assert out.n_points > cloud.n_points
+    assert out.n_faces == 0
+    assert out.n_points == cloud.n_points
+    assert style_of(tmp_path / 'cloud.ply')['primitive'] == 'points'
+
+
+def test_a_point_set_is_written_as_points(tmp_path):
+    """A PointSet, which has no cells at all, is drawn as points coloured by its scalars."""
+    points = pv.PointSet(np.random.default_rng(0).random((50, 3)))
+    points['height'] = points.points[:, 2]
+    points.save(tmp_path / 'points.pv')
+    out = tmp_path / 'points.ply'
+    export_mod.export(str(tmp_path / 'points.pv'), str(out), 0)
+    scene = pv.read(out)
+    assert scene.n_points == 50
+    assert scene.n_faces == 0
+    assert style_of(out)['primitive'] == 'points'
+    assert coloured(scene)
 
 
 def bare_polyline():
@@ -76,21 +88,40 @@ def bare_polyline():
     return pv.PolyData(points, lines=np.array([4, 0, 1, 2, 3]))
 
 
-def test_lines_become_tubes(tmp_path):
-    """Line geometry is drawn as tubes, so the preview is not empty."""
+def test_lines_become_folded_triangles(tmp_path):
+    """Each segment is a triangle folded back on itself, which the scene draws as a line."""
     line = bare_polyline()
     assert line.n_faces == 0
-    assert line.n_lines > 0
     out = written(line, tmp_path, name='line.ply')
-    assert out.n_faces > 0
+    assert out.n_faces == 3
+    assert out.regular_faces.tolist() == [[0, 1, 0], [1, 2, 1], [2, 3, 2]]
+    assert style_of(tmp_path / 'line.ply')['primitive'] == 'lines'
 
 
-def test_glyphs_are_capped(tmp_path):
-    """Only a budget of points is glyphed, however many the cloud holds."""
+def test_line_cell_data_follows_each_segment():
+    """A polyline's cell data is repeated on each segment, counted past any vertex cells."""
+    points = np.array([[0.0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]])
+    lines = pv.PolyData(points, lines=np.array([3, 0, 1, 2, 2, 2, 3]), verts=np.array([1, 0]))
+    lines.cell_data['part'] = np.array([100.0, 7.0, 9.0])
+    drawn = export_mod.segments(lines)
+    assert drawn.cell_data['part'].tolist() == [7.0, 7.0, 9.0]
+
+
+def test_single_point_lines_are_drawn_as_points(tmp_path):
+    """Line cells of one point each make no segment, so the points are drawn instead."""
+    dots = pv.PolyData(np.random.default_rng(0).random((3, 3)), lines=np.array([1, 0, 1, 1, 1, 2]))
+    out = written(dots, tmp_path, name='dots.ply')
+    assert out.n_points == 3
+    assert style_of(tmp_path / 'dots.ply')['primitive'] == 'points'
+
+
+def test_a_point_cloud_over_budget_is_thinned(tmp_path):
+    """A cloud larger than the point budget keeps a spread of its points, still coloured."""
     cloud = pv.PolyData(np.random.default_rng(0).random((5000, 3)))
-    small = written(cloud, tmp_path, name='small.ply', max_glyphs=50)
-    large = written(cloud, tmp_path, name='large.ply', max_glyphs=500)
-    assert small.n_points < large.n_points
+    cloud['h'] = cloud.points[:, 2]
+    out = written(cloud, tmp_path, name='cloud.ply', max_points=500)
+    assert 250 < out.n_points <= 500
+    assert coloured(out)
 
 
 def test_point_scalars_are_carried_as_colour(tmp_path):
@@ -130,7 +161,7 @@ def test_a_dataset_without_scalars_is_drawn_in_the_theme_colour(tmp_path):
 
 
 def test_filter_arrays_do_not_become_the_colour(tmp_path):
-    """Arrays that tube() and glyph() add are not mistaken for the file's own."""
+    """Points and lines carrying no arrays are drawn plain."""
     assert plain(written(bare_polyline(), tmp_path, name='line.ply'))
 
     cloud = pv.PolyData(np.random.default_rng(0).random((100, 3)))
@@ -223,34 +254,13 @@ def test_the_ramp_matches_viridis_ends():
     assert tuple(table[-1]) == (253, 231, 37)
 
 
-def test_glyph_size_follows_point_spacing():
-    """Sparse clouds get larger spheres, so a handful of points still reads."""
-    rng = np.random.default_rng(0)
-    corners = np.array([[0.0, 0, 0], [1.0, 1, 1]])
-    sparse = pv.PolyData(np.vstack([corners, [[0.5, 0.5, 0.5]]]))
-    dense = pv.PolyData(np.vstack([corners, rng.random((3000, 3))]))
-
-    # The spheres reach past the points they sit on, further when there are fewer.
-    sparse_reach = export_mod.solidify(sparse, 20_000).length - sparse.length
-    dense_reach = export_mod.solidify(dense, 20_000).length - dense.length
-    assert sparse_reach > dense_reach > 0
-
-
-def test_glyph_size_is_capped_for_a_single_point():
-    """One point does not produce a sphere that swallows the scene."""
-    single = pv.PolyData(np.array([[1.0, 2.0, 3.0]]))
-    out = export_mod.solidify(single, 20_000)
-    assert out.n_faces > 0
-    assert np.isfinite(out.length)
-
-
 def test_large_images_are_strided_to_the_budget(tmp_path):
     """A structured dataset is thinned on its lattice rather than decimated."""
     image = pv.ImageData(dimensions=(400, 400, 1))
     image['height'] = np.arange(image.n_points, dtype=float)
     image.save(tmp_path / 'in.vti')
     out = tmp_path / 'out.ply'
-    export_mod.export(str(tmp_path / 'in.vti'), str(out), 10_000, 20_000)
+    export_mod.export(str(tmp_path / 'in.vti'), str(out), 10_000)
     scene = pv.read(out)
     assert scene.n_points == 100 * 100
     assert np.unique(scene.points[:, 0]).size == 100
@@ -270,15 +280,15 @@ def test_surfaces_are_written_once(tmp_path):
     out = tmp_path / 'out.ply'
     image = pv.ImageData(dimensions=(20, 20, 1))
     image.save(tmp_path / 'slice.vti')
-    export_mod.export(str(tmp_path / 'slice.vti'), str(out), 2_000_000, 20_000)
+    export_mod.export(str(tmp_path / 'slice.vti'), str(out), 2_000_000)
     assert pv.read(out).n_points == image.n_points
     pv.Plane().save(tmp_path / 'plane.vtp')
-    export_mod.export(str(tmp_path / 'plane.vtp'), str(out), 2_000_000, 20_000)
+    export_mod.export(str(tmp_path / 'plane.vtp'), str(out), 2_000_000)
     plane = pv.read(out)
     assert plane.n_faces == pv.Plane().triangulate().n_faces
     assert (np.asarray(plane.point_data['Normals'])[:, 2] > 0).all()
     pv.Sphere().save(tmp_path / 'sphere.vtp')
-    export_mod.export(str(tmp_path / 'sphere.vtp'), str(out), 2_000_000, 20_000)
+    export_mod.export(str(tmp_path / 'sphere.vtp'), str(out), 2_000_000)
     assert pv.read(out).n_faces == pv.Sphere().n_faces
 
 
@@ -288,7 +298,7 @@ def test_volumes_with_scalars_are_cut_into_slices(tmp_path):
     volume['t'] = np.arange(volume.n_points, dtype=float)
     volume.save(tmp_path / 'in.vti')
     out = tmp_path / 'out.ply'
-    export_mod.export(str(tmp_path / 'in.vti'), str(out), 2_000_000, 20_000)
+    export_mod.export(str(tmp_path / 'in.vti'), str(out), 2_000_000)
     scene = pv.read(out)
     assert scene.n_points == 3 * 30 * 30
     assert inside_the_bounds(scene) > 0.5
@@ -301,7 +311,7 @@ def test_volume_cell_data_is_drawn_flat_on_the_slices(tmp_path):
     volume.cell_data['c'] = np.arange(volume.n_cells, dtype=float)
     volume.save(tmp_path / 'in.vti')
     out = tmp_path / 'out.ply'
-    export_mod.export(str(tmp_path / 'in.vti'), str(out), 2_000_000, 20_000)
+    export_mod.export(str(tmp_path / 'in.vti'), str(out), 2_000_000)
     scene = pv.read(out)
     assert scene.n_points > 2 * 3 * 30 * 30
     assert 'RGB' in scene.point_data
@@ -322,7 +332,7 @@ def test_medical_images_are_drawn(tmp_path, download):
     """A medical image from PyVista's examples is coloured; a volume is sliced through."""
     source = getattr(pv.examples.downloads, download)(load=False)
     out = tmp_path / 'out.ply'
-    export_mod.export(str(source), str(out), 2_000_000, 20_000)
+    export_mod.export(str(source), str(out), 2_000_000)
     scene = pv.read(out)
     assert scene.n_faces > 0
     assert 'RGB' in scene.point_data
@@ -336,10 +346,10 @@ def test_volume_skin_is_kept_whole_when_it_fits(tmp_path):
     volume = pv.ImageData(dimensions=(60, 60, 60))
     volume.save(tmp_path / 'in.vti')
     out = tmp_path / 'out.ply'
-    export_mod.export(str(tmp_path / 'in.vti'), str(out), 100_000, 20_000)
+    export_mod.export(str(tmp_path / 'in.vti'), str(out), 100_000)
     # Six faces of 60 x 60 points; striding the volume itself would leave ~5 000.
     assert 20_000 <= pv.read(out).n_points <= 6 * 60 * 60
-    export_mod.export(str(tmp_path / 'in.vti'), str(out), 5_000, 20_000)
+    export_mod.export(str(tmp_path / 'in.vti'), str(out), 5_000)
     assert pv.read(out).n_points <= 5_000
 
 
@@ -347,21 +357,21 @@ def test_partitioned_datasets_are_drawn_as_one_surface(tmp_path):
     """The partitions of a .vtpd or VTKHDF file are combined, as blocks are."""
     pv.PartitionedDataSet([pv.Sphere(), pv.Cube()]).save(tmp_path / 'in.vtpd')
     out = tmp_path / 'out.ply'
-    export_mod.export(str(tmp_path / 'in.vtpd'), str(out), 2_000_000, 20_000)
+    export_mod.export(str(tmp_path / 'in.vtpd'), str(out), 2_000_000)
     assert pv.read(out).n_faces == pv.Sphere().n_faces + 12
 
 
 def test_step_models_are_drawn(tmp_path):
     """A STEP model is tessellated by pyvista-cad, read back as glTF, and drawn."""
     out = tmp_path / 'out.ply'
-    export_mod.export(str(cad_examples.bracket_step_path()), str(out), 2_000_000, 20_000)
+    export_mod.export(str(cad_examples.bracket_step_path()), str(out), 2_000_000)
     assert pv.read(out).n_faces > 0
 
 
 def test_iges_models_are_drawn(tmp_path):
     """An IGES model is tessellated by cascadio, read back as glTF, and drawn."""
     out = tmp_path / 'out.ply'
-    export_mod.export(cad_examples.downloads.iges_impeller_path(), str(out), 2_000_000, 20_000)
+    export_mod.export(cad_examples.downloads.iges_impeller_path(), str(out), 2_000_000)
     assert pv.read(out).n_faces > 0
 
 
@@ -370,7 +380,7 @@ def test_unreadable_iges_files_are_reported(tmp_path):
     source = tmp_path / 'broken.igs'
     source.write_text('nonsense')
     with pytest.raises(export_mod.NotAMeshError, match='no shapes could be read'):
-        export_mod.export(str(source), str(tmp_path / 'out.ply'), 2_000_000, 20_000)
+        export_mod.export(str(source), str(tmp_path / 'out.ply'), 2_000_000)
 
 
 @pytest.mark.parametrize('extension', ['.h5m', '.hmf', '.med', '.xmf'])
@@ -380,23 +390,23 @@ def test_hdf5_meshes_are_drawn(tmp_path, extension):
     source = tmp_path / f'in{extension}'
     meshio.write(source, meshio.Mesh(sphere.points, [('triangle', sphere.regular_faces)]))
     out = tmp_path / 'out.ply'
-    export_mod.export(str(source), str(out), 2_000_000, 20_000)
+    export_mod.export(str(source), str(out), 2_000_000)
     assert pv.read(out).n_faces == sphere.n_faces
 
 
-def test_dxf_drawings_are_drawn_as_tubes(tmp_path):
-    """A DXF drawing holds only lines, which are given a surface."""
+def test_dxf_drawings_are_drawn_as_lines(tmp_path):
+    """A DXF drawing holds only lines, written as folded triangles the scene draws as lines."""
     out = tmp_path / 'out.ply'
-    export_mod.export(str(cad_examples.drawing_dxf_path()), str(out), 2_000_000, 20_000)
+    export_mod.export(str(cad_examples.drawing_dxf_path()), str(out), 2_000_000)
     scene = pv.read(out)
     assert scene.n_faces > 0
-    assert scene.n_lines == 0
+    assert (scene.regular_faces[:, 0] == scene.regular_faces[:, 2]).all()
 
 
 def test_3mf_assemblies_are_drawn_as_one_surface(tmp_path):
     """The objects of a 3MF file are combined, as blocks are."""
     out = tmp_path / 'out.ply'
-    export_mod.export(str(cad_examples.assembly_3mf_path()), str(out), 2_000_000, 20_000)
+    export_mod.export(str(cad_examples.assembly_3mf_path()), str(out), 2_000_000)
     assert pv.read(out).n_faces > 0
 
 
@@ -420,7 +430,7 @@ def test_meshio_surface_formats_are_drawn(tmp_path, ext):
     source = tmp_path / f'mesh{ext}'
     pv.save_meshio(source, pv.Sphere().triangulate())
     out = tmp_path / 'out.ply'
-    export_mod.export(str(source), str(out), 2_000_000, 20_000)
+    export_mod.export(str(source), str(out), 2_000_000)
     assert pv.read(out).n_faces == pv.Sphere().n_faces
 
 
@@ -436,7 +446,7 @@ def test_zstandard_files_are_drawn_with_their_scalars(tmp_path, ext):
     else:
         mesh.save(tmp_path / f'mesh{ext}')
     out = tmp_path / 'out.ply'
-    export_mod.export(str(tmp_path / f'mesh{ext}'), str(out), 2_000_000, 20_000)
+    export_mod.export(str(tmp_path / f'mesh{ext}'), str(out), 2_000_000)
     scene = pv.read(out)
     assert scene.n_faces == mesh.n_faces
     assert 'RGB' in scene.point_data
@@ -450,7 +460,7 @@ def test_abaqus_and_avs_share_inp(tmp_path):
     avs = pv.examples.downloads.download_cells_nd(load=False)
     for source, expected in ((abaqus, pv.Sphere().n_faces), (avs, None)):
         out = tmp_path / 'out.ply'
-        export_mod.export(str(source), str(out), 2_000_000, 20_000)
+        export_mod.export(str(source), str(out), 2_000_000)
         faces = pv.read(out).n_faces
         assert faces == expected if expected else faces > 0
 
@@ -459,7 +469,7 @@ def test_gmsh_ascii_files_are_drawn(tmp_path):
     """A Gmsh 2.2 ASCII file, as written by Gmsh itself, is drawn."""
     source = Path(__file__).with_name('data') / 'box.msh'
     out = tmp_path / 'out.ply'
-    export_mod.export(str(source), str(out), 2_000_000, 20_000)
+    export_mod.export(str(source), str(out), 2_000_000)
     assert pv.read(out).n_faces > 0
 
 
@@ -468,7 +478,7 @@ def test_flac3d_grids_are_drawn(tmp_path):
     source = tmp_path / 'zones.f3grid'
     pv.save_meshio(source, pv.ImageData(dimensions=(4, 4, 4)).triangulate())
     out = tmp_path / 'out.ply'
-    export_mod.export(str(source), str(out), 2_000_000, 20_000)
+    export_mod.export(str(source), str(out), 2_000_000)
     assert pv.read(out).n_faces > 0
 
 
@@ -477,7 +487,7 @@ def test_binary_gmsh_files_are_drawn(tmp_path):
     source = tmp_path / 'mesh.msh'
     pv.save_meshio(source, pv.Sphere().triangulate(), file_format='gmsh', binary=True)
     out = tmp_path / 'out.ply'
-    export_mod.export(str(source), str(out), 2_000_000, 20_000)
+    export_mod.export(str(source), str(out), 2_000_000)
     assert pv.read(out).n_faces == pv.Sphere().n_faces
 
 
@@ -492,8 +502,6 @@ def test_a_failure_is_reported_in_one_line(tmp_path, capsys, monkeypatch):
             str(source),
             str(tmp_path / 'out.ply'),
             '--max-points',
-            '0',
-            '--max-glyphs',
             '0',
         ],
     )
@@ -568,7 +576,7 @@ def test_only_a_file_that_holds_no_mesh_exits_as_not_a_mesh(tmp_path, capsys, mo
         message = 'out of memory'
         raise MemoryError(message)
 
-    monkeypatch.setattr(export_mod, 'solidify', broken)
+    monkeypatch.setattr(export_mod, 'drawable', broken)
     monkeypatch.setattr('sys.argv', ['export', str(source), str(tmp_path / 'out.ply')])
     assert export_mod.main() == 1
     assert capsys.readouterr().err.strip() == 'MemoryError: out of memory'
@@ -648,14 +656,6 @@ def test_a_file_that_cannot_be_opened_does_not_look_like_text(tmp_path):
     assert not export_mod.looks_like_text(str(tmp_path / 'gone.dat'))
 
 
-@pytest.fixture
-def theme():
-    """Restore PyVista's global theme after a test changes it."""
-    saved = copy.deepcopy(pv.global_theme)
-    yield pv.global_theme
-    pv.global_theme.load_theme(saved)
-
-
 def style_of(path):
     """Return the style a scene's header names."""
     head = Path(path).read_bytes()[:2048]
@@ -692,7 +692,20 @@ def test_the_scene_carries_the_theme_lighting(tmp_path, theme):
         'diffuse': 1.0,
         'specular': 0.5,
         'specular_power': 30.0,
+        'point_size': 5.0,
+        'line_width': 2.0,
+        'primitive': 'faces',
     }
+
+
+def test_a_thin_themed_line_is_widened_to_the_minimum(tmp_path, theme):
+    """A theme's line width below the minimum draws at the minimum; a wider one is kept."""
+    theme.line_width = 0.5
+    written(bare_polyline(), tmp_path, name='thin.ply')
+    assert style_of(tmp_path / 'thin.ply')['line_width'] == export_mod.MIN_LINE_WIDTH
+    theme.line_width = 4
+    written(bare_polyline(), tmp_path, name='wide.ply')
+    assert style_of(tmp_path / 'wide.ply')['line_width'] == 4.0
 
 
 def test_a_named_theme_is_applied(theme):
@@ -741,7 +754,7 @@ def test_a_file_with_points_but_nothing_to_draw_is_refused(tmp_path):
     out = tmp_path / 'out.ply'
     # An XML file reads as text, so the file is shown as such rather than as a failure.
     with pytest.raises(export_mod.NotAMeshError, match='no surface to show'):
-        export_mod.export(str(tmp_path / 'in.vtu'), str(out), 2_000_000, 20_000)
+        export_mod.export(str(tmp_path / 'in.vtu'), str(out), 2_000_000)
     assert not out.exists()
 
 

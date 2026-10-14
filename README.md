@@ -40,7 +40,7 @@ install command run again.
 ### Theme
 
 Previews follow a PyVista theme: its colour for a mesh without scalars, its colormap for
-one with, and its shading and lighting. Name one of PyVista's own:
+one with, its shading and lighting, and its point size and line width. Name one of PyVista's own:
 
 ```bash
 pvql config set theme document
@@ -103,7 +103,6 @@ it below, `side` beside, `compact` keeps one line, and `hidden` leaves it out.
 | `info_panel` | `automatic` | Where the dataset's details go: `side`, `below`, `compact`, `hidden`, or `automatic` to choose by the panel's size |
 | `max_file_size_mb` | `2048` | Files above this size show their header and a Preview Anyway button instead of a preview; `0` for no limit |
 | `max_scene_points` | `2000000` | Thin surfaces above this many points; `0` never does |
-| `max_glyph_points` | `20000` | Draw at most this many points of a point cloud; `0` draws all |
 | `max_conversion_memory_mb` | half the memory | Memory previews may use while built side by side; `0` for no limit |
 | `timeout` | `60` | Seconds before a conversion is abandoned |
 | `window_size` | `1024 1024` | Still image size in pixels |
@@ -269,8 +268,10 @@ is lit by VTK's light kit, which turns with the camera, so its colours match PyV
 own renders; faces are drawn flat unless the theme shades smoothly.
 
 Point data is interpolated across each face. Cell data is drawn flat: the cells are
-split apart first, so each keeps its own colour. Lines are drawn as tubes and point
-clouds as spheres, sized to the spacing between points. A volume that carries scalars
+split apart first, so each keeps its own colour. Lines and point clouds are drawn as
+PyVista draws them: unlit, lines at the theme's `line_width` and points as round points of
+its `point_size`, both in pixels, so a saved theme sets them. Lines are never drawn
+thinner than two pixels, since one pixel is a hairline on a Retina display. A volume that carries scalars
 is cut into three slices through its centre; one without is shown as its outer surface.
 Both sides of every face are drawn and lit, as PyVista draws them, so an open surface
 or a slice shows from wherever the camera looks.
