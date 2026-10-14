@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import plistlib
 import runpy
+import shutil
 import subprocess
 import sys
 import time
@@ -296,10 +297,24 @@ def test_config_set_native_formats_stands_the_macos_viewer_down(capsys, home, mo
     commands = []
     monkeypatch.setattr(cli, '_succeeds', lambda command: commands.append(command) or True)
     assert cli.cmd_config(config_args('set', 'native_formats', 'true')) == 0
-    assert 'press space to try it' in capsys.readouterr().out
+    # No app is installed under the test home, so the extension cannot claim the types yet.
+    assert 'Reinstall PyVista Quick Look' in capsys.readouterr().out
     assert commands == [['/usr/bin/pluginkit', '-e', 'ignore', '-i', cli.NATIVE_VIEWER]]
     assert cli.cmd_config(config_args('unset', 'native_formats')) == 0
+    assert 'Reinstall' not in capsys.readouterr().out
     assert commands[-1] == ['/usr/bin/pluginkit', '-e', 'default', '-i', cli.NATIVE_VIEWER]
+
+
+def test_config_set_native_formats_says_to_press_space_once_the_extension_claims(
+    capsys, home, monkeypatch
+):
+    """With an installed extension that claims the types, the setter says to try a file."""
+    monkeypatch.setattr(cli, '_succeeds', lambda command: True)
+    app = home / 'Applications' / plist.APP_BUNDLE
+    info = plist.plugins_folder(app) / f'{plist.EXT_EXECUTABLE}.appex' / 'Contents' / 'Info.plist'
+    plist.write(plist.extension_plist(['.vtu']), info)
+    assert cli.cmd_config(config_args('set', 'native_formats', 'true')) == 0
+    assert 'press space' in capsys.readouterr().out
 
 
 def test_config_set_native_formats_reports_a_failed_election(capsys, home, monkeypatch):
@@ -434,6 +449,12 @@ def test_doctor_passes_a_healthy_installation(capsys, doctor, tmp_path):
             1,
             '✗ native     the installed extension predates',
         ),
+        (
+            f'-    {cli.NATIVE_VIEWER}(1.0)',
+            None,
+            1,
+            '✗ native     the installed extension predates',
+        ),
     ],
 )
 def test_doctor_checks_the_native_viewer_when_the_setting_is_on(
@@ -449,11 +470,17 @@ def test_doctor_checks_the_native_viewer_when_the_setting_is_on(
     doctor(healthy=True, preview=preview)
     config.put('native_formats', True)
     app = home / 'Applications' / plist.APP_BUNDLE
-    info = plist.plugins_folder(app) / f'{plist.EXT_EXECUTABLE}.appex' / 'Contents' / 'Info.plist'
-    written = plist.extension_plist(['.vtu'])
-    if not claims:
-        written['NSExtension']['NSExtensionAttributes']['QLSupportedContentTypes'] = ['x']
-    plist.write(written, info)
+    if claims is None:
+        # No app at all: the native line must not claim success.
+        shutil.rmtree(app)
+    else:
+        info = (
+            plist.plugins_folder(app) / f'{plist.EXT_EXECUTABLE}.appex' / 'Contents' / 'Info.plist'
+        )
+        written = plist.extension_plist(['.vtu'])
+        if not claims:
+            written['NSExtension']['NSExtensionAttributes']['QLSupportedContentTypes'] = ['x']
+        plist.write(written, info)
     run = cli._run
     monkeypatch.setattr(
         cli,

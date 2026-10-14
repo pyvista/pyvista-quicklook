@@ -214,8 +214,8 @@ pvql config set native_formats true
 
 The setting stands macOS's viewer down for your account
 (`pluginkit -e ignore -i com.apple.HydraQLPreviewExtension`), which also takes away its
-preview of MaterialX files; the extension claims the types already, and the claim counts
-once the viewer is down. USD and Alembic files are read through macOS's own Model I/O by
+preview of MaterialX files; the extension already claims the types, and Quick Look
+honours the claim once the viewer is down. USD and Alembic files are read through macOS's own Model I/O by
 a tool the app carries, one block per mesh named by its path in the file; USDZ packages
 stay with AR Quick Look. `pvql doctor` reports the state. Setting it back to `false`
 restores the viewer at once.

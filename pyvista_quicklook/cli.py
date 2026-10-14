@@ -303,7 +303,11 @@ def cmd_config(args: argparse.Namespace) -> int:
                     )
                     return 1
                 if config_mod.current(key):
-                    print('Select a .ply, .stl, .obj, USD or .abc file and press space to try it.')
+                    installed = installed_apps()
+                    if installed and all(claims_native_types(app) for app in installed):
+                        print('Select a .ply, .stl, .obj, USD or .abc file and press space.')
+                    else:
+                        print('Reinstall PyVista Quick Look so its extension claims these types.')
             return 0
     except config_mod.SettingError as error:
         print(error, file=sys.stderr)
@@ -417,17 +421,17 @@ def cmd_doctor(_: argparse.Namespace) -> int:
         print('  pyvista    none in this environment; still images unavailable')
 
     print(f'✓ formats    {len(claimed_extensions(config))} extensions claimed')
+    installed = installed_apps()
     if config.get('native_formats'):
         if not native_viewer_stood_down():
             problems += 1
             print('✗ native     macOS still previews .ply, .stl, .obj, USD and .abc; set it again')
-        elif not all(claims_native_types(app) for app in installed_apps()):
+        elif not (installed and all(claims_native_types(app) for app in installed)):
             problems += 1
             print('✗ native     the installed extension predates the native formats; reinstall')
         else:
             print('✓ native     .ply, .stl, .obj, USD and .abc previewed here')
 
-    installed = installed_apps()
     if installed:
         for candidate in installed:
             print(f'✓ app        {candidate}')

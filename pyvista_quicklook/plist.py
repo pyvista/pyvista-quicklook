@@ -130,8 +130,8 @@ def extension_plist(extensions: list[str], helper: str | None = None) -> dict[st
             'NSExtensionPointIdentifier': 'com.apple.quicklook.preview',
             'NSExtensionPrincipalClass': EXT_PRINCIPAL_CLASS,
             'NSExtensionAttributes': {
-                # The native types are claimed always; Quick Look only lets the claim count
-                # once the native_formats setting stands macOS's own viewer down.
+                # Quick Look ranks macOS's own viewer above the claim on the native types
+                # until the native_formats setting stands it down.
                 'QLSupportedContentTypes': [uti_for(e) for e in extensions]
                 + list(SYSTEM_TYPES)
                 + list(NATIVE_TYPES.values()),
