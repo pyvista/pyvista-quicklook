@@ -59,6 +59,7 @@ def scene_style() -> dict[str, Any]:
         'specular': float(light.specular),
         'specular_power': float(light.specular_power),
         'point_size': float(theme.point_size),
+        'line_width': float(theme.line_width),
     }
 
 

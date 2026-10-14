@@ -678,6 +678,7 @@ def test_the_scene_carries_the_theme_lighting(tmp_path, theme):
         'specular': 0.5,
         'specular_power': 30.0,
         'point_size': 5.0,
+        'line_width': 1.0,
         'primitive': 'faces',
     }
 

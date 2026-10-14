@@ -199,11 +199,13 @@ struct SceneStyle: Decodable {
     var specularPower: CGFloat = 100
     var primitive = "faces"
     var pointSize: CGFloat = 5
+    var lineWidth: CGFloat = 1
 
     enum CodingKeys: String, CodingKey {
         case shading, lighting, ambient, diffuse, specular, primitive
         case specularPower = "specular_power"
         case pointSize = "point_size"
+        case lineWidth = "line_width"
     }
 
     /// The style a scene file's header names, or PyVista's defaults when it names none.
@@ -229,8 +231,8 @@ struct SceneStyle: Decodable {
             // Points and lines are drawn in their own colour, unlit, as PyVista draws them.
             scene.rootNode.enumerateHierarchy { node, _ in
                 guard let geometry = node.geometry else { return }
+                geometry.materials.forEach { $0.lightingModel = .constant }
                 node.geometry = primitive == "points" ? points(of: geometry) : lines(of: geometry)
-                node.geometry?.materials.forEach { $0.lightingModel = .constant }
             }
             return
         }
@@ -263,7 +265,7 @@ struct SceneStyle: Decodable {
         }
     }
 
-    /// The geometry's vertices as round points of the theme's size in pixels.
+    /// The geometry's vertices as round points of the theme's size, in pixels as VTK draws them.
     private func points(of geometry: SCNGeometry) -> SCNGeometry {
         let count = geometry.sources(for: .vertex).first?.vectorCount ?? 0
         let element = SCNGeometryElement(
@@ -276,27 +278,111 @@ struct SceneStyle: Decodable {
         return rebuilt(geometry, with: [element])
     }
 
-    /// Each folded-back triangle (a, b, a) the exporter wrote, as the line segment a-b.
+    /// Each folded-back triangle (a, b, a) the exporter wrote, as a ribbon the theme's line width wide.
+    ///
+    /// Metal draws line primitives one pixel wide, so each segment becomes two triangles that a
+    /// vertex shader widens across the screen: a vertex carries its own end, the other end as
+    /// its tangent, and which side of the line it sits on as its texture coordinate.
     private func lines(of geometry: SCNGeometry) -> SCNGeometry {
-        let elements = geometry.elements.compactMap { element -> SCNGeometryElement? in
-            guard element.primitiveType == .triangles else { return nil }
-            var ends: [UInt32] = []
-            ends.reserveCapacity(element.primitiveCount * 2)
-            element.data.withUnsafeBytes { raw in
-                for triangle in 0..<element.primitiveCount {
-                    let base = triangle * 3
-                    if element.bytesPerIndex == 2 {
-                        let ids = raw.bindMemory(to: UInt16.self)
-                        ends += [UInt32(ids[base]), UInt32(ids[base + 1])]
-                    } else {
-                        let ids = raw.bindMemory(to: UInt32.self)
-                        ends += [ids[base], ids[base + 1]]
-                    }
+        guard let positions = geometry.sources(for: .vertex).first else { return geometry }
+        let colors = geometry.sources(for: .color).first
+        var ends: [SIMD3<Float>] = []
+        var others: [SIMD3<Float>] = []
+        var sides: [SIMD2<Float>] = []
+        var tints: [SIMD4<Float>] = []
+        var indices: [UInt32] = []
+        for element in geometry.elements where element.primitiveType == .triangles {
+            for triangle in 0..<element.primitiveCount {
+                let a = index(element, at: triangle * 3)
+                let b = index(element, at: triangle * 3 + 1)
+                let first = UInt32(ends.count)
+                for (own, other, side) in [(a, b, -1), (a, b, 1), (b, a, -1), (b, a, 1)] {
+                    ends.append(vector(positions, at: own))
+                    others.append(vector(positions, at: other))
+                    sides.append(SIMD2(Float(side), 0))
+                    if let colors { tints.append(color(colors, at: own)) }
                 }
+                // The far end's sides are mirrored, so the ribbon does not twist.
+                indices += [first, first + 1, first + 3, first, first + 3, first + 2]
             }
-            return SCNGeometryElement(indices: ends, primitiveType: .line)
         }
-        return rebuilt(geometry, with: elements)
+        var sources = [
+            SCNGeometrySource(vertices: ends.map(SCNVector3.init)),
+            source(others, semantic: .tangent),
+            SCNGeometrySource(textureCoordinates: sides.map { CGPoint(x: CGFloat($0.x), y: 0) }),
+        ]
+        if colors != nil { sources.append(source(tints, semantic: .color)) }
+        let element = SCNGeometryElement(indices: indices, primitiveType: .triangles)
+        let made = SCNGeometry(sources: sources, elements: [element])
+        made.materials = geometry.materials
+        made.materials.forEach { material in
+            material.isDoubleSided = true
+            material.shaderModifiers = [.geometry: ribbon]
+            material.setValue(lineWidth, forKey: "lineWidth")
+        }
+        return made
+    }
+
+    /// Widens a ribbon vertex half the line width away from the segment, across the screen.
+    private var ribbon: String {
+        """
+        #pragma arguments
+        float lineWidth;
+        #pragma body
+        float4 own = scn_node.modelViewProjectionTransform * float4(_geometry.position.xyz, 1.0);
+        float4 other = scn_node.modelViewProjectionTransform * float4(_geometry.tangent.xyz, 1.0);
+        float2 resolution = 1.0 / scn_frame.inverseResolution.xy;
+        float2 along = (other.xy / other.w - own.xy / own.w) * resolution;
+        float2 across = length(along) > 0.0 ? normalize(float2(-along.y, along.x)) : float2(0.0);
+        float side = _geometry.texcoords[0].x;
+        own.xy += across * side * lineWidth * scn_frame.inverseResolution.xy * own.w;
+        _geometry.position = scn_node.inverseModelViewProjectionTransform * own;
+        """
+    }
+
+    private func index(_ element: SCNGeometryElement, at position: Int) -> Int {
+        element.data.withUnsafeBytes { raw in
+            element.bytesPerIndex == 2
+                ? Int(raw.bindMemory(to: UInt16.self)[position])
+                : Int(raw.bindMemory(to: UInt32.self)[position])
+        }
+    }
+
+    private func vector(_ source: SCNGeometrySource, at index: Int) -> SIMD3<Float> {
+        let floats = components(source, at: index)
+        return SIMD3(floats[0], floats[1], floats[2])
+    }
+
+    private func color(_ source: SCNGeometrySource, at index: Int) -> SIMD4<Float> {
+        let floats = components(source, at: index)
+        return SIMD4(floats[0], floats[1], floats[2], floats.count > 3 ? floats[3] : 1)
+    }
+
+    private func components(_ source: SCNGeometrySource, at index: Int) -> [Float] {
+        source.data.withUnsafeBytes { raw in
+            let start = source.dataOffset + index * source.dataStride
+            return (0..<source.componentsPerVector).map { component in
+                let at = start + component * source.bytesPerComponent
+                if source.bytesPerComponent == 4 {
+                    return raw.loadUnaligned(fromByteOffset: at, as: Float.self)
+                }
+                return Float(raw.loadUnaligned(fromByteOffset: at, as: UInt8.self)) / 255
+            }
+        }
+    }
+
+    private func source<Vector>(_ vectors: [Vector], semantic: SCNGeometrySource.Semantic) -> SCNGeometrySource {
+        let components = MemoryLayout<Vector>.size / MemoryLayout<Float>.size
+        return SCNGeometrySource(
+            data: vectors.withUnsafeBytes { Data($0) },
+            semantic: semantic,
+            vectorCount: vectors.count,
+            usesFloatComponents: true,
+            componentsPerVector: components,
+            bytesPerComponent: MemoryLayout<Float>.size,
+            dataOffset: 0,
+            dataStride: MemoryLayout<Vector>.stride
+        )
     }
 
     private func rebuilt(_ geometry: SCNGeometry, with elements: [SCNGeometryElement]) -> SCNGeometry {
