@@ -253,8 +253,7 @@ def cmd_plist(args: argparse.Namespace) -> int:
         plist_mod.write(plist_mod.app_plist(extensions, helper), args.app)
         print(args.app)
     if args.extension:
-        native = bool(config.get('native_formats'))
-        plist_mod.write(plist_mod.extension_plist(extensions, helper, native), args.extension)
+        plist_mod.write(plist_mod.extension_plist(extensions, helper), args.extension)
         print(args.extension)
     if args.thumbnail:
         plist_mod.write(plist_mod.thumbnail_plist(extensions), args.thumbnail)
@@ -303,7 +302,12 @@ def cmd_config(args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
                     return 1
-                print('Run the installer again to claim .ply, .stl, .obj, USD and .abc.')
+                if config_mod.current(key):
+                    installed = installed_apps()
+                    if installed and all(claims_native_types(app) for app in installed):
+                        print('Select a .ply, .stl, .obj, USD or .abc file and press space.')
+                    else:
+                        print('Reinstall PyVista Quick Look so its extension claims these types.')
             return 0
     except config_mod.SettingError as error:
         print(error, file=sys.stderr)
@@ -417,14 +421,17 @@ def cmd_doctor(_: argparse.Namespace) -> int:
         print('  pyvista    none in this environment; still images unavailable')
 
     print(f'✓ formats    {len(claimed_extensions(config))} extensions claimed')
+    installed = installed_apps()
     if config.get('native_formats'):
-        if native_viewer_stood_down():
-            print('✓ native     .ply, .stl, .obj, USD and .abc previewed here')
-        else:
+        if not native_viewer_stood_down():
             problems += 1
             print('✗ native     macOS still previews .ply, .stl, .obj, USD and .abc; set it again')
+        elif not (installed and all(claims_native_types(app) for app in installed)):
+            problems += 1
+            print('✗ native     the installed extension predates the native formats; reinstall')
+        else:
+            print('✓ native     .ply, .stl, .obj, USD and .abc previewed here')
 
-    installed = installed_apps()
     if installed:
         for candidate in installed:
             print(f'✓ app        {candidate}')
@@ -484,6 +491,22 @@ def cmd_doctor(_: argparse.Namespace) -> int:
 
     print('\nall checks passed' if not problems else f'\n{problems} problem(s) found')
     return 1 if problems else 0
+
+
+def claims_native_types(app: Path) -> bool:
+    """Return whether an installed app's extension claims the native formats' types."""
+    info = (
+        plist_mod.plugins_folder(app)
+        / f'{plist_mod.EXT_EXECUTABLE}.appex'
+        / 'Contents'
+        / 'Info.plist'
+    )
+    try:
+        with info.open('rb') as handle:
+            attributes = plistlib.load(handle)['NSExtension']['NSExtensionAttributes']
+    except OSError, KeyError, plistlib.InvalidFileException:
+        return False
+    return set(NATIVE_TYPES.values()) <= set(attributes.get('QLSupportedContentTypes', []))
 
 
 def installed_apps() -> list[Path]:
