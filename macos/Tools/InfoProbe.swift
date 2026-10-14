@@ -16,10 +16,14 @@ enum InfoProbe {
             FileHandle.standardError.write(Data("usage: InfoProbe <info.json> <width> <height> <arrangement> [key=value ...]\n".utf8))
             exit(2)
         }
-        // What the reader last left the panel at, kept out of the real defaults.
-        let memory = UserDefaults(suiteName: "org.pyvista.PyVistaQuickLook.InfoProbe")!
-        memory.removePersistentDomain(forName: "org.pyvista.PyVistaQuickLook.InfoProbe")
+        // What the reader last left the panel at, kept in memory, never in a preferences file.
+        let suite = "org.pyvista.PyVistaQuickLook.InfoProbe"
+        let memory = UserDefaults(suiteName: suite)!
+        memory.removePersistentDomain(forName: suite)
+        memory.setVolatileDomain([:], forName: suite)
         InfoPanelMemory.defaults = memory
+        // Drags are applied after the first layout, as a reader's would be.
+        var drags: [Double] = []
         for setting in arguments.dropFirst(5) {
             let parts = setting.split(separator: "=", maxSplits: 1).map(String.init)
             guard parts.count == 2, let value = Double(parts[1]) else {
@@ -30,6 +34,7 @@ enum InfoProbe {
             case "collapsed": InfoPanelMemory.collapsed = value != 0
             case "side_width": InfoPanelMemory.sideWidth = value
             case "below_height": InfoPanelMemory.belowHeight = value
+            case "drag": drags.append(value)
             default:
                 FileHandle.standardError.write(Data("unknown setting \(parts[0])\n".utf8))
                 exit(2)
@@ -51,6 +56,14 @@ enum InfoProbe {
         view.layoutSubtreeIfNeeded()
         view.layout()
         view.layoutSubtreeIfNeeded()
+        if !drags.isEmpty {
+            for drag in drags {
+                view.dragged(CGFloat(drag))
+            }
+            view.dragEnded()
+            view.layout()
+            view.layoutSubtreeIfNeeded()
+        }
 
         let colorNames: [(NSColor, String)] = [
             (.labelColor, "label"),
@@ -96,6 +109,15 @@ enum InfoProbe {
             "folded": view.isFolded,
             "info_width": view.infoFrame.width,
             "info_height": view.infoFrame.height,
+            "divider": [
+                view.dividerFrame.minX, view.dividerFrame.minY,
+                view.dividerFrame.width, view.dividerFrame.height,
+            ],
+            "remembered": [
+                "side_width": InfoPanelMemory.sideWidth.map { Double($0) as Any } ?? NSNull(),
+                "below_height": InfoPanelMemory.belowHeight.map { Double($0) as Any } ?? NSNull(),
+                "collapsed": InfoPanelMemory.collapsed,
+            ],
         ]
         let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         FileHandle.standardOutput.write(data)

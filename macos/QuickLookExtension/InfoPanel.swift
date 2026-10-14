@@ -584,7 +584,8 @@ enum InfoPanelMemory {
         set { store(belowHeightKey, newValue) }
     }
 
-    /// Whether the panel was folded down to its one-line summary.
+    /// Whether the panel was folded away: to the line alone beside the render, or to the
+    /// one-line summary below it.
     static var collapsed: Bool {
         get { defaults.bool(forKey: collapsedKey) }
         set { defaults.set(newValue, forKey: collapsedKey) }
@@ -636,8 +637,14 @@ final class InfoDivider: NSView {
         fatalError("init(coder:) is not used")
     }
 
+    private var chevron = ""
+
     /// Shows a chevron pointing where the info goes when the button is pressed.
     func showChevron(_ name: String, tip: String) {
+        guard name != chevron else {
+            return
+        }
+        chevron = name
         let symbol = NSImage(systemSymbolName: name, accessibilityDescription: tip)
         toggle.image = symbol?.withSymbolConfiguration(.init(pointSize: 9, weight: .bold))
         toggle.toolTip = tip
@@ -658,6 +665,7 @@ final class InfoDivider: NSView {
 
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: vertical ? .resizeLeftRight : .resizeUpDown)
+        addCursorRect(toggle.frame, cursor: .arrow)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -699,9 +707,12 @@ final class MeshPreviewView: NSView {
     static let minSideWidth: CGFloat = 260
     /// Space around the info inside its scrolling column.
     static let inset: CGFloat = 16
-    /// Dragged smaller than this, the info folds down to its summary.
-    static let foldWidth: CGFloat = 120
+    /// Dragged this far past the narrowest the column may be, the info folds away.
+    static let foldPast: CGFloat = 60
+    /// The shortest the row below the render may be dragged to; past it, the info folds away.
     static let foldHeight: CGFloat = 48
+    /// The size a drag is taking the info to, unclamped, so it can pass the fold.
+    private var dragging: CGFloat?
 
     init(render: NSView, info: MeshInfo, arrangement: InfoArrangement = .automatic) {
         self.render = render
@@ -737,6 +748,11 @@ final class MeshPreviewView: NSView {
         scroll.isHidden ? .zero : scroll.frame
     }
 
+    /// Where the line and its button are, or nothing when there is no line.
+    var dividerFrame: NSRect {
+        divider.isHidden ? .zero : divider.frame
+    }
+
     /// Whether the reader folded the info away: beside the render that leaves only the
     /// line and its button, below it the one-line summary.
     var isFolded: Bool {
@@ -753,7 +769,7 @@ final class MeshPreviewView: NSView {
     }
 
     /// The arrangement for the current size alone.
-    private var fitting: InfoArrangement {
+    var fitting: InfoArrangement {
         guard arrangement == .automatic else {
             return arrangement
         }
@@ -788,24 +804,26 @@ final class MeshPreviewView: NSView {
     }
 
     /// Resizes the info by a drag across the divider, folding it away when dragged too small.
-    private func dragged(_ delta: CGFloat) {
+    func dragged(_ delta: CGFloat) {
         guard !isFolded else {
             return
         }
         switch resolved {
         case .side:
-            let width = columnWidth() - delta
-            if width < Self.foldWidth {
+            let width = (dragging ?? columnWidth()) - delta
+            dragging = width
+            if width < Self.minSideWidth - Self.foldPast {
                 InfoPanelMemory.sideWidth = nil
-                InfoPanelMemory.collapsed = true
+                fold()
             } else {
                 InfoPanelMemory.sideWidth = width
             }
         case .below:
-            let height = rowHeight() + delta
+            let height = (dragging ?? rowHeight()) + delta
+            dragging = height
             if height < Self.foldHeight {
                 InfoPanelMemory.belowHeight = nil
-                InfoPanelMemory.collapsed = true
+                fold()
             } else {
                 InfoPanelMemory.belowHeight = height
             }
@@ -816,7 +834,8 @@ final class MeshPreviewView: NSView {
     }
 
     /// Settles a dragged size on what the panel allowed, so the next preview starts there.
-    private func dragEnded() {
+    func dragEnded() {
+        dragging = nil
         guard !isFolded else {
             return
         }
@@ -825,6 +844,11 @@ final class MeshPreviewView: NSView {
         case .below: InfoPanelMemory.belowHeight = rowHeight()
         case .compact, .hidden, .automatic: break
         }
+    }
+
+    private func fold() {
+        dragging = nil
+        InfoPanelMemory.collapsed = true
     }
 
     /// Folds the info down to its summary, or opens it again.
@@ -870,25 +894,30 @@ final class MeshPreviewView: NSView {
         let bounds = self.bounds
         let mode = resolved
         let folded = isFolded
+        // Compact for want of room has nothing to unfold, so it has no button.
+        let unfoldable = mode == .compact && folded && fitting != .compact
         summary.isHidden = mode != .compact
         scroll.isHidden = mode == .compact || mode == .hidden || folded
-        divider.isHidden = mode == .hidden || mode == .automatic
+        divider.isHidden = mode == .hidden || mode == .automatic || (mode == .compact && !unfoldable)
         let grab = InfoDivider.thickness
         let half = (grab - 1) / 2
         switch mode {
         case .hidden, .automatic:
             render.frame = bounds
         case .compact:
-            let width = bounds.width - 16 - InfoDivider.buttonSide - 10
+            let room = unfoldable ? InfoDivider.buttonSide + 10 : 0
+            let width = bounds.width - 16 - 2 * room
             let font = summary.font ?? NSFont.systemFont(ofSize: 11)
             summary.stringValue = packed(info.summaryParts, width: width, font: font).joined(separator: "\n")
             let fit = NSRect(x: 0, y: 0, width: width, height: .greatestFiniteMagnitude)
             let height = ceil(summary.cell?.cellSize(forBounds: fit).height ?? 16)
-            summary.frame = NSRect(x: 8, y: 6, width: width, height: height)
+            summary.frame = NSRect(x: 8 + room, y: 6, width: width, height: height)
             let below = height + 10
-            divider.vertical = false
-            divider.showChevron("chevron.up", tip: "Show the details")
-            divider.frame = NSRect(x: 0, y: below - half, width: bounds.width, height: grab)
+            if unfoldable {
+                divider.vertical = false
+                divider.showChevron("chevron.up", tip: "Show the details")
+                divider.frame = NSRect(x: 0, y: below - half, width: bounds.width, height: grab)
+            }
             render.frame = NSRect(x: 0, y: below, width: bounds.width, height: bounds.height - below)
         case .side:
             let width = folded ? 0 : columnWidth()
