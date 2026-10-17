@@ -23,6 +23,19 @@ about 400 MB of Python packages into a private environment: nothing on the syste
 used or changed. [What the installer does](#what-the-installer-does) lists every step
 and where things go.
 
+From PyPI, the same install takes two commands; `pvql install` runs the installer of the
+release matching the installed version:
+
+```bash
+pip install pyvista-quicklook
+pvql install
+```
+
+The `pvql` that pip installs only starts the installer, which sets up its own copy in
+`~/.local/bin` and its own PyVista environment, so the environment pip installed into can
+later be changed or removed. `pip uninstall pyvista-quicklook` afterwards leaves the
+installed `pvql` as the one your shell finds.
+
 ## Settings
 
 Settings are changed with `pvql config`, which checks each value before storing it:
@@ -398,6 +411,7 @@ pvql cache --prune    # delete previews of files that have changed or gone
 pvql cache --clear    # delete every cached preview
 pvql service          # manage the render service
 pvql finder           # say whether the Finder must restart to show previews
+pvql install          # install the app and PyVista for this release
 pvql uninstall        # remove everything, asking first
 ```
 

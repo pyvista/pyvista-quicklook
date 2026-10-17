@@ -110,9 +110,11 @@ fi
 if [[ "$SKIP_HELPER" -eq 0 ]]; then
   echo "==> installing the pvql helper"
   "$UV" tool install --force --reinstall --quiet --python "$PYTHON_VERSION" "$ROOT"
+  # The copy just installed, not one earlier on PATH such as the pip install running pvql install.
+  HELPER="$("$UV" tool dir --bin)/pvql"
+else
+  HELPER=$(command -v pvql || echo "$HOME/.local/bin/pvql")
 fi
-
-HELPER=$(command -v pvql || echo "$HOME/.local/bin/pvql")
 if [[ ! -x "$HELPER" ]]; then
   echo "pvql was not found after installation; expected at $HELPER" >&2
   exit 1

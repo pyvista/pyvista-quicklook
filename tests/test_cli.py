@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 from pathlib import Path
@@ -1031,3 +1032,56 @@ def test_plist_leaves_the_helper_out_when_asked(tmp_path, monkeypatch, helper):
         assert stored['PVQLHelperPath'] == '/found/pvql'
     else:
         assert 'PVQLHelperPath' not in stored
+
+
+@pytest.mark.parametrize(
+    ('version', 'url', 'tag'),
+    [
+        ('0.10.1', f'{cli.RELEASES}/download/v0.10.1/install.sh', 'v0.10.1'),
+        ('0.10.2.dev3+g1234567', f'{cli.RELEASES}/latest/download/install.sh', None),
+    ],
+)
+def test_install_runs_the_installer_of_its_own_release(monkeypatch, version, url, tag):
+    """A release runs its own installer, pinned to its tag; a development build the latest."""
+    calls = []
+    # Buffered as a pipe is, so what pvql said reaches it only when flushed.
+    written = io.BytesIO()
+    monkeypatch.setattr(cli.sys, 'stdout', io.TextIOWrapper(written, write_through=False))
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        # What pvql said comes before what the installer says.
+        if command[0] == '/bin/sh':
+            assert b'fetching' in written.getvalue()
+        if command[0] == '/usr/bin/curl':
+            Path(command[command.index('-o') + 1]).write_text('exit 0\n')
+        return SimpleNamespace(returncode=0, stderr='')
+
+    monkeypatch.setattr(cli, '__version__', version)
+    monkeypatch.setattr(cli.subprocess, 'run', run)
+    monkeypatch.delenv('PVQL_TAG', raising=False)
+    assert cli.main(['install', '--prefix', '/tmp/apps']) == 0
+    (fetch, _), (install, options) = calls
+    assert fetch[-1] == url
+    assert install[0] == '/bin/sh'
+    assert install[2:] == ['--prefix', '/tmp/apps']
+    calls.clear()
+    assert cli.main(['install']) == 0
+    assert calls[1][0][2:] == []
+    assert options['env'].get('PVQL_TAG') == tag
+
+
+def test_install_reports_a_failed_download(monkeypatch, capsys):
+    """A download that fails says why and runs nothing."""
+    calls = []
+
+    def run(command, **_):
+        calls.append(command)
+        return SimpleNamespace(returncode=22, stderr='curl: (22) The requested URL returned 404\n')
+
+    monkeypatch.setattr(cli.subprocess, 'run', run)
+    assert cli.main(['install']) == 1
+    assert len(calls) == 1
+    err = capsys.readouterr().err
+    assert 'returned 404' in err
+    assert cli.LATEST_INSTALL in err

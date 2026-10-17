@@ -15,6 +15,7 @@ import tempfile
 import time
 from typing import Any
 
+from . import __version__
 from . import cache as cache_mod
 from . import config as config_mod
 from . import convert as convert_mod
@@ -37,6 +38,10 @@ LSREGISTER = (
     '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework'
     '/Support/lsregister'
 )
+
+# Where each release attaches its app and the installer that sets it up.
+RELEASES = 'https://github.com/pyvista/pyvista-quicklook/releases'
+LATEST_INSTALL = f'curl -LsSf {RELEASES}/latest/download/install.sh | sh'
 
 # A tetrahedron in legacy VTK format, used by ``pvql doctor`` as a smoke test.
 SMOKE_MESH = """# vtk DataFile Version 3.0
@@ -550,6 +555,41 @@ def uv_note(uv: Path) -> str:
     )
 
 
+def release_tag(version: str) -> str | None:
+    """Return the release tag of a version, or None for a development build."""
+    return f'v{version}' if re.fullmatch(r'\d+(\.\d+)*', version) else None
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    """Install the app, the render service, and PyVista with the installer of this release."""
+    tag = release_tag(__version__)
+    if tag:
+        url = f'{RELEASES}/download/{tag}/install.sh'
+        print(f'==> fetching the installer of PyVista Quick Look {tag}')
+    else:
+        url = f'{RELEASES}/latest/download/install.sh'
+        print(f'==> pvql {__version__} is not a release; fetching the latest installer')
+    with tempfile.TemporaryDirectory(prefix='pvql-install-') as folder:
+        script = Path(folder) / 'install.sh'
+        fetched = subprocess.run(
+            ['/usr/bin/curl', '-LsSf', '--connect-timeout', '30', '-o', str(script), url],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if fetched.returncode != 0:
+            reason = fetched.stderr.strip().splitlines()[-1:] or ['no response']
+            print(f'pvql: could not download {url}: {reason[0]}', file=sys.stderr)
+            print(f'Install the latest release instead with:\n  {LATEST_INSTALL}', file=sys.stderr)
+            return 1
+        # The installer writes straight to the terminal, after anything still buffered here.
+        sys.stdout.flush()
+        # Pinned, the installer sets up the app of this release rather than the newest.
+        env = {**os.environ, 'PVQL_TAG': tag} if tag else dict(os.environ)
+        extra = ['--prefix', args.prefix] if args.prefix else []
+        return subprocess.run(['/bin/sh', str(script), *extra], env=env, check=False).returncode
+
+
 def cmd_uninstall(args: argparse.Namespace) -> int:
     """Remove the app, the render service, the PyVista environment, and the helper."""
     targets = uninstall_targets(args.all)
@@ -683,6 +723,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = sub.add_parser('doctor', help='check the Quick Look integration')
     doctor.set_defaults(func=cmd_doctor)
+
+    install = sub.add_parser(
+        'install', help='install the app, the render service, and PyVista for this release'
+    )
+    install.add_argument('--prefix', help='folder to install the app in (default ~/Applications)')
+    install.set_defaults(func=cmd_install)
 
     uninstall = sub.add_parser('uninstall', help='remove the app, the service, and the helper')
     uninstall.add_argument('--yes', action='store_true', help='do not ask first')
