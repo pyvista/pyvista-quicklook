@@ -41,6 +41,7 @@ LSREGISTER = (
 
 # Where each release attaches its app and the installer that sets it up.
 RELEASES = 'https://github.com/pyvista/pyvista-quicklook/releases'
+LATEST_INSTALL = f'curl -LsSf {RELEASES}/latest/download/install.sh | sh'
 
 # A tetrahedron in legacy VTK format, used by ``pvql doctor`` as a smoke test.
 SMOKE_MESH = """# vtk DataFile Version 3.0
@@ -571,7 +572,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory(prefix='pvql-install-') as folder:
         script = Path(folder) / 'install.sh'
         fetched = subprocess.run(
-            ['/usr/bin/curl', '-LsSf', '-o', str(script), url],
+            ['/usr/bin/curl', '-LsSf', '--connect-timeout', '30', '-o', str(script), url],
             capture_output=True,
             text=True,
             check=False,
@@ -579,6 +580,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         if fetched.returncode != 0:
             reason = fetched.stderr.strip().splitlines()[-1:] or ['no response']
             print(f'pvql: could not download {url}: {reason[0]}', file=sys.stderr)
+            print(f'Install the latest release instead with:\n  {LATEST_INSTALL}', file=sys.stderr)
             return 1
         # The installer writes straight to the terminal, after anything still buffered here.
         sys.stdout.flush()

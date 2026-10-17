@@ -33,7 +33,8 @@ pvql install
 
 The `pvql` that pip installs only starts the installer, which sets up its own copy in
 `~/.local/bin` and its own PyVista environment, so the environment pip installed into can
-later be changed or removed.
+later be changed or removed. `pip uninstall pyvista-quicklook` afterwards leaves the
+installed `pvql` as the one your shell finds.
 
 ## Settings
 

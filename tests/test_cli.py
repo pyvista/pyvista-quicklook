@@ -1062,10 +1062,12 @@ def test_install_runs_the_installer_of_its_own_release(monkeypatch, version, url
     monkeypatch.delenv('PVQL_TAG', raising=False)
     assert cli.main(['install', '--prefix', '/tmp/apps']) == 0
     (fetch, _), (install, options) = calls
-    assert ('latest' in fetch[-1]) == (tag is None)
     assert fetch[-1] == url
     assert install[0] == '/bin/sh'
     assert install[2:] == ['--prefix', '/tmp/apps']
+    calls.clear()
+    assert cli.main(['install']) == 0
+    assert calls[1][0][2:] == []
     assert options['env'].get('PVQL_TAG') == tag
 
 
@@ -1080,4 +1082,6 @@ def test_install_reports_a_failed_download(monkeypatch, capsys):
     monkeypatch.setattr(cli.subprocess, 'run', run)
     assert cli.main(['install']) == 1
     assert len(calls) == 1
-    assert 'returned 404' in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert 'returned 404' in err
+    assert cli.LATEST_INSTALL in err

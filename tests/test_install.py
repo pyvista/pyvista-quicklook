@@ -407,3 +407,23 @@ def test_the_installer_picks_the_newest_release_with_the_app(tmp_path, failing, 
     result = run_strict(script)
     assert f'picked={picked}' in result.stdout, result.stderr
     assert 'reached the end' in result.stdout
+
+
+@pytest.mark.parametrize(('skip', 'picked'), [(0, 'tools'), (1, 'earlier')])
+def test_the_installer_records_the_helper_it_installed(tmp_path, skip, picked):
+    """A pvql earlier on PATH, as pip's is under ``pvql install``, is not taken for the new one."""
+    earlier, tools = tmp_path / 'earlier', tmp_path / 'tools'
+    for folder in (earlier, tools):
+        folder.mkdir()
+        (folder / 'pvql').write_text('#!/bin/sh\n')
+        (folder / 'pvql').chmod(0o755)
+    uv = tmp_path / 'uv'
+    uv.write_text(f'#!/bin/sh\n[ "$2" = dir ] && echo {shlex.quote(str(tools))}\nexit 0\n')
+    uv.chmod(0o755)
+    block = script_lines('if [[ "$SKIP_HELPER" -eq 0 ]]', '\nfi\n')
+    result = run_strict(
+        f'UV={shlex.quote(str(uv))}\nSKIP_HELPER={skip}\nPYTHON_VERSION=3.14\nROOT=.\n'
+        f'{block}echo "helper=$HELPER"\n',
+        env={'PATH': f'{earlier}:{tools}:/usr/bin:/bin', 'HOME': str(tmp_path)},
+    )
+    assert f'helper={tmp_path / picked / "pvql"}' in result.stdout, result.stderr
