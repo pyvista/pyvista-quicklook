@@ -359,7 +359,8 @@ def test_a_version_3_container_is_described_and_drawn(tmp_path):
     blocks.field_data['note'] = np.array([1.0, 2.0])
     path = tmp_path / 'blocks.pv'
     pyvista_zstd.write(blocks, path)
-    assert pyvista_zstd.Reader(path).file_metadata.file_version == 3
+    with pyvista_zstd.Reader(path) as reader:
+        assert reader.file_metadata.file_version == 3
     out, info = tmp_path / 'blocks.ply', tmp_path / 'blocks.json'
     export_mod.export(str(path), str(out), 0, str(info))
     assert pv.read(out).n_points == pv.Sphere().n_points
@@ -881,8 +882,8 @@ def test_cell_types_of_something_without_cells_are_none():
     assert info_mod.cell_types(pv.PolyData()) is None
 
 
-def test_a_pv_array_without_a_frame_is_left_without_a_range(tmp_path, monkeypatch):
-    """An array the metadata lists but the file does not hold gets no range or user dict."""
+def test_a_pv_array_the_reader_cannot_find_is_left_without_a_range(tmp_path, monkeypatch):
+    """An array pyvista-zstd reports as missing gets no range or user dict."""
     mesh = mixed_arrays()
     mesh.field_data[info_mod.USER_DICT_KEY] = np.array([json.dumps({'a': 1})])
     path = tmp_path / 'grid.pv'

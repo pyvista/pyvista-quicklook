@@ -53,7 +53,7 @@ def reader():
 
 
 def pv_file(path, *, rest=b'i' * 32, crc_of=None, record_extra=0, png=PNG, index=None):
-    """Write a file laid out as a .pv with a picture, ending in a four-frame index.
+    """Write a file laid out as a .pv with a picture, ending in an index of its frames.
 
     The index holds the picture's two frames, then ``rest``; ``index`` replaces it whole.
     """
