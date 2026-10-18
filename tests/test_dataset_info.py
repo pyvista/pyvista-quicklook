@@ -872,7 +872,11 @@ def test_a_pv_array_without_a_frame_is_left_without_a_range(tmp_path, monkeypatc
     mesh.field_data[info_mod.USER_DICT_KEY] = np.array([json.dumps({'a': 1})])
     path = tmp_path / 'grid.pv'
     pyvista_zstd.write(mesh, path)
-    monkeypatch.setattr(info_mod, 'zstd_frame', lambda *args: 'no such frame')
+
+    def missing(self, name, *, association):
+        raise KeyError(name)
+
+    monkeypatch.setattr(pyvista_zstd.Reader, 'read_array', missing)
     header = info_mod.zstd_ranges(path, info_mod.zstd_header(path))
     assert 'user_dict' not in header
     assert all(row['extent'] is None and row['range'] == '' for row in header['rows'])

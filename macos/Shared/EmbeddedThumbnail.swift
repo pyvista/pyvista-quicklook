@@ -65,6 +65,7 @@ enum EmbeddedThumbnail {
         let length = Int(uint32(head, recordOffset + 24))
         let recordLength = Int(uint32(head, recordOffset - 4))
         guard header >= descriptorBytes, length <= maximumBytes, header + length == recordLength,
+              recordFrameEnd(handle) == UInt64(recordOffset + recordLength),
               (try? handle.seek(toOffset: UInt64(recordOffset + header))) != nil,
               let png = try? handle.read(upToCount: length), png.count == length,
               png.starts(with: pngSignature)
@@ -75,6 +76,25 @@ enum EmbeddedThumbnail {
             png: png,
             isStale: !matchesData(handle, crc: uint32(head, recordOffset + 28))
         )
+    }
+
+    /// Returns where the file's index says the frame holding the picture ends, or nil.
+    static func recordFrameEnd(_ handle: FileHandle) -> UInt64? {
+        guard let size = try? handle.seekToEnd(), size >= 8,
+              (try? handle.seek(toOffset: size - 8)) != nil,
+              let tail = try? handle.read(upToCount: 8), tail.count == 8
+        else {
+            return nil
+        }
+        let frames = tail.withUnsafeBytes { UInt64(littleEndian: $0.loadUnaligned(as: UInt64.self)) }
+        // Each index entry is the frame's end offset and decompressed size; entry 1 is the record.
+        guard frames >= 2, frames < size / 16, size - 8 >= 16 * frames,
+              (try? handle.seek(toOffset: size - 8 - 16 * (frames - 1))) != nil,
+              let entry = try? handle.read(upToCount: 8), entry.count == 8
+        else {
+            return nil
+        }
+        return entry.withUnsafeBytes { UInt64(littleEndian: $0.loadUnaligned(as: UInt64.self)) }
     }
 
     /// Returns whether the file's index still has the checksum the picture was taken with.

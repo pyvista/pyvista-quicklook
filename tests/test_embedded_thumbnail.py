@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 import struct
 import subprocess
@@ -9,7 +10,11 @@ import sys
 import zlib
 
 from conftest import compiled
+import numpy as np
+from PIL import Image
 import pytest
+import pyvista as pv
+import pyvista_zstd
 
 ROOT = Path(__file__).resolve().parent.parent
 READER = ROOT / 'macos' / 'Shared' / 'EmbeddedThumbnail.swift'
@@ -47,14 +52,19 @@ def reader():
     ).stdout.split('\n')[:2]
 
 
-def pv_file(path, *, index=b'i' * 64, crc_of=None, record_extra=0, png=PNG):
-    """Write a file laid out as a .pv with a picture, ending in a four-frame index."""
-    entries = crc_of if crc_of is not None else index
+def pv_file(path, *, rest=b'i' * 32, crc_of=None, record_extra=0, png=PNG, index=None):
+    """Write a file laid out as a .pv with a picture, ending in a four-frame index.
+
+    The index holds the picture's two frames, then ``rest``; ``index`` replaces it whole.
+    """
     # The checksum covers the index entries after the first two frames.
-    crc = zlib.crc32(entries[32:])
+    crc = zlib.crc32(crc_of if crc_of is not None else rest)
     descriptor = b'PVZTHUMB' + struct.pack('<6I', 1, 32, 64, 48, len(png), crc)
     record = descriptor + png
     data = PREFIX + struct.pack('<I', len(record) + record_extra) + record
+    if index is None:
+        # Each entry is a frame's end offset and decompressed size.
+        index = struct.pack('<4Q', len(PREFIX) - 4, 43, len(data), 0) + rest
     data += b'frames' + index + struct.pack('<Q', len(index) // 16)
     path.write_bytes(data)
     return path
@@ -69,7 +79,7 @@ def test_a_current_picture_is_found(reader, tmp_path):
 
 def test_a_picture_older_than_the_data_is_stale(reader, tmp_path):
     """Data appended after the picture changes the index, so the picture is stale."""
-    found, current = reader(pv_file(tmp_path / 'mesh.pv', crc_of=b'o' * 64))
+    found, current = reader(pv_file(tmp_path / 'mesh.pv', crc_of=b'o' * 32))
     assert found.endswith('stale=true')
     assert current == 'declined'
 
@@ -105,7 +115,37 @@ def test_other_files_hold_no_picture(reader, tmp_path):
 
 
 @pytest.mark.parametrize('index', [b'', b'i' * 16], ids=['no frames', 'one frame'])
-def test_an_index_too_short_to_hold_a_checksum_means_a_stale_picture(reader, tmp_path, index):
-    """An index with fewer than two frames cannot vouch for the picture, so it counts as stale."""
+def test_an_index_without_the_picture_frame_holds_no_picture(reader, tmp_path, index):
+    """An index too short to say where the picture's frame ends holds no picture."""
     pv_file(tmp_path / 'mesh.pv', index=index)
+    assert reader(tmp_path / 'mesh.pv') == ['none', 'declined']
+
+
+def test_a_pair_alone_is_a_stale_picture(reader, tmp_path):
+    """With no frames after the picture, there is nothing for its checksum to vouch for."""
+    pv_file(tmp_path / 'mesh.pv', rest=b'')
     assert reader(tmp_path / 'mesh.pv') == [f'{len(PNG)} stale=true', 'declined']
+
+
+@pytest.mark.parametrize('shift', [-1, 1, 100])
+def test_a_record_that_does_not_end_with_its_frame_is_ignored(reader, tmp_path, shift):
+    """A record the index places elsewhere could read into other frames, so it holds no picture."""
+    path = pv_file(tmp_path / 'mesh.pv')
+    data = bytearray(path.read_bytes())
+    entry = len(data) - 8 - 16 * 4 + 16
+    end = struct.unpack_from('<Q', data, entry)[0]
+    struct.pack_into('<Q', data, entry, end + shift)
+    path.write_bytes(bytes(data))
+    assert reader(path) == ['none', 'declined']
+
+
+def test_a_picture_written_by_pyvista_zstd_is_found(reader, tmp_path):
+    """The reader agrees with the writer whose format it mirrors, fresh and after an append."""
+    buffer = io.BytesIO()
+    Image.new('RGBA', (4, 3), (255, 0, 0, 255)).save(buffer, format='PNG')
+    png = buffer.getvalue()
+    path = tmp_path / 'sphere.pv'
+    pyvista_zstd.write(pv.Sphere(), path, thumbnail=png)
+    assert reader(path) == [f'{len(png)} stale=false', 'current']
+    pyvista_zstd.append_arrays(path, {'extra': np.arange(3.0)})
+    assert reader(path) == [f'{len(png)} stale=true', 'declined']

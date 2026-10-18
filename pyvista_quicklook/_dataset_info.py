@@ -533,8 +533,7 @@ def zstd_facts(path: Path) -> list[list[str]]:
     import pyvista_zstd
 
     with pyvista_zstd.Reader(path) as reader:
-        # The version and compression have no public accessor as of pyvista-zstd 0.5.
-        metadata = reader._metadata
+        metadata = reader.file_metadata
         expanded = reader.nbytes
     ratio = expanded / path.stat().st_size
     return [
@@ -711,13 +710,15 @@ def zstd_metadata(path: Path) -> Any:
     import pyvista_zstd
 
     with pyvista_zstd.Reader(path) as reader:
-        # pyvista-zstd keeps the per-array metadata behind a private accessor.
-        return reader._root_ds_meta_from_core()
+        return reader.dataset_metadata
 
 
-def zstd_frame(uid: str, name: str, association: str) -> str:
-    """Return the name of the frame holding one array of a ``.pv`` dataset."""
-    return f'{uid}{name}__{association.lower()}_data'
+def zstd_array(reader: Any, name: str, association: str) -> np.ndarray | None:
+    """Return one array of a ``.pv`` dataset, or None when the file does not hold it."""
+    try:
+        return np.asarray(reader.read_array(name, association=association.lower()))
+    except KeyError:
+        return None
 
 
 def zstd_header(path: Path) -> dict:
@@ -765,33 +766,31 @@ def zstd_header(path: Path) -> dict:
         dims = None
     info: dict[str, Any] = {
         'type': kind,
-        'uid': meta.uid,
         'facts': header_facts(meta.n_points, meta.n_cells, dims, spacing),
         'rows': rows,
     }
     if USER_DICT_KEY in (meta.field_data_keys or {}):
-        from pyvista_zstd._capi import CoreReader
+        import pyvista_zstd
 
-        with CoreReader(path) as core:
-            index = core.find(zstd_frame(meta.uid, USER_DICT_KEY, 'Field'))
-            if index is not None:
-                info['user_dict'] = user_dict_lines(np.asarray(core.read_at(index)))
+        with pyvista_zstd.Reader(path) as reader:
+            values = zstd_array(reader, USER_DICT_KEY, 'Field')
+        if values is not None:
+            info['user_dict'] = user_dict_lines(values)
     return info
 
 
 def zstd_ranges(path: Path, header: dict, skip: set[tuple[str, str]] = frozenset()) -> dict:
     """Fill in a ``.pv`` header's ranges, reading each array alone, and return the header."""
-    from pyvista_zstd._capi import CoreReader
+    import pyvista_zstd
 
-    with CoreReader(path) as core:
+    with pyvista_zstd.Reader(path) as reader:
         for row in header['rows']:
             if (row['name'], row['association']) in skip:
                 continue
-            index = core.find(zstd_frame(header['uid'], row['name'], row['association']))
-            if index is None:
-                continue
             # One array at a time, so memory never holds more than the largest.
-            values = np.asarray(core.read_at(index))
+            values = zstd_array(reader, row['name'], row['association'])
+            if values is None:
+                continue
             if row['dtype'] == 'string':
                 row['range'] = text_preview(values)
             else:
