@@ -351,6 +351,21 @@ def test_zstd_container_reports_its_compression(tmp_path):
     assert rows['Uncompressed'].endswith(f'{X} ratio)')
 
 
+def test_a_version_3_container_is_described_and_drawn(tmp_path):
+    """A MultiBlock with field data, which pyvista-zstd stamps version 3, still previews."""
+    from pyvista_quicklook import _scene_export as export_mod
+
+    blocks = pv.MultiBlock({'sphere': pv.Sphere()})
+    blocks.field_data['note'] = np.array([1.0, 2.0])
+    path = tmp_path / 'blocks.pv'
+    pyvista_zstd.write(blocks, path)
+    assert pyvista_zstd.Reader(path).file_metadata.file_version == 3
+    out, info = tmp_path / 'blocks.ply', tmp_path / 'blocks.json'
+    export_mod.export(str(path), str(out), 0, str(info))
+    assert pv.read(out).n_points == pv.Sphere().n_points
+    assert dict(json.loads(info.read_text())['file'])['Format'] == 'pyvista-zstd v3'
+
+
 @pytest.mark.parametrize(
     ('save', 'expected'),
     [
