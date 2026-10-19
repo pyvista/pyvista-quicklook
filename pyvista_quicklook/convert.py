@@ -146,7 +146,7 @@ class HeaderReader:
             environment.log(config, f'Reading the header: {environment.tail(error.strip())}')
 
     def stop(self) -> None:
-        """End the read unused."""
+        """End the reader and remove its scratch file."""
         self.process.kill()
         self.process.communicate()
         self.scratch.unlink(missing_ok=True)
@@ -159,10 +159,12 @@ _reader_guard = threading.Lock()
 
 
 def keep_reader_ready(config: dict[str, Any]) -> None:
-    """Keep a header reader started ahead of the next file, so a header costs only its read."""
+    """Keep a header reader started ahead of each file, starting one now if headers are shown."""
     global _reader_wanted
     with _reader_guard:
         _reader_wanted = True
+    if not wants_info(config):
+        return
     with contextlib.suppress(environment.RenderError, OSError):
         refill_reader(environment.interpreter(config))
 

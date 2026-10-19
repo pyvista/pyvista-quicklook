@@ -164,15 +164,16 @@ _headers_guard = threading.Lock()
 def header_once(
     target: str, config: dict[str, Any], identity: tuple[str, int, int]
 ) -> dict[str, Any] | None:
-    """Return what a file's header says, read once for the requests that follow."""
+    """Return what a file's header says, read once for the requests that follow if it is read."""
     with _headers_guard:
         if identity in _headers:
             return _headers[identity]
     info = convert_mod.header(target, config)
-    with _headers_guard:
-        if len(_headers) >= 32:
-            _headers.clear()
-        _headers[identity] = info
+    if info is not None:
+        with _headers_guard:
+            if len(_headers) >= 32:
+                _headers.clear()
+            _headers[identity] = info
     return info
 
 
@@ -651,9 +652,7 @@ def serve(poll: float = 0.05) -> int:
     startup = config_mod.load()
     if startup.get('preload_on_start', True):
         preload_in_background(startup)
-    if convert_mod.wants_info(startup):
-        # A file opening on its own picture waits for its header, which is then read at once.
-        convert_mod.keep_reader_ready(startup)
+    convert_mod.keep_reader_ready(startup)
     prune_in_background()
     last_sweep = last_mirror = time.monotonic()
     while True:

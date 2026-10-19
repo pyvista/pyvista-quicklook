@@ -220,7 +220,7 @@ def test_a_reader_that_cannot_serve_is_set_aside(tmp_path, env):
     assert convert.header(source, env)['type'] == 'PolyData'
     assert other.process.returncode is not None
     assert not other.scratch.exists()
-    # A read that fails is reported as no header.
+    # A file that is not there names no type, so there is no header.
     assert convert.header(tmp_path / 'missing' / 'gone.pv', env) is None
     failing = convert.take_reader(env['python'])
     failing.process.kill()
@@ -228,6 +228,48 @@ def test_a_reader_that_cannot_serve_is_set_aside(tmp_path, env):
         failing.read('', env)
     failing.stop()
     assert not list(config.CACHE_DIR.glob('*.tmp*'))
+
+
+def test_a_reader_is_started_only_once_headers_are_shown(tmp_path, env):
+    """With the info panel hidden no reader waits, and the first header shown starts one."""
+    import pyvista_zstd
+
+    source = tmp_path / 'sphere.pv'
+    pyvista_zstd.write(pv.Sphere(), source)
+    hidden = {**env, 'info_panel': 'hidden'}
+    convert.keep_reader_ready(hidden)
+    assert convert._reader is None
+    assert convert.header(source, hidden) is None
+    assert convert._reader is None
+    assert convert.header(source, env)['type'] == 'PolyData'
+    assert convert._reader is not None
+
+
+def stand_in_reader(tmp_path, monkeypatch, body):
+    """Make header readers run ``body``, a script given the file on stdin and the output last."""
+    script = tmp_path / 'reader.py'
+    script.write_text(f'import sys, time\nsource = sys.stdin.readline().strip()\n{body}\n')
+    monkeypatch.setattr(convert, 'EXPORTER', script)
+    return convert.HeaderReader(sys.executable)
+
+
+def test_a_reader_that_takes_too_long_is_stopped(tmp_path, monkeypatch):
+    """A read past the time limit ends its reader and leaves no scratch file."""
+    reader = stand_in_reader(tmp_path, monkeypatch, 'time.sleep(30)')
+    monkeypatch.setattr(convert, 'HEADER_SECONDS', 0.2)
+    with pytest.raises(environment.RenderError, match=r'timed out after 0\.2 s'):
+        reader.read(tmp_path / 'a.pv', {})
+    assert reader.process.returncode is not None
+    assert not reader.scratch.exists()
+
+
+def test_what_a_reader_reports_beside_its_header_is_logged(tmp_path, monkeypatch):
+    """A read that succeeds with something on stderr logs it."""
+    body = "open(sys.argv[-1], 'w').write('{}')\nsys.stderr.write('fell back\\n')"
+    reader = stand_in_reader(tmp_path, monkeypatch, body)
+    reader.read(tmp_path / 'a.pv', {'log': True})
+    assert 'Reading the header: fell back' in config.LOG_PATH.read_text()
+    reader.scratch.unlink()
 
 
 def test_only_formats_with_a_header_reader_get_a_header(tmp_path, env, monkeypatch):

@@ -689,10 +689,10 @@ def main() -> int:
     if args.destination is None and args.info is None and args.header is None:
         parser.error('give a destination, --info, --header, or a combination')
     if args.source == '-':
-        # Started ahead of its file, so the file costs only its own read.
+        # Loaded before the path comes, as the read needs it.
         with contextlib.suppress(ImportError):
             import pyvista_zstd  # noqa: F401
-        args.source = sys.stdin.readline().rstrip('\n')
+        args.source = sys.stdin.read().removesuffix('\n')
         if not args.source:
             return 0
         with contextlib.suppress(OSError):
@@ -718,10 +718,14 @@ def main() -> int:
     return 0
 
 
-if __name__ == '__main__':
+def run() -> None:
+    """Run the converter and exit, at once for a reader started ahead, which its caller awaits."""
     status = main()
     if sys.argv[1:2] == ['-']:
-        # Whoever started the reader ahead waits on it, so it ends without tearing down.
         sys.stderr.flush()
         os._exit(status)
     sys.exit(status)
+
+
+if __name__ == '__main__':
+    run()
