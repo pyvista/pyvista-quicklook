@@ -1303,6 +1303,19 @@ def test_cell_types_are_the_ones_pyvista_reports():
     ]
 
 
+def test_cell_types_pyvista_cannot_report_leave_the_rest_of_the_panel():
+    """A cell type PyVista cannot name leaves out the cell types, and only them."""
+    cells = np.array([3, 0, 1, 2, 3, 0, 1, 2])
+    types = np.array([pv.CellType.TRIANGLE, 99], dtype=np.uint8)
+    grid = pv.UnstructuredGrid(cells, types, np.random.default_rng(0).random((3, 3)))
+    with pytest.raises(ValueError, match='99'):
+        _ = grid.distinct_cell_types
+    rows = facts(info_mod.describe(grid, 'x'))
+    assert 'Cell type' not in rows
+    assert 'Cell types' not in rows
+    assert rows['Points'] == '3'
+
+
 @pytest.mark.parametrize('error', [KeyError, RuntimeError], ids=['unlisted', 'listed-not-stored'])
 def test_a_pv_array_the_reader_cannot_find_is_left_without_a_range(tmp_path, monkeypatch, error):
     """An array pyvista-zstd cannot read, however it says so, gets no range or user dict."""

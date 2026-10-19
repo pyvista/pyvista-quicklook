@@ -124,9 +124,13 @@ def cell_type_name(cell_type: pv.CellType) -> str:
     return cell_type.name.title().replace('_', ' ')
 
 
-def cell_types(dataset: pv.DataSet) -> list[str]:
-    """Return the names of the distinct cell types PyVista reports, in cell type order."""
-    return [cell_type_name(t) for t in sorted(dataset.distinct_cell_types)]
+def cell_types(dataset: pv.DataSet) -> list[str] | None:
+    """Return the names of the distinct cell types PyVista reports, or None if it cannot."""
+    try:
+        reported = dataset.distinct_cell_types
+    except ValueError:
+        return None
+    return [cell_type_name(t) for t in sorted(reported)]
 
 
 def bound(value: Any, kind: str) -> str:
@@ -441,8 +445,8 @@ def dataset_facts(dataset: pv.DataSet) -> list[list[Any]]:
     if isinstance(dataset, pv.ImageData):
         facts.append(['Spacing', triple(dataset.spacing)])
         facts.append(['Direction', direction(dataset.direction_matrix)])
-    types = cell_types(dataset)
-    facts.append(['Cell type' if len(types) == 1 else 'Cell types', types])
+    if (types := cell_types(dataset)) is not None:
+        facts.append(['Cell type' if len(types) == 1 else 'Cell types', types])
     facts.append(['Bounds', bounds(dataset.bounds)])
     return facts
 
