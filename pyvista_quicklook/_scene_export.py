@@ -7,6 +7,7 @@ imports only PyVista and its own dependencies.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib
 import itertools
 import json
@@ -678,7 +679,7 @@ def summary(error: BaseException) -> str:
 def main() -> int:
     """Run the converter from the command line."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('source')
+    parser.add_argument('source', help='the file, or - to read its path from stdin when it comes')
     parser.add_argument('destination', nargs='?', help='the scene; leave out to only describe')
     parser.add_argument('--max-points', type=int, default=0)
     parser.add_argument('--info')
@@ -687,6 +688,15 @@ def main() -> int:
     args = parser.parse_args()
     if args.destination is None and args.info is None and args.header is None:
         parser.error('give a destination, --info, --header, or a combination')
+    if args.source == '-':
+        # Loaded before the path comes, as the read needs it.
+        with contextlib.suppress(ImportError):
+            import pyvista_zstd  # noqa: F401
+        args.source = sys.stdin.read().removesuffix('\n')
+        if not args.source:
+            return 0
+        with contextlib.suppress(OSError):
+            os.chdir(Path(args.source).parent)
     try:
         apply_theme(args.theme)
         if args.header is not None:
@@ -708,5 +718,14 @@ def main() -> int:
     return 0
 
 
+def run() -> None:
+    """Run the converter and exit, at once for a reader started ahead, which its caller awaits."""
+    status = main()
+    if sys.argv[1:2] == ['-']:
+        sys.stderr.flush()
+        os._exit(status)
+    sys.exit(status)
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    run()

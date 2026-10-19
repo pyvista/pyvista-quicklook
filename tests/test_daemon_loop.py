@@ -281,11 +281,12 @@ def test_serve_leaves_a_request_another_service_took(tmp_path, monkeypatch):
 def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
     """The loop prepares its folder, preloads, prunes, answers requests, mirrors, and sweeps."""
     drop = tmp_path / 'container'
-    handled, swept, preloaded, pruning = [], [], [], []
+    handled, swept, preloaded, pruning, readers = [], [], [], [], []
     monkeypatch.setattr(daemon, 'drop_dir', lambda: drop)
     monkeypatch.setattr(daemon.cache, 'discard_other_versions', lambda version: 0)
     monkeypatch.setattr(daemon, 'prune_in_background', lambda: pruning.append(True))
     monkeypatch.setattr(daemon.config_mod, 'load', lambda: {'preload_on_start': True})
+    monkeypatch.setattr(daemon.convert_mod, 'keep_reader_ready', readers.append)
     monkeypatch.setattr(daemon.config_mod, 'mirror', lambda: preloaded.append('mirrored'))
     monkeypatch.setattr(daemon, 'preload_in_background', preloaded.append)
     monkeypatch.setattr(
@@ -319,6 +320,7 @@ def test_serve_answers_requests_and_sweeps(tmp_path, monkeypatch):
     # Settings are mirrored once a second has passed, not on every poll.
     assert preloaded == [{'preload_on_start': True}, 'mirrored']
     assert pruning == [True]
+    assert readers == [{'preload_on_start': True}]
 
 
 @pytest.fixture

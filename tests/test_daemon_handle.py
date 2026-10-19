@@ -287,6 +287,47 @@ def test_a_description_alone_converts_nothing(
     assert all(read is False for read in reads)
 
 
+def test_a_description_from_the_header_is_read_once(tmp_path, monkeypatch):
+    """A file described again from its header is answered without reading the header again."""
+    headers = []
+    settings(monkeypatch, {})
+    reachable(monkeypatch, True)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        daemon.convert_mod,
+        'header',
+        lambda source, config: headers.append(source) or {'type': 'H'},
+    )
+    for size in (2, 2, 3):
+        reply = request(tmp_path, path='/data/big.pv', describe=True, mtime=1, size=size)
+        assert reply == {'ok': True, 'info': {'type': 'H'}}
+    assert headers == ['/data/big.pv', '/data/big.pv']
+    # Without the file's size and date there is nothing to remember it by.
+    for _ in range(2):
+        assert request(tmp_path, path='/data/big.pv', describe=True)['info'] == {'type': 'H'}
+    assert len(headers) == 4
+
+
+def test_a_header_that_could_not_be_read_is_read_again(tmp_path, monkeypatch):
+    """A header read that gave nothing is tried again on the next request."""
+    answers = iter([None, {'type': 'H'}])
+    settings(monkeypatch, {})
+    reachable(monkeypatch, True)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: next(answers))
+    for expected in (None, {'type': 'H'}, {'type': 'H'}):
+        reply = request(tmp_path, path='/data/big.pv', describe=True, mtime=1, size=2)
+        assert reply == {'ok': True, 'info': expected}
+
+
+def test_the_remembered_headers_are_forgotten_once_there_are_many(monkeypatch):
+    """Past 32 remembered headers, they are forgotten before the next is kept."""
+    monkeypatch.setattr(daemon.convert_mod, 'header', lambda source, config: {'type': source})
+    for size in range(33):
+        daemon.header_once('/data/a.pv', {}, ('/data/a.pv', 1, size))
+    assert list(daemon._headers) == [('/data/a.pv', 1, 32)]
+
+
 @pytest.mark.parametrize(
     ('stored', 'payload', 'interactive'),
     [
