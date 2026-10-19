@@ -7,6 +7,7 @@ imports only PyVista and its own dependencies.
 from __future__ import annotations
 
 import argparse
+import importlib
 import itertools
 import json
 import math
@@ -32,6 +33,16 @@ else:
 STYLE_COMMENT = 'pvql style'
 # The thinnest line drawn, in pixels, whatever the theme's line width.
 MIN_LINE_WIDTH = 2.0
+# Surfaces above this many points are thinned by binning rather than decimation.
+BIN_POINTS = 4_000_000
+# Bins in the first, coarse grid, which measures how densely a surface fills its box.
+PROBE_BINS = 2**17
+# The most bins in any grid: VTK holds about 4 bytes per bin, so this is about 1 GiB.
+MAX_BINS = 2**28
+# Grids tried at most while closing in on the point budget.
+MAX_BIN_PASSES = 8
+# The share of the budget a binned surface aims for, short of it so it rarely lands over.
+BIN_TARGET = 0.9
 # Readers tried in turn for extensions two formats share; None is PyVista's own choice.
 ATTEMPTS = {'.inp': (None, 'abaqus'), '.msh': (None, 'ansys')}
 
@@ -517,6 +528,70 @@ def projected_points(surface: pv.PolyData) -> int:
     return 3 * surface.n_faces if has_cell_scalars(surface) else surface.n_points
 
 
+def vtk_class(module: str, name: str) -> Any:
+    """Return a VTK class that ``pyvista._vtk`` does not map, from the VTK PyVista uses."""
+    backend = pv.vtk_backend()
+    root = 'vtkmodules' if backend == 'vtk' else backend
+    return getattr(importlib.import_module(f'{root}.{module}'), name)
+
+
+def binned(surface: pv.PolyData, divisions: np.ndarray) -> pv.PolyData:
+    """Return a surface binned onto a grid with the given number of divisions per axis."""
+    algorithm = vtk_class('vtkFiltersCore', 'vtkBinnedDecimation')()
+    algorithm.SetInputData(surface)
+    # One input point is kept per bin, with its point data, so the scene keeps its colours.
+    algorithm.SetPointGenerationModeToBinPoints()
+    algorithm.ProduceCellDataOn()
+    algorithm.AutoAdjustNumberOfDivisionsOff()
+    algorithm.SetNumberOfDivisions(*divisions.astype(int).tolist())
+    algorithm.Update()
+    return pv.wrap(algorithm.GetOutput())
+
+
+def bin_divisions(sizes: np.ndarray, edge: float) -> np.ndarray:
+    """Return the divisions per axis of a grid of ``edge`` wide bins, within the bin limit."""
+    divisions = np.maximum(1, np.ceil(sizes / edge))
+    spanned = sizes > 0
+    excess = np.prod(divisions) / MAX_BINS
+    if excess > 1:
+        divisions[spanned] = np.maximum(
+            1, np.floor(divisions[spanned] / excess ** (1 / spanned.sum()))
+        )
+    return divisions
+
+
+def bin_to_budget(surface: pv.PolyData, max_points: int) -> pv.PolyData:
+    """Return a surface thinned by binning its points to at most ``max_points`` scene points."""
+    sizes = np.ptp(np.reshape(surface.bounds, (3, 2)), axis=1)
+    spanned = sizes[sizes > 0]
+    if spanned.size == 0:
+        return surface
+    # Bins as wide on every axis, so a thin part still has bins across it.
+    edge = float((np.prod(spanned) / PROBE_BINS) ** (1 / spanned.size))
+    target = BIN_TARGET * max_points
+    best, last = None, None
+    for _ in range(MAX_BIN_PASSES):
+        divisions = bin_divisions(sizes, edge)
+        out = binned(surface, divisions)
+        got = projected_points(out)
+        if got <= max_points and (best is None or got > projected_points(best)):
+            best = out
+        if target <= got <= max_points or (
+            got <= max_points and np.prod(divisions) * 2 > MAX_BINS
+        ):
+            break
+        if got == 0:
+            edge /= 4
+            continue
+        # A surface's points grow with the square of the bins per side; a volume-like one faster.
+        exponent = 2.0
+        if last is not None and last[1] > 0 and last[0] != edge:
+            exponent = float(np.clip(math.log(got / last[1]) / math.log(last[0] / edge), 1.0, 3.0))
+        last = (edge, got)
+        edge *= (got / target) ** (1 / exponent)
+    return best if best is not None else out
+
+
 def write_info(
     dataset: object, source: str, destination: str, header: dict[str, Any] | None = None
 ) -> None:
@@ -551,9 +626,15 @@ def export(source: str, destination: str, max_points: int, info: str | None = No
             # The surface filter leaves a volume's faces unjoined at their edges.
             surface = surface.clean()
         projected = projected_points(surface)
-        if max_points and projected > max_points:
+        if max_points and projected > max_points and surface.n_points > BIN_POINTS:
+            surface = bin_to_budget(surface, max_points)
+        elif max_points and projected > max_points:
             ratio = 1.0 - (max_points / projected)
             surface = surface.decimate_pro(ratio, preserve_topology=True)
+        if surface.n_points == 0:
+            raise empty(source)
+        # Thinning keeps the arrays but not PyVista's record of which one colours the scene.
+        surface.set_active_scalars(wanted if wanted in surface.array_names else None)
     elif primitive == 'points' and max_points and surface.n_points > max_points:
         kept = np.arange(0, surface.n_points, surface.n_points // max_points + 1)
         surface = keep_points(surface, kept)

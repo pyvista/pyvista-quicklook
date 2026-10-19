@@ -315,7 +315,9 @@ and whenever it is reinstalled, so the first preview does not wait for them. `pv
 preload` does the same on demand.
 
 Surfaces are sent whole up to `max_scene_points`. Above that, images and volumes are
-thinned on their lattice and other surfaces are decimated. The preview then has fewer
+thinned on their lattice and other surfaces are decimated, or binned onto a grid above
+4 million points. The grid uses at most about 1 GB of memory, so a compact surface
+binned that way can end below a large `max_scene_points`. The preview then has fewer
 points and cells than the file, and its shape can differ in fine detail.
 `pvql config set max_scene_points 0` sends every surface whole, at the cost of slower
 previews of large files.
