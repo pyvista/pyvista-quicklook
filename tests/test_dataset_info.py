@@ -690,12 +690,55 @@ def test_polydata_headers_count_every_kind_of_cell(tmp_path):
     assert dict(head['facts'])['Cells'] == dict(full['facts'])['Cells']
 
 
+class WithBounds:
+    """Dataset metadata as a pyvista-zstd that stores bounds reads it."""
+
+    def __init__(self, meta, bounds):
+        """Wrap ``meta`` with ``bounds``."""
+        self._meta, self.bounds = meta, bounds
+
+    def __getattr__(self, name):
+        """Return what the wrapped metadata holds."""
+        return getattr(self._meta, name)
+
+
+def test_the_bounds_a_pv_file_reports_are_shown_from_its_header(tmp_path, monkeypatch):
+    """A .pv file's own bounds read as the full description shows them, and none are made up."""
+    mesh = pv.Sphere(center=(1, 2, 3))
+    path = tmp_path / 'sphere.pv'
+    pyvista_zstd.write(mesh, path)
+    full = info_mod.describe(pv.read(path), str(path))
+    read = info_mod.zstd_metadata
+    monkeypatch.setattr(info_mod, 'zstd_metadata', lambda p: WithBounds(read(p), mesh.bounds))
+    head = info_mod.header_info(str(path))
+    assert dict(head['facts'])['Bounds'] == dict(full['facts'])['Bounds']
+    monkeypatch.setattr(info_mod, 'zstd_metadata', lambda p: WithBounds(read(p), None))
+    assert 'Bounds' not in dict(info_mod.header_info(str(path))['facts'])
+
+
+def test_a_pv_composite_header_shows_no_bounds_of_its_own(tmp_path):
+    """A .pv composite reports no bounds for itself, so its header shows none."""
+    path = tmp_path / 'blocks.pv'
+    pyvista_zstd.write(pv.MultiBlock({'a': pv.Sphere(), 'b': pv.Cube()}), path)
+    assert 'Bounds' not in dict(info_mod.header_info(str(path))['facts'])
+
+
+@pytest.mark.skipif(
+    'bounds' not in pyvista_zstd.DataSetMetadata.__dataclass_fields__,
+    reason='this pyvista-zstd stores no bounds',
+)
+def test_bounds_written_by_pyvista_zstd_are_shown(tmp_path):
+    """Bounds pyvista-zstd stores read as the full description shows them."""
+    head, full = header_and_full(pv.Sphere(center=(1, 2, 3)), tmp_path, 'sphere.pv')
+    assert dict(head['facts'])['Bounds'] == dict(full['facts'])['Bounds']
+
+
 def test_files_without_a_header_reader_get_only_their_file_facts(tmp_path):
     """Other formats, composites, and unreadable files give only the file's own facts."""
     path = tmp_path / 'mesh.vtk'
     pv.Sphere().save(path)
     info = info_mod.header_info(str(path))
-    assert info == {'type': '', 'file': info_mod.file_facts(path)}
+    assert info == {'type': '', 'from_header': True, 'file': info_mod.file_facts(path)}
     blocks = tmp_path / 'blocks.vtm'
     pv.MultiBlock([pv.Sphere()]).save(blocks)
     assert info_mod.header_info(str(blocks))['type'] == ''

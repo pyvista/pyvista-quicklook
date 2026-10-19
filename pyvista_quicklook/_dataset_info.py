@@ -776,6 +776,8 @@ def zstd_header(path: Path) -> dict:
         }
     else:
         return {}
+    if getattr(meta, 'bounds', None) is not None:
+        info['facts'].append(['Bounds', bounds(meta)])
     if USER_DICT_KEY in (meta.field_data_keys or {}):
         import pyvista_zstd
 
@@ -1005,7 +1007,7 @@ def header_info(source: str) -> dict[str, Any]:
         except Exception as error:  # noqa: BLE001
             # Reported for the service's log; the panel then shows only the file's facts.
             sys.stderr.write(f'header skipped: {type(error).__name__}: {error}\n')
-    info: dict[str, Any] = {'type': header.get('type', '')}
+    info: dict[str, Any] = {'type': header.get('type', ''), 'from_header': True}
     if header:
         rows = header['rows']
         info['facts'] = header['facts']
