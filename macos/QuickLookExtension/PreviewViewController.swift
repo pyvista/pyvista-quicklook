@@ -472,6 +472,7 @@ func overlaid(_ base: NSView, corner: NSView) -> NSView {
 
 /// A picture that calls `onTouch` the first time a mouse or trackpad gesture lands on it.
 final class TouchablePicture: NSImageView {
+    /// Called once, by the first press, scroll or gesture on the picture.
     var onTouch: (() -> Void)?
 
     /// Calls `onTouch` once.

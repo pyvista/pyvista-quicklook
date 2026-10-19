@@ -252,11 +252,11 @@ since it would otherwise offer to open every gzip archive and folder.
 
 ## Fast previews with pyvista-zstd
 
-If working with very large files, consider saving them with
-[pyvista-zstd](https://github.com/pyvista/pyvista-zstd) with `thumbnail=True` to
-pre-render the preview. `pyvista-quicklook` reads the dataset, file, and thumbnail
-metadata almost instantly, so previews of files in this format can be generated very
-quickly without loading arrays or rendering the mesh.
+A very large file previews fastest when saved with
+[pyvista-zstd](https://github.com/pyvista/pyvista-zstd) with `thumbnail=True`, which
+stores a pre-rendered picture. `pyvista-quicklook` reads the thumbnail and the file's
+metadata almost instantly, so a file saved this way opens on its picture without
+loading the mesh or rendering it.
 
 ```python
 import pyvista_zstd
@@ -316,8 +316,9 @@ preload` does the same on demand.
 
 Surfaces are sent whole up to `max_scene_points`. Above that, images and volumes are
 thinned on their lattice and other surfaces are decimated. The preview then has fewer
-points and cells than the file, and its shape can differ in fine detail. `pvql config set max_scene_points 0` sends every
-surface whole, at the cost of slower previews of large files.
+points and cells than the file, and its shape can differ in fine detail.
+`pvql config set max_scene_points 0` sends every surface whole, at the cost of slower
+previews of large files.
 
 ### Large files
 

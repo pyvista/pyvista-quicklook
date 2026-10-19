@@ -749,7 +749,8 @@ def zstd_array(reader: Any, name: str, association: str) -> np.ndarray | None:
     """Return one array of a ``.pv`` dataset, or None when the file does not hold it."""
     try:
         return np.asarray(reader.read_array(name, association=association.lower()))
-    except KeyError:
+    except KeyError, RuntimeError:
+        # RuntimeError: a damaged file lists the array but does not store it.
         return None
 
 
@@ -851,7 +852,7 @@ def zstd_composite_header(meta: Any) -> dict[str, Any]:
         entries.append(
             BlockEntry(
                 name,
-                child.ds_type if child is not None else 'None',
+                child.ds_type if child is not None else block_kind(None),
                 child.n_points if child is not None else None,
                 child.n_cells if child is not None else None,
                 TIMES.join(str(d) for d in dims) if dims is not None else '',

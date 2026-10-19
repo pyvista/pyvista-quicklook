@@ -653,6 +653,28 @@ def test_a_pv_composite_header_agrees_with_reading_the_file(tmp_path):
     assert head['user_dict'] == full['user_dict'] == ['"run": 3']
 
 
+def test_a_pv_composite_header_reads_no_array_values(tmp_path, monkeypatch):
+    """A ``.pv`` composite is described from its metadata and its user dict alone."""
+    path = tmp_path / 'blocks.pv'
+    pyvista_zstd.write(nested_blocks(), path)
+    user_dict = pyvista_zstd.Reader.read_array
+
+    def refuse(*_args, **_kwargs):
+        message = 'array values were read'
+        raise AssertionError(message)
+
+    def only_the_user_dict(self, name, *, association):
+        assert name == info_mod.USER_DICT_KEY, name
+        return user_dict(self, name, association=association)
+
+    monkeypatch.setattr(pyvista_zstd.Reader, 'read', refuse)
+    monkeypatch.setattr(pyvista_zstd.Reader, 'read_array', only_the_user_dict)
+    monkeypatch.setattr(pyvista_zstd._capi.CoreReader, 'read_arrays', refuse)
+    head = info_mod.header_info(str(path))
+    assert head['block_count'] == 4
+    assert head['user_dict'] == ['"run": 3']
+
+
 def test_a_pv_composite_is_read_whole_rather_than_selectively(tmp_path):
     """A ``.pv`` composite is read whole, as the selective read takes a single dataset."""
     path = tmp_path / 'blocks.pv'
@@ -914,15 +936,16 @@ def test_cell_types_of_something_without_cells_are_none():
     assert info_mod.cell_types(pv.PolyData()) is None
 
 
-def test_a_pv_array_the_reader_cannot_find_is_left_without_a_range(tmp_path, monkeypatch):
-    """An array pyvista-zstd reports as missing gets no range or user dict."""
+@pytest.mark.parametrize('error', [KeyError, RuntimeError], ids=['unlisted', 'listed-not-stored'])
+def test_a_pv_array_the_reader_cannot_find_is_left_without_a_range(tmp_path, monkeypatch, error):
+    """An array pyvista-zstd cannot read, however it says so, gets no range or user dict."""
     mesh = mixed_arrays()
     mesh.field_data[info_mod.USER_DICT_KEY] = np.array([json.dumps({'a': 1})])
     path = tmp_path / 'grid.pv'
     pyvista_zstd.write(mesh, path)
 
     def missing(self, name, *, association):
-        raise KeyError(name)
+        raise error(name)
 
     monkeypatch.setattr(pyvista_zstd.Reader, 'read_array', missing)
     header = info_mod.zstd_ranges(path, info_mod.zstd_header(path))
