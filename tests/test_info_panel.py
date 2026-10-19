@@ -192,7 +192,15 @@ def test_every_block_type_line_is_shown(panel):
     """Each leaf block type sits on its own line, alphabetically, None included."""
     shown = texts(panel(big_multiblock(), 'below'))
     start = shown.index('Block types') + 1
-    assert shown[start : start + 3] == ['1 ImageData', '1 None', '60 PolyData']
+    assert shown[start : start + 3] == ['ImageData', 'None', 'PolyData']
+
+
+def test_a_direction_matrix_is_shown_a_row_per_line(panel):
+    """An image's direction matrix is shown as three lines of three numbers."""
+    image = pv.ImageData(dimensions=(3, 3, 3), direction_matrix=np.diag([1.0, -1.0, -1.0]))
+    shown = texts(panel(image, 'side', source='image.vti'))
+    start = shown.index('Direction') + 1
+    assert shown[start : start + 3] == ['1.0, 0.0, 0.0', '0.0, -1.0, 0.0', '0.0, 0.0, -1.0']
 
 
 def test_bounds_have_no_comma_or_brackets(panel):
