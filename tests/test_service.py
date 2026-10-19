@@ -189,6 +189,47 @@ def test_header_is_read_by_the_exporter_without_the_values(tmp_path, env):
     assert not list(config.CACHE_DIR.glob('*.tmp*'))
 
 
+def test_a_reader_kept_ready_reads_the_next_header(tmp_path, env, monkeypatch):
+    """A header goes to the reader started ahead, and the next one is started behind it."""
+    import pyvista_zstd
+
+    source = tmp_path / 'sphere.pv'
+    pyvista_zstd.write(pv.Sphere(), source)
+    expected = convert.header(source, env)
+    convert.keep_reader_ready(env)
+    waiting = convert._reader
+    assert waiting is not None
+    monkeypatch.setattr(environment, 'run', lambda *args, **kwargs: pytest.fail('ran'))
+    assert convert.header(source, env) == expected
+    assert waiting.process.returncode == 0
+    assert convert._reader is not None
+    assert convert._reader is not waiting
+    assert not list(config.CACHE_DIR.glob('*.tmp*'))
+
+
+def test_a_reader_that_cannot_serve_is_set_aside(tmp_path, env):
+    """A reader for another interpreter, or whose read fails, gives no header and leaves none."""
+    import pyvista_zstd
+
+    source = tmp_path / 'sphere.pv'
+    pyvista_zstd.write(pv.Sphere(), source)
+    convert.keep_reader_ready(env)
+    other = convert._reader
+    # A reader for another interpreter is stopped, and the file is read without it.
+    other.python = 'elsewhere'
+    assert convert.header(source, env)['type'] == 'PolyData'
+    assert other.process.returncode is not None
+    assert not other.scratch.exists()
+    # A read that fails is reported as no header.
+    assert convert.header(tmp_path / 'missing' / 'gone.pv', env) is None
+    failing = convert.take_reader(env['python'])
+    failing.process.kill()
+    with pytest.raises(environment.RenderError, match='Reading the header failed'):
+        failing.read('', env)
+    failing.stop()
+    assert not list(config.CACHE_DIR.glob('*.tmp*'))
+
+
 def test_only_formats_with_a_header_reader_get_a_header(tmp_path, env, monkeypatch):
     """A file with no header to read starts no interpreter, and an unreadable one gives nothing."""
     stl = tmp_path / 'part.stl'

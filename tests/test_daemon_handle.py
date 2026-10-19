@@ -287,6 +287,23 @@ def test_a_description_alone_converts_nothing(
     assert all(read is False for read in reads)
 
 
+def test_a_description_from_the_header_is_read_once(tmp_path, monkeypatch):
+    """A file described again from its header is answered without reading the header again."""
+    headers = []
+    settings(monkeypatch, {})
+    reachable(monkeypatch, True)
+    monkeypatch.setattr(daemon.convert_mod, 'describe', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        daemon.convert_mod,
+        'header',
+        lambda source, config: headers.append(source) or {'type': 'H'},
+    )
+    for size in (2, 2, 3):
+        reply = request(tmp_path, path='/data/big.pv', describe=True, mtime=1, size=size)
+        assert reply == {'ok': True, 'info': {'type': 'H'}}
+    assert headers == ['/data/big.pv', '/data/big.pv']
+
+
 @pytest.mark.parametrize(
     ('stored', 'payload', 'interactive'),
     [

@@ -13,6 +13,7 @@ import pyvista as pv
 
 from pyvista_quicklook import cli
 from pyvista_quicklook import config
+from pyvista_quicklook import convert
 from pyvista_quicklook import daemon
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -40,6 +41,18 @@ def private_home(tmp_path_factory):
         patch.setattr(cli, 'APP_DIRS', (home / 'Applications',))
         patch.setattr(cli, 'SERVICE_LOG', library / 'Logs' / 'pvqld.log')
         yield home
+
+
+@pytest.fixture(autouse=True)
+def no_waiting_reader():
+    """Start every test with no reader kept ready or header remembered, and stop any left."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(convert, '_reader', None)
+        patch.setattr(convert, '_reader_wanted', False)
+        patch.setattr(daemon, '_headers', {})
+        yield
+        if convert._reader is not None:
+            convert._reader.stop()
 
 
 @pytest.fixture

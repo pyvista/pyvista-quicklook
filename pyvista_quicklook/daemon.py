@@ -403,7 +403,9 @@ def description_only(
     described = convert_mod.describe(source, config, identity, read=False)
     if described is not None or not folder_is_reachable(source):
         return described
-    return convert_mod.header(source, config)
+    if identity is None:
+        return convert_mod.header(source, config)
+    return header_once(source, config, identity)
 
 
 def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -> None:
@@ -649,6 +651,9 @@ def serve(poll: float = 0.05) -> int:
     startup = config_mod.load()
     if startup.get('preload_on_start', True):
         preload_in_background(startup)
+    if convert_mod.wants_info(startup):
+        # A file opening on its own picture waits for its header, which is then read at once.
+        convert_mod.keep_reader_ready(startup)
     prune_in_background()
     last_sweep = last_mirror = time.monotonic()
     while True:
