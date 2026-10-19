@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -862,6 +864,44 @@ def test_the_header_mode_reads_no_values(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(export_mod.sys, 'argv', ['x', str(path), '--header', str(out)])
     assert export_mod.main() == 0
     assert json.loads(out.read_text())['type'] == 'ImageData'
+
+
+def test_a_reader_started_ahead_reads_its_file_from_stdin(tmp_path, monkeypatch):
+    """With ``-`` the file's path comes on stdin, whole, and none means nothing to read."""
+    path = tmp_path / 'odd\nname.pv'
+    pyvista_zstd.write(mixed_arrays(), path)
+    out = tmp_path / 'head.json'
+    monkeypatch.setattr(export_mod.sys, 'argv', ['x', '-', '--header', str(out)])
+    monkeypatch.setattr(export_mod.sys, 'stdin', io.StringIO(f'{path}\n'))
+    monkeypatch.chdir(tmp_path.parent)
+    assert export_mod.main() == 0
+    assert json.loads(out.read_text())['type'] == 'ImageData'
+    assert Path.cwd() == tmp_path
+    out.unlink()
+    monkeypatch.setattr(export_mod.sys, 'stdin', io.StringIO(''))
+    assert export_mod.main() == 0
+    assert not out.exists()
+
+
+@pytest.mark.parametrize(('argv', 'exit_name'), [(['x', '-'], '_exit'), (['x', 'a.vtp'], 'exit')])
+def test_only_a_reader_started_ahead_skips_the_teardown(monkeypatch, argv, exit_name):
+    """A reader started ahead ends at once with its status; any other run exits as usual."""
+    exits = []
+
+    def exiting(name):
+        def leave(status):
+            exits.append((name, status))
+            raise SystemExit(status)
+
+        return leave
+
+    monkeypatch.setattr(export_mod, 'main', lambda: 3)
+    monkeypatch.setattr(export_mod.sys, 'argv', argv)
+    monkeypatch.setattr(export_mod.os, '_exit', exiting('_exit'))
+    monkeypatch.setattr(export_mod.sys, 'exit', exiting('exit'))
+    with pytest.raises(SystemExit):
+        export_mod.run()
+    assert exits == [(exit_name, 3)]
 
 
 def test_composites_and_unknown_formats_are_read_whole(tmp_path):
