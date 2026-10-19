@@ -305,7 +305,8 @@ preload` does the same on demand.
 
 Surfaces are sent whole up to `max_scene_points`. Above that, images and volumes are
 thinned on their lattice and other surfaces are decimated, or binned onto a grid above
-4 million points.
+4 million points. The grid uses at most about 1 GB of memory, so a compact surface
+binned that way can end below a large `max_scene_points`.
 
 ### Large files
 

@@ -767,23 +767,92 @@ def test_a_surface_over_the_point_budget_is_decimated(tmp_path):
     assert out.n_faces > 0
 
 
+def binnable(kind):
+    """Return a sphere, a 60:1 tube along z, or a flat sheet standing in the x-z plane."""
+    if kind == 'sphere':
+        return pv.Sphere(theta_resolution=200, phi_resolution=200)
+    if kind == 'tube':
+        tube = pv.Cylinder(height=60, radius=0.5, resolution=40, capping=False).triangulate()
+        return tube.subdivide(4)
+    return pv.Plane(direction=(0, 1, 0), i_resolution=200, j_resolution=200).triangulate()
+
+
+def colour_levels(scene):
+    """Return the level in the colour ramp of each point's colour in a scene read back."""
+    table = export_mod.ramp().astype(float)
+    distance = ((scene['RGB'][:, None].astype(float) - table[None]) ** 2).sum(axis=-1)
+    return np.argmin(distance, axis=1), len(table)
+
+
+@pytest.mark.parametrize('kind', ['sphere', 'tube', 'plane'])
 @pytest.mark.parametrize('association', ['point', 'cell'])
-def test_a_very_large_surface_is_clustered_keeping_its_colours(tmp_path, monkeypatch, association):
-    """A surface above the clustering size is thinned near the budget, still coloured."""
-    monkeypatch.setattr(export_mod, 'CLUSTER_POINTS', 1000)
+def test_a_very_large_surface_is_binned_near_the_budget_keeping_its_colours(
+    tmp_path, monkeypatch, kind, association
+):
+    """A surface above the binning size lands near the budget, each point in its own colour."""
+    monkeypatch.setattr(export_mod, 'BIN_POINTS', 1000)
 
     def decimated(*args, **kwargs):
-        """Fail, as a surface above the clustering size is never decimated."""
-        pytest.fail('a surface above the clustering size was decimated')
+        """Fail, as a surface above the binning size is never decimated."""
+        pytest.fail('a surface above the binning size was decimated')
 
     monkeypatch.setattr(pv.PolyData, 'decimate_pro', decimated)
-    full = pv.Sphere(theta_resolution=200, phi_resolution=200)
-    values = full.points[:, 2] if association == 'point' else full.cell_centers().points[:, 2]
-    getattr(full, f'{association}_data')['height'] = values
-    out = written(full, tmp_path, max_points=5000)
-    assert 1000 < out.n_points < 7000 < full.n_points
+    full = binnable(kind)
+    budget = 5000
+    centres = full.points if association == 'point' else full.cell_centers().points
+    getattr(full, f'{association}_data')['height'] = centres[:, 2]
+    out = written(full, tmp_path, max_points=budget)
+    assert 0.5 * budget <= out.n_points <= budget
     assert out.n_faces > 0
-    assert coloured(out)
+    levels, size = colour_levels(out)
+    z = out.points[:, 2]
+    off = np.abs(levels - (z - z.min()) / np.ptp(z) * (size - 1))
+    if association == 'point':
+        # A bin keeps one of its own points, with that point's value.
+        assert off.max() <= 2
+    else:
+        # A face keeps the value of an input face it covers, at most a bin away.
+        assert np.percentile(off, 99) <= 0.1 * size
+
+
+def test_a_volume_like_surface_is_binned_under_the_budget(monkeypatch):
+    """Nested shells, whose points grow faster than a sheet's, still end within the budget."""
+    shells = pv.merge(
+        [
+            pv.Sphere(radius=r, theta_resolution=60, phi_resolution=60)
+            for r in np.linspace(1, 3, 30)
+        ]
+    )
+    out = export_mod.bin_to_budget(shells, 20_000)
+    assert 0.5 * 20_000 <= export_mod.projected_points(out) <= 20_000
+
+
+def test_a_binning_grid_stays_within_the_bin_limit():
+    """However fine the bins asked for, the grid holds no more than the limit allows."""
+    for sizes in ([1.0, 1.0, 1.0], [500.0, 1.0, 1.0], [1.0, 1.0, 0.0]):
+        divisions = export_mod.bin_divisions(np.array(sizes), 1e-6)
+        assert np.prod(divisions) <= export_mod.MAX_BINS
+        assert (divisions >= 1).all()
+        assert divisions[np.array(sizes) == 0].tolist() in ([], [1.0])
+
+
+def test_a_surface_without_extent_or_area_is_not_binned_into_something():
+    """Points in one place are left alone; faces along one line bin to nothing, not an error."""
+    stacked = pv.PolyData(np.zeros((3, 3)), faces=[3, 0, 1, 2])
+    assert export_mod.bin_to_budget(stacked, 1) is stacked
+    line = pv.PolyData(
+        np.c_[np.arange(30.0), np.zeros(30), np.zeros(30)],
+        faces=np.c_[np.full(28, 3), np.arange(28), np.arange(1, 29), np.arange(2, 30)].ravel(),
+    )
+    assert export_mod.bin_to_budget(line, 5).n_faces == 0
+
+
+def test_a_surface_with_no_area_left_is_empty(tmp_path, monkeypatch):
+    """A surface whose faces all collapse when thinned is reported as empty, not written."""
+    monkeypatch.setattr(export_mod, 'BIN_POINTS', 0)
+    monkeypatch.setattr(export_mod, 'bin_to_budget', lambda surface, max_points: pv.PolyData())
+    with pytest.raises(ValueError, match='no surface to show'):
+        written(pv.Sphere(), tmp_path, max_points=10)
 
 
 def test_a_scene_the_writer_cannot_write_is_an_error(tmp_path, monkeypatch):
