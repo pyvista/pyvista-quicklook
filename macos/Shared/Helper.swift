@@ -400,7 +400,7 @@ enum Helper {
         if let copy {
             body["copy"] = copy
         }
-        // Sent when a tab chose the view; otherwise the settings choose.
+        // Sent when the reader chose the view; otherwise the settings choose.
         if let scene {
             body["scene"] = scene
         }
