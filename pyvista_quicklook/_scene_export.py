@@ -7,6 +7,7 @@ imports only PyVista and its own dependencies.
 from __future__ import annotations
 
 import argparse
+import importlib
 import itertools
 import json
 import math
@@ -32,6 +33,12 @@ else:
 STYLE_COMMENT = 'pvql style'
 # The thinnest line drawn, in pixels, whatever the theme's line width.
 MIN_LINE_WIDTH = 2.0
+# Surfaces above this many points are thinned by binning rather than decimation.
+CLUSTER_POINTS = 4_000_000
+# Divisions along the longest side of the coarse binning that measures a surface's density.
+PROBE_DIVISIONS = 50
+# The most divisions along any side of the binning grid.
+MAX_DIVISIONS = 1024
 # Readers tried in turn for extensions two formats share; None is PyVista's own choice.
 ATTEMPTS = {'.inp': (None, 'abaqus'), '.msh': (None, 'ansys')}
 
@@ -517,6 +524,37 @@ def projected_points(surface: pv.PolyData) -> int:
     return 3 * surface.n_faces if has_cell_scalars(surface) else surface.n_points
 
 
+def vtk_class(module: str, name: str) -> Any:
+    """Return a VTK class that ``pyvista._vtk`` does not map, from the VTK PyVista uses."""
+    backend = pv.vtk_backend()
+    root = 'vtkmodules' if backend == 'vtk' else backend
+    return getattr(importlib.import_module(f'{root}.{module}'), name)
+
+
+def clustered(surface: pv.PolyData, divisions: float) -> pv.PolyData:
+    """Return a surface binned onto a grid of ``divisions`` cells along its longest side."""
+    algorithm = vtk_class('vtkFiltersCore', 'vtkBinnedDecimation')()
+    algorithm.SetInputData(surface)
+    # One input point is kept per bin, with its point data, so the scene keeps its colours.
+    algorithm.SetPointGenerationModeToBinPoints()
+    algorithm.ProduceCellDataOn()
+    algorithm.AutoAdjustNumberOfDivisionsOff()
+    sizes = np.ptp(np.reshape(surface.bounds, (3, 2)), axis=1)
+    longest = min(divisions, MAX_DIVISIONS)
+    per_axis = np.maximum(1, np.round(longest * sizes / max(sizes.max(), 1e-300)))
+    algorithm.SetNumberOfDivisions(*per_axis.astype(int).tolist())
+    algorithm.Update()
+    return pv.wrap(algorithm.GetOutput())
+
+
+def cluster(surface: pv.PolyData, max_points: int) -> pv.PolyData:
+    """Return a surface thinned by binning its points to about ``max_points`` scene points."""
+    coarse = clustered(surface, PROBE_DIVISIONS)
+    # A surface's points grow with the square of the divisions.
+    scale = math.sqrt(max_points / max(projected_points(coarse), 1))
+    return clustered(surface, PROBE_DIVISIONS * scale)
+
+
 def write_info(
     dataset: object, source: str, destination: str, header: dict[str, Any] | None = None
 ) -> None:
@@ -551,7 +589,9 @@ def export(source: str, destination: str, max_points: int, info: str | None = No
             # The surface filter leaves a volume's faces unjoined at their edges.
             surface = surface.clean()
         projected = projected_points(surface)
-        if max_points and projected > max_points:
+        if max_points and projected > max_points and surface.n_points > CLUSTER_POINTS:
+            surface = cluster(surface, max_points)
+        elif max_points and projected > max_points:
             ratio = 1.0 - (max_points / projected)
             surface = surface.decimate_pro(ratio, preserve_topology=True)
     elif primitive == 'points' and max_points and surface.n_points > max_points:

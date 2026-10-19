@@ -304,7 +304,8 @@ and whenever it is reinstalled, so the first preview does not wait for them. `pv
 preload` does the same on demand.
 
 Surfaces are sent whole up to `max_scene_points`. Above that, images and volumes are
-thinned on their lattice and other surfaces are decimated.
+thinned on their lattice and other surfaces are decimated, or binned onto a grid above
+4 million points.
 
 ### Large files
 
