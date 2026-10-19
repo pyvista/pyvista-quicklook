@@ -748,8 +748,8 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
             return
         }
         let kept = shownInfo?.url == request.url ? shownInfo?.info : nil
-        // What the header alone says has no bounds, so it never replaces what the values said.
-        if let info, info.bounds.isEmpty == false || kept?.bounds.isEmpty != false {
+        // What the header alone says never replaces what the values said.
+        if let info, !info.fromHeader || kept?.fromHeader != false {
             shownInfo = (request.url, info)
         } else if kept == nil {
             shownInfo = nil
