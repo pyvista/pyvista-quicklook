@@ -243,10 +243,13 @@ app that reads them, such as ParaView, says it is, and Open With chooses between
 The compressed formats claimed through gzip and DICOM folders are not opened by the app,
 since it would otherwise offer to open every gzip archive and folder.
 
-## Pictures a file carries
+## Fast previews with pyvista-zstd
 
-[pyvista-zstd](https://github.com/pyvista/pyvista-zstd) can embed a picture of the dataset
-in the `.pv` file it writes:
+If working with very large files, consider saving them with
+[pyvista-zstd](https://github.com/pyvista/pyvista-zstd) with `thumbnail=True` to
+pre-render the preview. `pyvista-quicklook` reads the dataset, file, and thumbnail
+metadata almost instantly, so previews of files in this format can be generated very
+quickly without loading arrays or rendering the mesh.
 
 ```python
 import pyvista_zstd
@@ -266,8 +269,8 @@ the app always shows it in 3D.
 theme, cropped to the dataset on a transparent background; PNG bytes of your own are
 embedded as they are. The picture sits uncompressed near the start of the file, with a
 checksum of the file's index, so the extension reads it with a few small reads and can
-tell when the data was changed after the picture was taken. This needs a pyvista-zstd
-release with thumbnail support.
+tell when the data was changed after the picture was taken. Thumbnails need
+pyvista-zstd 0.7 or newer.
 
 ## How it works
 
