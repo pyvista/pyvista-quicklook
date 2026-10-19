@@ -110,8 +110,9 @@ def real(value: float, significant: int = PLAIN_DIGITS) -> str:
     return text if any(c in text for c in '.ein') else f'{text}.0'
 
 
-def bounds(b: Any) -> list[list[str]]:
-    """Return bounds as one minimum and maximum per axis."""
+def bounds(dataset: Any) -> list[list[str]]:
+    """Return a dataset's bounds as one minimum and maximum per axis."""
+    b = dataset.bounds
     return [[axis, real(b[i]), real(b[i + 1])] for axis, i in (('x', 0), ('y', 2), ('z', 4))]
 
 
@@ -465,7 +466,7 @@ def dataset_facts(dataset: pv.DataSet, suffix: str = '') -> list[list[Any]]:
     if dataset.n_cells and (types := cell_types(dataset)) is not None:
         facts.append(['Cell type' if len(types) == 1 else 'Cell types', types])
     if dataset.n_points:
-        facts.append(['Bounds', bounds(dataset.bounds)])
+        facts.append(['Bounds', bounds(dataset)])
     return facts
 
 
@@ -509,7 +510,7 @@ def composite_facts(
     ]
     facts, blocks = composite_summary(entries, nesting_depth(multiblock))
     if any(block.n_points for _, block in found if block is not None):
-        facts.append(['Bounds', bounds(multiblock.bounds)])
+        facts.append(['Bounds', bounds(multiblock)])
     return facts, blocks
 
 
@@ -773,8 +774,6 @@ def zstd_header(path: Path) -> dict:
             'facts': header_facts(meta.n_points, meta.n_cells, dims, spacing),
             'rows': zstd_rows(meta),
         }
-        if meta.n_points and (stored := getattr(meta, 'bounds', None)) is not None:
-            info['facts'].append(['Bounds', bounds(stored)])
     else:
         return {}
     if USER_DICT_KEY in (meta.field_data_keys or {}):
@@ -861,8 +860,6 @@ def zstd_composite_header(meta: Any) -> dict[str, Any]:
         )
     facts, blocks = composite_summary(entries, zstd_depth(meta))
     datasets = [child for _, child in found if child is not None]
-    if (stored := zstd_union_bounds(datasets)) is not None:
-        facts.append(['Bounds', bounds(stored)])
     return {
         'type': 'MultiBlock',
         'facts': facts,
@@ -870,16 +867,6 @@ def zstd_composite_header(meta: Any) -> dict[str, Any]:
         'blocks': blocks,
         'block_count': len(found),
     }
-
-
-def zstd_union_bounds(datasets: list[Any]) -> tuple[float, ...] | None:
-    """Return the bounds enclosing every dataset with points, or None unless each stores some."""
-    stored = [getattr(child, 'bounds', None) for child in datasets if child.n_points]
-    if not stored or any(b is None for b in stored):
-        return None
-    return tuple(
-        f(b[axis + side] for b in stored) for axis in (0, 2, 4) for side, f in ((0, min), (1, max))
-    )
 
 
 def zstd_ranges(path: Path, header: dict, skip: set[tuple[str, str]] = frozenset()) -> dict:
@@ -1018,7 +1005,7 @@ def header_info(source: str) -> dict[str, Any]:
         except Exception as error:  # noqa: BLE001
             # Reported for the service's log; the panel then shows only the file's facts.
             sys.stderr.write(f'header skipped: {type(error).__name__}: {error}\n')
-    info: dict[str, Any] = {'type': header.get('type', ''), 'from_header': True}
+    info: dict[str, Any] = {'type': header.get('type', '')}
     if header:
         rows = header['rows']
         info['facts'] = header['facts']

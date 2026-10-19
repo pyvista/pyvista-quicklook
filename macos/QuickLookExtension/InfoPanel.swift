@@ -15,8 +15,6 @@ struct MeshInfo {
     let arrayCount: Int
     /// How many blocks there are, including any the list leaves out.
     let blockCount: Int
-    /// Whether this is what the header alone says, without the values.
-    let fromHeader: Bool
 
     init?(_ json: [String: Any]?) {
         guard let json, let type = json["type"] as? String else {
@@ -46,7 +44,6 @@ struct MeshInfo {
         userDict = json["user_dict"] as? [String] ?? []
         arrayCount = json["array_count"] as? Int ?? arrays.filter { $0["more"] == nil }.count
         blockCount = json["block_count"] as? Int ?? blocks.filter { $0["more"] == nil }.count
-        fromHeader = json["from_header"] as? Bool ?? false
     }
 
     /// Whether there is nothing to show beyond the type.
