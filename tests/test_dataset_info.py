@@ -353,8 +353,6 @@ def test_zstd_container_reports_its_compression(tmp_path):
 
 def test_a_version_3_container_is_described_and_drawn(tmp_path):
     """A MultiBlock with field data, which pyvista-zstd stamps version 3, still previews."""
-    from pyvista_quicklook import _scene_export as export_mod
-
     blocks = pv.MultiBlock({'sphere': pv.Sphere()})
     blocks.field_data['note'] = np.array([1.0, 2.0])
     path = tmp_path / 'blocks.pv'

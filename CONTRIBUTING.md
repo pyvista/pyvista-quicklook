@@ -14,9 +14,10 @@ excludes stock VTK from the resolve, so the test environment holds the same pack
 installer provisions.
 
 PyVista, cvista and pyvista-zstd are pinned to one release each, in `pyproject.toml` and
-`scripts/install-from-source.sh` alike. Bumping PyVista or cvista reruns a test that compares every
-extension the environment can read with the format table, so a reader that PyVista adds,
-drops, or moves to a package of its own shows up as a failure to resolve in `formats.py`.
+`scripts/install-from-source.sh` alike. Bumping PyVista or cvista reruns a test that
+compares every extension the environment can read with the format table, so a reader
+that PyVista adds, drops, or moves to a package of its own shows up as a failure to
+resolve in `formats.py`.
 The README's format tables are generated from PyVista's reader tables and checked by
 another test:
 

@@ -53,10 +53,7 @@ def reader():
 
 
 def pv_file(path, *, rest=b'i' * 32, crc_of=None, record_extra=0, png=PNG, index=None):
-    """Write a file laid out as a .pv with a picture, ending in an index of its frames.
-
-    The index holds the picture's two frames, then ``rest``; ``index`` replaces it whole.
-    """
+    """Write a .pv-shaped file with a picture, its index the picture's frames then ``rest``."""
     # The checksum covers the index entries after the first two frames.
     crc = zlib.crc32(crc_of if crc_of is not None else rest)
     descriptor = b'PVZTHUMB' + struct.pack('<6I', 1, 32, 64, 48, len(png), crc)

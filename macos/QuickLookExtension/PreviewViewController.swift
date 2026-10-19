@@ -433,11 +433,11 @@ func progressView(_ text: String) -> NSView {
 
 /// Returns a view showing a picture scaled to fit, or nil when the bytes are not an image.
 @MainActor
-func pictureView(_ png: Data?) -> NSImageView? {
+func pictureView<View: NSImageView>(_ png: Data?, as kind: View.Type = NSImageView.self) -> View? {
     guard let png, let image = NSImage(data: png) else {
         return nil
     }
-    let imageView = NSImageView()
+    let imageView = kind.init(frame: .zero)
     imageView.imageScaling = .scaleProportionallyUpOrDown
     imageView.image = image
     // Without this the picture's own size wins over the panel's, and a small panel crops it.
@@ -470,7 +470,7 @@ func overlaid(_ base: NSView, corner: NSView) -> NSView {
     return container
 }
 
-/// A picture that calls `onTouch` when the reader first clicks, scrolls, or pinches it.
+/// A picture that calls `onTouch` the first time a mouse or trackpad gesture lands on it.
 final class TouchablePicture: NSImageView {
     var onTouch: (() -> Void)?
 
@@ -509,22 +509,13 @@ final class TouchablePicture: NSImageView {
 /// Returns a touchable picture, or nil when the bytes are not an image.
 @MainActor
 func touchablePicture(_ png: Data, onTouch: @escaping () -> Void) -> NSImageView? {
-    guard let image = NSImage(data: png) else {
-        return nil
-    }
-    let picture = TouchablePicture()
-    picture.imageScaling = .scaleProportionallyUpOrDown
-    picture.image = image
-    picture.onTouch = onTouch
-    for orientation in [NSLayoutConstraint.Orientation.horizontal, .vertical] {
-        picture.setContentCompressionResistancePriority(.defaultLow, for: orientation)
-        picture.setContentHuggingPriority(.defaultLow, for: orientation)
-    }
+    let picture = pictureView(png, as: TouchablePicture.self)
+    picture?.onTouch = onTouch
     return picture
 }
 
 /// What a mesh preview shows: a picture of it, or the surface to turn.
-enum PreviewMode: Int {
+enum PreviewMode {
     case still
     case interactive
 }

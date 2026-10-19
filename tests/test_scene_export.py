@@ -771,6 +771,12 @@ def test_a_surface_over_the_point_budget_is_decimated(tmp_path):
 def test_a_very_large_surface_is_clustered_keeping_its_colours(tmp_path, monkeypatch, association):
     """A surface above the clustering size is thinned near the budget, still coloured."""
     monkeypatch.setattr(export_mod, 'CLUSTER_POINTS', 1000)
+
+    def decimated(*args, **kwargs):
+        """Fail, as a surface above the clustering size is never decimated."""
+        pytest.fail('a surface above the clustering size was decimated')
+
+    monkeypatch.setattr(pv.PolyData, 'decimate_pro', decimated)
     full = pv.Sphere(theta_resolution=200, phi_resolution=200)
     values = full.points[:, 2] if association == 'point' else full.cell_centers().points[:, 2]
     getattr(full, f'{association}_data')['height'] = values
