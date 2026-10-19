@@ -483,15 +483,9 @@ def composite_facts(
         for name, block in found
     ]
     if isinstance(composite, pv.PartitionedDataSet):
-        n_blocks = composite.n_partitions
-        extent = [0.0] * 6
-        composite.GetBounds(extent)
-    else:
-        n_blocks, extent = composite.n_blocks, composite.bounds
-    facts, blocks = composite_summary(
-        n_blocks, composite.GetNumberOfPoints(), composite.GetNumberOfCells(), entries
-    )
-    facts.append(['Bounds', bounds(extent)])
+        return composite_summary(composite.n_partitions, entries)
+    facts, blocks = composite_summary(composite.n_blocks, entries)
+    facts.append(['Bounds', bounds(composite.bounds)])
     return facts, blocks
 
 
@@ -506,14 +500,10 @@ class BlockEntry(NamedTuple):
 
 
 def composite_summary(
-    n_blocks: int, points: int | None, cells: int | None, found: list[BlockEntry]
+    n_blocks: int, found: list[BlockEntry]
 ) -> tuple[list[list[Any]], list[dict[str, Any]]]:
     """Return a composite's summary rows, bounds aside, and its per-block rows."""
-    facts = [['Blocks', count(n_blocks)]]
-    if points is not None:
-        facts.append(['Points', count(points)])
-    if cells is not None:
-        facts.append(['Cells', count(cells)])
+    facts: list[list[Any]] = [['Blocks', count(n_blocks)]]
     kinds = sorted(distinct(entry.kind for entry in found), key=str.lower)
     facts.append(['Block type' if len(kinds) == 1 else 'Block types', '\n'.join(kinds)])
     blocks = [
@@ -805,12 +795,7 @@ def zstd_composite_header(meta: Any) -> dict[str, Any]:
                 dimensions(dims) if dims is not None else '',
             )
         )
-    facts, blocks = composite_summary(
-        len(meta.children),
-        getattr(meta, 'n_points', None),
-        getattr(meta, 'n_cells', None),
-        entries,
-    )
+    facts, blocks = composite_summary(len(meta.children), entries)
     datasets = [child for _, child in found if child is not None]
     return {
         'type': 'MultiBlock',

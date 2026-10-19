@@ -371,8 +371,7 @@ def test_multiblock_lists_blocks_and_merges_arrays(tmp_path):
     assert rows['Blocks'] == str(read.n_blocks) == '2'
     assert info['block_count'] == 3
     assert 'Depth' not in rows
-    assert rows['Points'] == info_mod.count(read.GetNumberOfPoints())
-    assert rows['Cells'] == info_mod.count(read.GetNumberOfCells())
+    assert not {'Points', 'Cells'} & set(rows)
     assert rows['Block type'] == 'PolyData'
     assert [block['name'] for block in info['blocks']] == ['sphere', 'inner/cube', 'inner/cone']
     assert {block['dimensions'] for block in info['blocks']} == {''}
@@ -454,12 +453,8 @@ def test_partitioned_dataset_is_described_as_blocks():
     rows = facts(info)
     assert info['type'] == 'PartitionedDataSet'
     assert rows['Blocks'] == str(partitioned.n_partitions) == '2'
-    assert rows['Points'] == info_mod.count(partitioned.GetNumberOfPoints())
-    assert rows['Cells'] == info_mod.count(partitioned.GetNumberOfCells())
+    assert not {'Points', 'Cells', 'Bounds'} & set(rows)
     assert [block['name'] for block in info['blocks']] == ['0', '1']
-    extent = [0.0] * 6
-    partitioned.GetBounds(extent)
-    assert rows['Bounds'] == info_mod.bounds(extent)
     # A partitioned dataset reports no range across its partitions.
     assert {row['range'] for row in info['arrays']} == {''}
 
@@ -832,31 +827,12 @@ def test_a_pv_composite_header_agrees_with_reading_the_file(tmp_path):
     assert head['user_dict'] == full['user_dict'] == ['"run": 3']
 
 
-class WithCounts:
-    """Composite metadata as a pyvista-zstd that stores point and cell counts reads it."""
-
-    def __init__(self, meta, n_points, n_cells):
-        """Wrap ``meta`` with the counts given."""
-        self._meta, self.n_points, self.n_cells = meta, n_points, n_cells
-
-    def __getattr__(self, name):
-        """Return what the wrapped metadata holds."""
-        return getattr(self._meta, name)
-
-
-def test_a_pv_composite_shows_the_counts_its_metadata_stores(tmp_path, monkeypatch):
-    """A composite's points and cells come from its own metadata, and are absent without them."""
+def test_a_pv_composite_header_shows_no_totals(tmp_path):
+    """A ``.pv`` composite's header shows its blocks but no point or cell totals."""
     path = tmp_path / 'blocks.pv'
-    blocks = nested_blocks()
-    pyvista_zstd.write(blocks, path)
-    read = info_mod.zstd_metadata
-    if getattr(read(path), 'n_points', None) is None:
-        assert not {'Points', 'Cells'} & set(dict(info_mod.header_info(str(path))['facts']))
-    monkeypatch.setattr(info_mod, 'zstd_metadata', lambda p: WithCounts(read(p), 1234, 56))
+    pyvista_zstd.write(nested_blocks(), path)
     rows = dict(info_mod.header_info(str(path))['facts'])
-    assert rows['Points'] == info_mod.count(1234)
-    assert rows['Cells'] == '56'
-    assert rows['Blocks'] == str(len(read(path).children))
+    assert not {'Points', 'Cells'} & set(rows)
 
 
 def test_a_pv_composite_header_reads_no_array_values(tmp_path, monkeypatch):
@@ -974,18 +950,6 @@ def test_bounds_written_by_pyvista_zstd_are_shown(tmp_path, mesh):
     """Bounds pyvista-zstd stores read as the full description shows them."""
     head, full = header_and_full(mesh, tmp_path, 'mesh.pv')
     assert dict(head['facts'])['Bounds'] == dict(full['facts'])['Bounds']
-
-
-@pytest.mark.skipif(
-    'n_points' not in pyvista_zstd.MultiBlockMetadata.__dataclass_fields__,
-    reason='this pyvista-zstd stores no composite counts',
-)
-def test_composite_counts_written_by_pyvista_zstd_are_shown(tmp_path):
-    """A composite's stored point and cell totals read as the full description shows them."""
-    blocks = pv.MultiBlock({'a': pv.Sphere(), 'b': pv.MultiBlock({'c': pv.Cube()}), 'd': None})
-    head, full = header_and_full(blocks, tmp_path, 'blocks.pv')
-    for label in ('Blocks', 'Points', 'Cells'):
-        assert dict(head['facts'])[label] == dict(full['facts'])[label]
 
 
 def test_files_without_a_header_reader_get_only_their_file_facts(tmp_path):
@@ -1216,13 +1180,11 @@ def test_the_service_knows_which_formats_have_a_header():
 
 
 def test_an_empty_composite_has_only_what_it_reports():
-    """A MultiBlock with nothing in it shows its counts, no block types, and its bounds."""
+    """A MultiBlock with nothing in it shows its block count, no block types, and its bounds."""
     empty = pv.MultiBlock()
     facts, blocks = info_mod.composite_facts(empty, [])
     assert facts == [
         ['Blocks', '0'],
-        ['Points', '0'],
-        ['Cells', '0'],
         ['Block types', ''],
         ['Bounds', info_mod.bounds(empty.bounds)],
     ]
