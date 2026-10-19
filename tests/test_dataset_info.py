@@ -702,10 +702,17 @@ class WithBounds:
         return getattr(self._meta, name)
 
 
-def test_the_bounds_a_pv_file_reports_are_shown_from_its_header(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    'mesh',
+    [
+        pv.Sphere(center=(1, 2, 3)),
+        pv.MultiBlock({'a': pv.Sphere(), 'b': pv.Cube(center=(4, 0, 0))}),
+    ],
+    ids=['dataset', 'composite'],
+)
+def test_the_bounds_a_pv_file_reports_are_shown_from_its_header(tmp_path, monkeypatch, mesh):
     """A .pv file's own bounds read as the full description shows them, and none are made up."""
-    mesh = pv.Sphere(center=(1, 2, 3))
-    path = tmp_path / 'sphere.pv'
+    path = tmp_path / 'mesh.pv'
     pyvista_zstd.write(mesh, path)
     full = info_mod.describe(pv.read(path), str(path))
     read = info_mod.zstd_metadata
@@ -716,20 +723,21 @@ def test_the_bounds_a_pv_file_reports_are_shown_from_its_header(tmp_path, monkey
     assert 'Bounds' not in dict(info_mod.header_info(str(path))['facts'])
 
 
-def test_a_pv_composite_header_shows_no_bounds_of_its_own(tmp_path):
-    """A .pv composite reports no bounds for itself, so its header shows none."""
-    path = tmp_path / 'blocks.pv'
-    pyvista_zstd.write(pv.MultiBlock({'a': pv.Sphere(), 'b': pv.Cube()}), path)
-    assert 'Bounds' not in dict(info_mod.header_info(str(path))['facts'])
-
-
 @pytest.mark.skipif(
     'bounds' not in pyvista_zstd.DataSetMetadata.__dataclass_fields__,
     reason='this pyvista-zstd stores no bounds',
 )
-def test_bounds_written_by_pyvista_zstd_are_shown(tmp_path):
+@pytest.mark.parametrize(
+    'mesh',
+    [
+        pv.Sphere(center=(1, 2, 3)),
+        pv.MultiBlock({'a': pv.Sphere(), 'b': pv.Cube(center=(4, 0, 0))}),
+    ],
+    ids=['dataset', 'composite'],
+)
+def test_bounds_written_by_pyvista_zstd_are_shown(tmp_path, mesh):
     """Bounds pyvista-zstd stores read as the full description shows them."""
-    head, full = header_and_full(pv.Sphere(center=(1, 2, 3)), tmp_path, 'sphere.pv')
+    head, full = header_and_full(mesh, tmp_path, 'mesh.pv')
     assert dict(head['facts'])['Bounds'] == dict(full['facts'])['Bounds']
 
 
@@ -910,14 +918,20 @@ def test_the_service_knows_which_formats_have_a_header():
 
 
 def test_an_empty_composite_has_only_its_block_count():
-    """A MultiBlock with nothing in it has no block types, points, or bounds to show."""
-    facts, blocks = info_mod.composite_facts(pv.MultiBlock(), [])
-    assert facts == [['Blocks', '0'], ['Points', '0'], ['Cells', '0']]
+    """A MultiBlock with nothing in it has no block types or points, and the bounds it reports."""
+    empty = pv.MultiBlock()
+    facts, blocks = info_mod.composite_facts(empty, [])
+    assert facts == [
+        ['Blocks', '0'],
+        ['Points', '0'],
+        ['Cells', '0'],
+        ['Bounds', info_mod.bounds(empty)],
+    ]
     assert blocks == []
     gap = pv.MultiBlock([None])
     facts, _ = info_mod.composite_facts(gap, info_mod.leaves(gap))
     assert dict(facts)['Block type'] == '1 None'
-    assert 'Bounds' not in dict(facts)
+    assert dict(facts)['Bounds'] == info_mod.bounds(gap)
 
 
 def test_text_arrays_in_several_blocks_give_no_preview():
@@ -1025,10 +1039,11 @@ def test_xml_without_its_root_tag_has_no_facts(tmp_path):
     assert info_mod.xml_facts(path) == []
 
 
-def test_an_empty_dataset_has_no_bounds_or_cell_types():
-    """A dataset with no points or cells lists neither bounds nor cell types."""
-    rows = facts(info_mod.describe(pv.PolyData(), 'x'))
-    assert 'Bounds' not in rows
+def test_an_empty_dataset_has_its_bounds_but_no_cell_types():
+    """A dataset with no points or cells lists the bounds it reports, but no cell types."""
+    empty = pv.PolyData()
+    rows = facts(info_mod.describe(empty, 'x'))
+    assert rows['Bounds'] == info_mod.bounds(empty)
     assert 'Cell type' not in rows
     assert 'Cell types' not in rows
 

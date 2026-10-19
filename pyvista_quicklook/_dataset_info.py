@@ -465,8 +465,7 @@ def dataset_facts(dataset: pv.DataSet, suffix: str = '') -> list[list[Any]]:
         facts.append(['Dimensions', dimensions(dataset, suffix)])
     if dataset.n_cells and (types := cell_types(dataset)) is not None:
         facts.append(['Cell type' if len(types) == 1 else 'Cell types', types])
-    if dataset.n_points:
-        facts.append(['Bounds', bounds(dataset)])
+    facts.append(['Bounds', bounds(dataset)])
     return facts
 
 
@@ -509,8 +508,7 @@ def composite_facts(
         for name, block in found
     ]
     facts, blocks = composite_summary(entries, nesting_depth(multiblock))
-    if any(block.n_points for _, block in found if block is not None):
-        facts.append(['Bounds', bounds(multiblock)])
+    facts.append(['Bounds', bounds(multiblock)])
     return facts, blocks
 
 
