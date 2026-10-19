@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import contextlib
 import html
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -15,42 +15,24 @@ import warnings
 
 import numpy as np
 import pyvista as pv
-from pyvista import _vtk
 from pyvista.core.utilities.arrays import convert_array
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from collections.abc import Sequence
 
 # Rows past these are summarised in a final line rather than listed.
 MAX_ARRAYS = 40
 MAX_BLOCKS = 40
-# Bytes of a VTK XML file read when looking for its header and encoding.
-XML_HEAD = 64 * 1024
-# The norm a range was taken over: a complex modulus, or the magnitude VTK XML records.
+# Header bytes searched for tags; a file whose tags run on past them is read whole.
+XML_TAGS_HEAD = 8 * 1024 * 1024
+# The norm a range was taken over: a complex modulus, or the magnitude of each tuple.
 COMPLEX_NORM = '||z||'
 VECTOR_NORM = '||v||'
 
 # Typographic separators, spelled as escapes so they cannot be mistaken for ASCII.
 TIMES = '\u00d7'
 THOUSANDS = '\u00a0'
-
-# Raster formats whose single-slice images are shown with two dimensions.
-FLAT_IMAGE_SUFFIXES = frozenset(
-    {
-        '.bmp',
-        '.dcm',
-        '.dem',
-        '.hdr',
-        '.jpeg',
-        '.jpg',
-        '.pgm',
-        '.png',
-        '.pnm',
-        '.ppm',
-        '.tif',
-        '.tiff',
-    }
-)
 
 # Where PyVista keeps a dataset's user dict, as one JSON string in its field data.
 USER_DICT_KEY = '_PYVISTA_USER_DICT'
@@ -64,9 +46,19 @@ MAX_KEYS = 8
 ELLIPSIS = object()
 ELLIPSIS_TEXT = '\u2026'
 
-ASSOCIATIONS = (('Point', 'point_data'), ('Cell', 'cell_data'), ('Field', 'field_data'))
-# PyVista keeps the user dict and its own bookkeeping in arrays of this prefix.
-PYVISTA_PREFIX = '_PYVISTA_'
+# Each association's label, PyVista attribute, and VTK getter.
+ASSOCIATIONS = (
+    ('Point', 'point_data', 'GetPointData'),
+    ('Cell', 'cell_data', 'GetCellData'),
+    ('Field', 'field_data', 'GetFieldData'),
+)
+# The roles an array can be active for, and the name each attribute set records for it.
+ROLES = (
+    ('scalars', 'active_scalars_name'),
+    ('vectors', 'active_vectors_name'),
+    ('normals', 'active_normals_name'),
+    ('texture', 'active_texture_coordinates_name'),
+)
 # Significant figures a number keeps as plain digits before it is written with an exponent.
 PLAIN_DIGITS = 6
 
@@ -84,7 +76,7 @@ def as_multiblock(dataset: Any) -> Any:
 
 
 def triple(values: Any) -> str:
-    """Return three numbers as a comma separated list of floats."""
+    """Return numbers as a comma separated list of floats."""
     return ', '.join(real(v) for v in values)
 
 
@@ -110,46 +102,43 @@ def real(value: float, significant: int = PLAIN_DIGITS) -> str:
     return text if any(c in text for c in '.ein') else f'{text}.0'
 
 
-def bounds(dataset: Any) -> list[list[str]]:
-    """Return a dataset's bounds as one minimum and maximum per axis."""
-    b = dataset.bounds
-    return [[axis, real(b[i]), real(b[i + 1])] for axis, i in (('x', 0), ('y', 2), ('z', 4))]
+def bounds(values: Sequence[float]) -> list[list[str]]:
+    """Return six bounds as one minimum and maximum per axis."""
+    return [
+        [axis, real(values[i]), real(values[i + 1])] for axis, i in (('x', 0), ('y', 2), ('z', 4))
+    ]
 
 
-def cell_type_ids(dataset: Any) -> list[int]:
-    """Return the distinct cell type ids of a dataset, named or not, in id order."""
-    if hasattr(dataset, 'GetDistinctCellTypes'):
-        types = _vtk.vtkCellTypes()
-        dataset.GetDistinctCellTypes(types)
-        ids = _vtk.vtk_to_numpy(types.GetCellTypesArray())
-    elif hasattr(dataset, 'GetCellTypesArray'):
-        ids = np.unique(_vtk.vtk_to_numpy(dataset.GetCellTypesArray()))
-    else:
-        ids = dataset.distinct_cell_types
-    return sorted(int(t) for t in ids)
+def dimensions(values: Sequence[int]) -> str:
+    """Return a grid's dimensions joined by multiplication signs."""
+    return TIMES.join(str(d) for d in values)
 
 
-def cell_type_name(type_id: int) -> str:
-    """Return a cell type's name, or its id when VTK has no name for it."""
+def direction(matrix: Any) -> str:
+    """Return a direction matrix as one line of numbers per row."""
+    return '\n'.join(triple(row) for row in np.asarray(matrix))
+
+
+def cell_type_name(cell_type: pv.CellType) -> str:
+    """Return a cell type's name as words."""
+    return cell_type.name.title().replace('_', ' ')
+
+
+def cell_types(dataset: pv.DataSet) -> list[str] | None:
+    """Return the names of the distinct cell types PyVista reports, or None if it cannot."""
     try:
-        return pv.CellType(type_id).name.title().replace('_', ' ')
+        reported = dataset.distinct_cell_types
     except ValueError:
-        return f'Type {type_id}'
-
-
-def cell_types(dataset: Any) -> list[str] | None:
-    """Return the distinct cell type names, in cell type order."""
-    try:
-        ids = cell_type_ids(dataset)
-    except AttributeError:
         return None
-    return [cell_type_name(t) for t in ids] or None
+    return [cell_type_name(t) for t in sorted(reported)]
 
 
 def bound(value: Any, kind: str) -> str:
-    """Return one end of a range, as a float for float arrays and as written otherwise."""
+    """Return one end of a range, as a float for float arrays and as reported otherwise."""
     if kind == 'f':
         return real(value, 4)
+    if isinstance(value, str):
+        return value
     if kind == 'b':
         return str(bool(value))
     return str(int(value))
@@ -159,15 +148,14 @@ def bound(value: Any, kind: str) -> str:
 Extent = tuple[Any, Any, str, str]
 
 
-def data_range(dataset: Any, name: str, association: str, array: np.ndarray) -> Extent | None:
-    """Return an array's range as ``get_data_range`` gives it, or the magnitude's for vectors."""
-    if array.size == 0 or array.dtype.kind not in 'biuf' or components(array.shape) > 1:
-        return values_extent(array)
-    with warnings.catch_warnings():
-        # An array of only NaN has no range, which is shown rather than warned about.
-        warnings.simplefilter('ignore', RuntimeWarning)
-        low, high = dataset.get_data_range(name, preference=association.lower())
-    return low, high, array.dtype.kind, ''
+def vtk_extent(array: Any, is_complex: bool) -> Extent:
+    """Return the range a VTK array reports: of its component, or of each tuple's magnitude."""
+    if is_complex:
+        return (*array.GetRange(-1), 'f', COMPLEX_NORM)
+    if array.GetNumberOfComponents() > 1:
+        return (*array.GetRange(-1), 'f', VECTOR_NORM)
+    low, high = getattr(array, 'GetValueRange', array.GetRange)(0)
+    return low, high, 'f' if isinstance(low, float) else 'i', ''
 
 
 def components(shape: Sequence[int]) -> int:
@@ -175,108 +163,76 @@ def components(shape: Sequence[int]) -> int:
     return 1 if len(shape) < 2 else int(np.prod(shape[1:]))
 
 
-def values_extent(array: np.ndarray) -> Extent | None:
-    """Return an array's range from its values: of the magnitude for vectors, as VTK records it."""
-    if array.size == 0:
+def values_extent(values: np.ndarray) -> Extent | None:
+    """Return the range VTK reports for an array's values, handed to VTK as PyVista stores them."""
+    if values.dtype.kind not in 'biufc':
         return None
-    if array.dtype.kind == 'c':
-        return modulus_extent(np.abs(array).ravel(), COMPLEX_NORM)
-    if array.dtype.kind not in 'biuf':
-        return None
-    if components(array.shape) > 1:
-        return magnitude_extent(array)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', RuntimeWarning)
-        return np.nanmin(array), np.nanmax(array), array.dtype.kind, ''
-
-
-def magnitude_extent(array: np.ndarray) -> Extent:
-    """Return the range of each tuple's Euclidean norm as VTK measures it."""
-    tuples = np.ascontiguousarray(array.reshape(len(array), -1))
-    if tuples.dtype == bool:
-        # VTK has no bool array; the XML formats store one as bytes too.
+    tuples = np.ascontiguousarray(values)
+    width = components(values.shape)
+    if values.dtype.kind == 'c':
+        # PyVista stores a complex value as its real and imaginary parts.
+        tuples, width = tuples.view(values.real.dtype), 2 * width
+    elif values.dtype.kind == 'b':
+        # PyVista stores a bool as a byte.
         tuples = tuples.view(np.uint8)
-    low, high = convert_array(tuples).GetRange(-1)
-    if no_range(low, high):
-        return np.nan, np.nan, 'f', VECTOR_NORM
-    return low, high, 'f', VECTOR_NORM
+    array = convert_array(tuples.reshape(values.shape[0] if values.ndim else 1, width))
+    return vtk_extent(array, values.dtype.kind == 'c')
 
 
-def modulus_extent(modulus: np.ndarray, norm: str) -> Extent:
-    """Return the finite range of a magnitude or modulus, labelled with its norm."""
-    finite = modulus[np.isfinite(modulus)]
-    if finite.size == 0:
-        return np.nan, np.nan, 'f', norm
-    return finite.min(), finite.max(), 'f', norm
+def reported_kind(low: Any, high: Any) -> str:
+    """Return the value kind of a range's two ends as PyVista reports them."""
+    if isinstance(low, np.bool_ | bool) and isinstance(high, np.bool_ | bool):
+        return 'b'
+    if all(isinstance(v, np.integer | int) and not isinstance(v, bool) for v in (low, high)):
+        return 'i'
+    return 'f'
 
 
-def merge_extents(first: Extent | None, second: Extent | None) -> Extent | None:
-    """Return the range spanning two arrays of one name, or None when they cannot be combined."""
-    if first is None or second is None or first[3] != second[3]:
-        return None
-    if first[2] != 'f' and second[2] != 'f':
-        # Whole numbers stay whole, so no digit of a large integer is rounded away.
-        kind = first[2] if first[2] == second[2] else 'i'
-        return min(first[0], second[0]), max(first[1], second[1]), kind, first[3]
+def composite_extent(multiblock: pv.MultiBlock, name: str, association: str) -> Extent:
+    """Return the range of a one component array across a composite, as PyVista reports it."""
     with warnings.catch_warnings():
+        # A block of only NaN has no range of its own, which PyVista leaves out.
         warnings.simplefilter('ignore', RuntimeWarning)
-        low = np.nanmin([float(first[0]), float(second[0])])
-        high = np.nanmax([float(first[1]), float(second[1])])
-    return low, high, 'f', first[3]
-
-
-def no_range(low: Any, high: Any) -> bool:
-    """Return whether a recorded range is the empty one VTK writes for arrays without values."""
-    return not low <= high
+        low, high = multiblock.get_data_range(
+            name, preference=association.lower(), allow_missing=True
+        )
+    return low, high, reported_kind(low, high), ''
 
 
 def range_text(extent: Extent | None) -> str:
-    """Return a range as text: one value when both ends agree, else an interval."""
+    """Return a range as text: one value when both ends are equal, else an interval."""
     if extent is None:
         return ''
     low, high, kind, norm = extent
-    if kind == 'f' and no_range(low, high):
-        return 'NaN'
-    low, high = bound(low, kind), bound(high, kind)
-    text = low if low == high else f'[{low}, {high}]'
+    if float(low) > float(high):
+        # The inverted range VTK reports for an array without values.
+        return ''
+    if kind == 'f' and math.isnan(float(low)) and math.isnan(float(high)):
+        text = 'NaN'
+    else:
+        text = bound(low, kind) if low == high else f'[{bound(low, kind)}, {bound(high, kind)}]'
     return f'{norm} {text}' if norm else text
 
 
-def active_roles(dataset: pv.DataSet, name: str, association: str) -> list[str]:
-    """Return the roles an array is active for, as PyVista's own repr marks them."""
+def active_roles(data: Any, name: str, association: str) -> list[str]:
+    """Return the roles an array is active for, from its own association's active names."""
     if association == 'Field':
         return []
-    roles = []
-    # Scalars and vectors are active for one association of the dataset, not one per association.
-    for role, attribute in (
-        ('scalars', 'active_scalars_info'),
-        ('vectors', 'active_vectors_info'),
-    ):
-        with contextlib.suppress(AttributeError, KeyError, ValueError):
-            info = getattr(dataset, attribute)
-            if info.name == name and info.association.name.title() == association:
-                roles.append(role)
-    data = getattr(dataset, dict(ASSOCIATIONS)[association])
-    for role, attribute in (
-        ('normals', 'active_normals_name'),
-        ('texture', 'active_texture_coordinates_name'),
-    ):
-        with contextlib.suppress(AttributeError, KeyError, ValueError):
-            if getattr(data, attribute) == name:
-                roles.append(role)
-    return roles
+    return [role for role, attribute in ROLES if getattr(data, attribute) == name]
 
 
 def array_rows(dataset: pv.DataSet) -> list[dict[str, Any]]:
     """Return one row per array, point arrays first, then cell and field arrays."""
     rows = []
-    for association, attribute in ASSOCIATIONS:
+    for association, attribute, getter in ASSOCIATIONS:
         data = getattr(dataset, attribute)
+        stored = getattr(dataset, getter)()
         for name in data:
-            if name.startswith(PYVISTA_PREFIX):
+            if name == USER_DICT_KEY:
                 continue
             array = np.asarray(data[name])
             is_text = array.dtype.kind in 'OUS'
+            vtk_array = None if is_text else stored.GetArray(name)
             rows.append(
                 {
                     'name': name,
@@ -284,8 +240,10 @@ def array_rows(dataset: pv.DataSet) -> list[dict[str, Any]]:
                     'dtype': 'string' if is_text else str(array.dtype),
                     'components': components(array.shape),
                     'range': text_preview(array) if is_text else '',
-                    'extent': None if is_text else data_range(dataset, name, association, array),
-                    'active': active_roles(dataset, name, association),
+                    'extent': None
+                    if vtk_array is None
+                    else vtk_extent(vtk_array, array.dtype.kind == 'c'),
+                    'active': active_roles(data, name, association),
                 }
             )
     return rows
@@ -355,10 +313,14 @@ def pretty(value: dict[Any, Any], indent: int, depth: int) -> list[str]:
 
 
 def user_dict(dataset: Any) -> list[str]:
-    """Return the lines showing a dataset's PyVista user dict, or none when it has none."""
+    """Return the lines showing the user dict PyVista reads for a dataset, or none without one."""
     if USER_DICT_KEY not in dataset.field_data:
         return []
-    return user_dict_lines(np.asarray(dataset.field_data[USER_DICT_KEY]))
+    try:
+        value = dict(dataset.user_dict)
+    except ValueError:
+        return []
+    return user_dict_value_lines(value)
 
 
 def user_dict_lines(stored: np.ndarray) -> list[str]:
@@ -367,7 +329,14 @@ def user_dict_lines(stored: np.ndarray) -> list[str]:
         value = json.loads(str(stored.ravel()[0]))
     except ValueError, IndexError:
         return []
-    if not isinstance(value, dict) or not value:
+    if not isinstance(value, dict):
+        return []
+    return user_dict_value_lines(value)
+
+
+def user_dict_value_lines(value: dict[Any, Any]) -> list[str]:
+    """Return the lines showing a user dict, or none when it is empty."""
+    if not value:
         return []
     try:
         return budgeted(value)
@@ -402,30 +371,54 @@ def budgeted(value: dict[Any, Any]) -> list[str]:
     return lines
 
 
-def merge_arrays(blocks: list[pv.DataSet]) -> list[dict[str, Any]]:
+def merge_arrays(composite: Any, blocks: list[pv.DataSet]) -> list[dict[str, Any]]:
     """Return array rows for a composite dataset, one per name and association."""
-    return merge_rows([array_rows(block) for block in blocks])
+    rows = merge_rows([array_rows(block) for block in blocks])
+    if isinstance(composite, pv.MultiBlock):
+        for row in rows:
+            kinds = row['dtype'].split(', ')
+            if row['components'] == 1 and not any(
+                k.startswith(('string', 'complex')) for k in kinds
+            ):
+                row['extent'] = composite_extent(composite, row['name'], row['association'])
+    return rows
+
+
+def distinct(values: Iterable[Any]) -> list[Any]:
+    """Return the distinct values in the order they first appear."""
+    return list(dict.fromkeys(values))
+
+
+def agreed(values: Iterable[Any]) -> Any:
+    """Return the value every block agrees on, else the distinct values joined."""
+    found = distinct(values)
+    return found[0] if len(found) == 1 else ', '.join(str(v) for v in found)
 
 
 def merge_rows(per_block: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
-    """Return one row per name and association from each block's array rows."""
-    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    """Return one row per name and association from each block's array rows, without ranges."""
+    merged: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for block_rows in per_block:
         for row in block_rows:
-            key = (row['name'], row['association'])
-            if key not in merged:
-                merged[key] = {**row, 'blocks': 1}
-                continue
-            seen = merged[key]
-            seen['blocks'] += 1
-            if seen['dtype'] != row['dtype']:
-                seen['dtype'] = 'mixed'
-            if seen['dtype'] == 'string':
-                seen['range'] = ''
-            seen['extent'] = merge_extents(seen['extent'], row['extent'])
-    for row in merged.values():
-        row['blocks'] = f'{row["blocks"]} of {len(per_block)}'
-    return list(merged.values())
+            merged.setdefault((row['name'], row['association']), []).append(row)
+    rows = []
+    for found in merged.values():
+        roles = distinct(tuple(row['active']) for row in found)
+        rows.append(
+            {
+                **found[0],
+                'dtype': ', '.join(distinct(row['dtype'] for row in found)),
+                'components': agreed(row['components'] for row in found),
+                # Strings that differ from block to block are not previewed from just one.
+                'range': found[0]['range'] if len(found) == 1 else '',
+                'extent': None,
+                'active': list(roles[0])
+                if len(roles) == 1
+                else ' / '.join(', '.join(r) or 'none' for r in roles),
+                'blocks': f'{len(found)} of {len(per_block)}',
+            }
+        )
+    return rows
 
 
 def format_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -441,45 +434,37 @@ def format_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def dimensions(dataset: pv.DataSet, suffix: str) -> str:
-    """Return a grid's dimensions, dropping the single slice of a flat image format."""
-    shape = list(dataset.dimensions)
-    if suffix in FLAT_IMAGE_SUFFIXES and shape[2] == 1:
-        shape = shape[:2]
-    return TIMES.join(str(d) for d in shape)
-
-
-def dataset_facts(dataset: pv.DataSet, suffix: str = '') -> list[list[Any]]:
+def dataset_facts(dataset: pv.DataSet) -> list[list[Any]]:
     """Return the label and value rows that describe one dataset."""
     facts = [
         ['Points', count(dataset.n_points)],
         ['Cells', count(dataset.n_cells)],
     ]
+    if hasattr(dataset, 'dimensions'):
+        facts.append(['Dimensions', dimensions(dataset.dimensions)])
     if isinstance(dataset, pv.ImageData):
-        facts.append(['Dimensions', dimensions(dataset, suffix)])
         facts.append(['Spacing', triple(dataset.spacing)])
-        direction = np.asarray(dataset.direction_matrix)
-        if not np.allclose(direction, np.eye(3)):
-            facts.append(['Direction', 'rotated'])
-    elif hasattr(dataset, 'dimensions'):
-        facts.append(['Dimensions', dimensions(dataset, suffix)])
-    if dataset.n_cells and (types := cell_types(dataset)) is not None:
+        facts.append(['Direction', direction(dataset.direction_matrix)])
+    if (types := cell_types(dataset)) is not None:
         facts.append(['Cell type' if len(types) == 1 else 'Cell types', types])
-    facts.append(['Bounds', bounds(dataset)])
+    facts.append(['Bounds', bounds(dataset.bounds)])
     return facts
 
 
 def leaves(multiblock: pv.MultiBlock) -> list[tuple[str, pv.DataSet | None]]:
-    """Return every dataset and None block in a composite, named by its nesting path."""
-    return [
-        (name or '/'.join(str(i) for i in index), block)
-        for index, name, block in zip(
-            multiblock.recursive_iterator('ids'),
+    """Return every dataset and None block in a composite, named by its path of stored names."""
+    return list(
+        zip(
             multiblock.recursive_iterator('names', prepend_names=True, separator='/'),
             multiblock.recursive_iterator('blocks', skip_none=False),
             strict=True,
         )
-    ]
+    )
+
+
+def partitions(partitioned: pv.PartitionedDataSet) -> list[tuple[str, pv.DataSet | None]]:
+    """Return every partition of a partitioned dataset, named by its index."""
+    return [(str(index), partition) for index, partition in enumerate(partitioned)]
 
 
 def block_kind(block: Any) -> str:
@@ -487,14 +472,8 @@ def block_kind(block: Any) -> str:
     return type(block).__name__ if block is not None else 'None'
 
 
-def nesting_depth(multiblock: pv.MultiBlock) -> int:
-    """Return how many levels of composite a composite holds, itself included."""
-    nested = [nesting_depth(b) for b in multiblock if isinstance(b, pv.MultiBlock)]
-    return 1 + max(nested, default=0)
-
-
 def composite_facts(
-    multiblock: pv.MultiBlock, found: list[tuple[str, pv.DataSet | None]]
+    composite: pv.MultiBlock | pv.PartitionedDataSet, found: list[tuple[str, pv.DataSet | None]]
 ) -> tuple[list[list[Any]], list[dict[str, Any]]]:
     """Return the summary rows and per-block rows of a composite, given its leaves."""
     entries = [
@@ -503,12 +482,20 @@ def composite_facts(
             block_kind(block),
             block.n_points if block is not None else None,
             block.n_cells if block is not None else None,
-            dimensions(block, '') if hasattr(block, 'dimensions') else '',
+            dimensions(block.dimensions) if hasattr(block, 'dimensions') else '',
         )
         for name, block in found
     ]
-    facts, blocks = composite_summary(entries, nesting_depth(multiblock))
-    facts.append(['Bounds', bounds(multiblock)])
+    if isinstance(composite, pv.PartitionedDataSet):
+        n_blocks = composite.n_partitions
+        extent = [0.0] * 6
+        composite.GetBounds(extent)
+    else:
+        n_blocks, extent = composite.n_blocks, composite.bounds
+    facts, blocks = composite_summary(
+        n_blocks, composite.GetNumberOfPoints(), composite.GetNumberOfCells(), entries
+    )
+    facts.append(['Bounds', bounds(extent)])
     return facts, blocks
 
 
@@ -523,25 +510,16 @@ class BlockEntry(NamedTuple):
 
 
 def composite_summary(
-    found: list[BlockEntry], depth: int
+    n_blocks: int, points: int | None, cells: int | None, found: list[BlockEntry]
 ) -> tuple[list[list[Any]], list[dict[str, Any]]]:
     """Return a composite's summary rows, bounds aside, and its per-block rows."""
-    # Counted as the block list counts them: every dataset or empty block, at any depth.
-    kinds: dict[str, int] = {}
-    for entry in found:
-        kinds[entry.kind] = kinds.get(entry.kind, 0) + 1
-    facts = [['Blocks', count(len(found))]]
-    if depth > 1:
-        facts.append(['Depth', str(depth)])
-    facts += [
-        ['Points', count(sum(entry.points or 0 for entry in found))],
-        ['Cells', count(sum(entry.cells or 0 for entry in found))],
-    ]
-    if kinds:
-        label = 'Block type' if len(kinds) == 1 else 'Block types'
-        facts.append(
-            [label, '\n'.join(f'{count(kinds[k])} {k}' for k in sorted(kinds, key=str.lower))]
-        )
+    facts = [['Blocks', count(n_blocks)]]
+    if points is not None:
+        facts.append(['Points', count(points)])
+    if cells is not None:
+        facts.append(['Cells', count(cells)])
+    kinds = sorted(distinct(entry.kind for entry in found), key=str.lower)
+    facts.append(['Block type' if len(kinds) == 1 else 'Block types', '\n'.join(kinds)])
     blocks = [
         {
             'name': entry.name,
@@ -559,29 +537,33 @@ def composite_summary(
 
 
 def zstd_facts(path: Path) -> list[list[str]]:
-    """Return the container version, compression, and uncompressed size of a ``.pv`` file."""
+    """Return the container version, compression, and stored sizes of a ``.pv`` file."""
     import pyvista_zstd
 
     with pyvista_zstd.Reader(path) as reader:
         metadata = reader.file_metadata
         expanded = reader.nbytes
-    ratio = expanded / path.stat().st_size
-    return [
+        compressed = getattr(reader, 'compressed_nbytes', None)
+    facts = [
         ['Format', f'pyvista-zstd v{metadata.file_version}'],
         ['Compression', f'{metadata.compression} level {metadata.compression_level}'],
-        ['Uncompressed', f'{size(expanded)} ({ratio:.2f}{TIMES} ratio)'],
+        ['Uncompressed', size(expanded)],
     ]
+    if compressed is not None:
+        facts.append(['Compressed', size(compressed)])
+    return facts
 
 
 def xml_facts(path: Path) -> list[list[str]]:
     """Return the version, compressor, and data encoding of a VTK XML file."""
-    head = xml_text(path, XML_HEAD)
+    head = xml_text(path, XML_TAGS_HEAD)
     match = re.search(r'<VTKFile\b([^>]*)>', head)
     if match is None:
         return []
     attributes = xml_attributes(match.group(1))
     facts = [['Format', f'VTK XML {attributes.get("version", "")}'.strip()]]
-    encodings = sorted(set(re.findall(r'format="(\w+)"', head)))
+    tags = head.split('<AppendedData', 1)[0]
+    encodings = sorted(set(re.findall(r'format="(\w+)"', tags)))
     if 'appended' in encodings:
         appended = re.search(r'<AppendedData\b[^>]*encoding="(\w+)"', head)
         encodings[encodings.index('appended')] = (
@@ -589,41 +571,42 @@ def xml_facts(path: Path) -> list[list[str]]:
         )
     if encodings:
         facts.append(['Encoding', ', '.join(encodings)])
-    compressor = attributes.get('compressor')
-    # Text arrays are never compressed, whatever the header names.
-    if compressor and encodings != ['ascii']:
+    if compressor := attributes.get('compressor'):
         name = compressor.removeprefix('vtk').removesuffix('DataCompressor')
         facts.append(['Compression', COMPRESSORS.get(name, name)])
     return facts
 
 
 def legacy_facts(path: Path) -> list[list[str]]:
-    """Return the version, title, and encoding of a legacy VTK file."""
+    """Return the version, encoding, and title of a legacy VTK file."""
     with path.open('rb') as handle:
         lines = [handle.readline(256).decode('latin-1').strip() for _ in range(3)]
     version = lines[0].removeprefix('# vtk DataFile Version').strip()
-    facts = [['Format', f'VTK legacy {version}'.strip()], ['Encoding', lines[2].lower()]]
-    if lines[1] and not lines[1].lower().startswith('vtk output'):
-        facts.append(['Title', lines[1]])
-    return facts
+    return [
+        ['Format', f'VTK legacy {version}'.strip()],
+        ['Encoding', lines[2].lower()],
+        ['Title', lines[1]],
+    ]
 
 
 def ply_facts(path: Path) -> list[list[str]]:
-    """Return the encoding and comments in a PLY header."""
+    """Return the encoding, comments, and object info in a PLY header."""
     facts = []
-    comments = []
+    found: dict[str, list[str]] = {'comment': [], 'obj_info': []}
     with path.open('rb') as handle:
         for _ in range(200):
             line = handle.readline(1024).decode('latin-1').strip()
-            if line.startswith('format '):
+            keyword = line.split(' ', 1)[0]
+            if keyword == 'format':
                 encoding = line.split()[1].replace('_', ' ')
                 facts.append(['Format', f'PLY {encoding}'])
-            elif line.startswith(('comment ', 'obj_info ')):
-                comments.append(line.split(' ', 1)[1])
+            elif keyword in found:
+                found[keyword].append(line.split(' ', 1)[1] if ' ' in line else '')
             elif line == 'end_header' or not line:
                 break
-    if comments:
-        facts.append(['Comment', comments[0][:80]])
+    for label, keyword in (('Comment', 'comment'), ('Object info', 'obj_info')):
+        if found[keyword]:
+            facts.append([label, '\n'.join(found[keyword])])
     return facts
 
 
@@ -683,8 +666,17 @@ XML_DTYPES = {
     'Bit': 'bool',
 }
 XML_SECTIONS = {'PointData': 'Point', 'CellData': 'Cell', 'FieldData': 'Field'}
-# Header bytes searched for tags; a file whose tags run on past them is read whole.
-XML_TAGS_HEAD = 8 * 1024 * 1024
+# The counts a VTK XML piece records, by the dataset type it belongs to, and their labels.
+XML_PIECE_COUNTS = {
+    'UnstructuredGrid': (('NumberOfPoints', 'Points'), ('NumberOfCells', 'Cells')),
+    'PolyData': (
+        ('NumberOfPoints', 'Points'),
+        ('NumberOfVerts', 'Verts'),
+        ('NumberOfLines', 'Lines'),
+        ('NumberOfStrips', 'Strips'),
+        ('NumberOfPolys', 'Polys'),
+    ),
+}
 
 
 def header_row(
@@ -702,37 +694,9 @@ def header_row(
     }
 
 
-def grid_counts(extent: list[int]) -> tuple[list[int], int, int]:
-    """Return the dimensions, point count, and cell count of a structured extent."""
-    dims = [extent[i + 1] - extent[i] + 1 for i in (0, 2, 4)]
-    # One cell spans every axis of a single point, as VTK counts a one point grid.
-    cells = int(np.prod([d - 1 for d in dims if d > 1])) if min(dims) > 0 else 0
-    return dims, int(np.prod(dims)), cells
-
-
-def header_facts(
-    points: int, cells: int, dims: list[int] | None, spacing: list[float] | None
-) -> list:
-    """Return the facts a header gives: counts, and the shape of a grid."""
-    facts: list[list[Any]] = [['Points', count(points)], ['Cells', count(cells)]]
-    if dims is not None:
-        facts.append(['Dimensions', TIMES.join(str(d) for d in dims)])
-    if spacing is not None:
-        facts.append(['Spacing', triple(spacing)])
-    return facts
-
-
-def scalar_roles(actives: dict[str, str | None], association: str, name: str) -> list[str]:
-    """Return an array's roles from the active names a header records per association."""
-    # PyVista makes point scalars active over cell scalars, and vectors the same way.
-    roles = []
-    for role in ('scalars', 'vectors'):
-        point, cell = actives.get(f'Point {role}'), actives.get(f'Cell {role}')
-        if (('Point', point) if point else ('Cell', cell)) == (association, name):
-            roles.append(role)
-    return roles + [
-        role for role in ('normals', 'texture') if actives.get(f'{association} {role}') == name
-    ]
+def stored_roles(actives: dict[str, str | None], association: str, name: str) -> list[str]:
+    """Return an array's roles from the active names a header records for its association."""
+    return [role for role, _ in ROLES if actives.get(f'{association} {role}') == name]
 
 
 def zstd_metadata(path: Path) -> Any:
@@ -752,6 +716,19 @@ def zstd_array(reader: Any, name: str, association: str) -> np.ndarray | None:
         return None
 
 
+def zstd_dataset_facts(meta: Any, kind: str) -> list[list[Any]]:
+    """Return the counts and grid a ``.pv`` dataset's metadata stores."""
+    facts: list[list[Any]] = [['Points', count(meta.n_points)], ['Cells', count(meta.n_cells)]]
+    if getattr(meta, 'dimensions', None) is not None:
+        facts.append(['Dimensions', dimensions(meta.dimensions)])
+    if kind == 'ImageData':
+        if getattr(meta, 'spacing', None) is not None:
+            facts.append(['Spacing', triple(meta.spacing)])
+        if getattr(meta, 'direction_matrix', None) is not None:
+            facts.append(['Direction', direction(meta.direction_matrix)])
+    return facts
+
+
 def zstd_header(path: Path) -> dict:
     """Return what a ``.pv`` file's metadata says, with its user dict but no array values.
 
@@ -763,19 +740,11 @@ def zstd_header(path: Path) -> dict:
     if kind == 'MultiBlock':
         info = zstd_composite_header(meta)
     elif kind in DATASET_TYPES:
-        dims = list(meta.dimensions) if getattr(meta, 'dimensions', None) is not None else None
-        spacing = meta.spacing if kind == 'ImageData' else None
-        if dims is not None and kind != 'ImageData':
-            dims = None
-        info = {
-            'type': kind,
-            'facts': header_facts(meta.n_points, meta.n_cells, dims, spacing),
-            'rows': zstd_rows(meta),
-        }
+        info = {'type': kind, 'facts': zstd_dataset_facts(meta, kind), 'rows': zstd_rows(meta)}
     else:
         return {}
     if getattr(meta, 'bounds', None) is not None:
-        info['facts'].append(['Bounds', bounds(meta)])
+        info['facts'].append(['Bounds', bounds(meta.bounds)])
     if USER_DICT_KEY in (meta.field_data_keys or {}):
         import pyvista_zstd
 
@@ -789,58 +758,40 @@ def zstd_header(path: Path) -> dict:
 def zstd_rows(meta: Any) -> list[dict[str, Any]]:
     """Return the array rows of one ``.pv`` dataset's metadata, their ranges still to be found."""
     actives = {
-        f'{association} {role}': getattr(
-            meta, f'{association.lower()}_data_active_{attribute}_name'
-        )
+        f'{association} {role}': getattr(meta, f'{association.lower()}_data_{attribute}')
         for association in ('Point', 'Cell')
-        for role, attribute in (
-            ('scalars', 'scalars'),
-            ('vectors', 'vectors'),
-            ('normals', 'normals'),
-            ('texture', 'texture_coordinates'),
-        )
+        for role, attribute in ROLES
     }
     rows = []
-    for association, attribute in ASSOCIATIONS:
+    for association, attribute, _ in ASSOCIATIONS:
         for name, array in (getattr(meta, f'{attribute}_keys') or {}).items():
-            if name.startswith(PYVISTA_PREFIX):
+            if name == USER_DICT_KEY:
                 continue
             dtype = np.dtype(array.dtype) if array.dtype not in ('str', 'object') else None
             is_text = dtype is None or dtype.kind in 'OUS'
-            roles = [] if association == 'Field' else scalar_roles(actives, association, name)
             rows.append(
                 header_row(
                     name,
                     association,
                     'string' if is_text else str(dtype),
                     components(list(array.shape)),
-                    roles,
+                    stored_roles(actives, association, name),
                 )
             )
     return rows
 
 
 def zstd_leaves(meta: Any, prefix: str = '') -> list[tuple[str, Any]]:
-    """Return every dataset and empty block of a ``.pv`` composite, named by its nesting path."""
+    """Return every dataset and empty block of a ``.pv`` composite, named by its path of names."""
     found = []
-    for index, (uid, name) in enumerate(zip(meta.children, meta.children_keys, strict=True)):
-        path = f'{prefix}{name or index}'
+    for uid, name in zip(meta.children, meta.children_keys, strict=True):
+        path = f'{prefix}{name}'
         child = meta.children_ds.get(uid)
         if getattr(child, 'ds_type', None) == 'MultiBlock':
             found += zstd_leaves(child, f'{path}/')
         else:
             found.append((path, child))
     return found
-
-
-def zstd_depth(meta: Any) -> int:
-    """Return how many levels of composite a ``.pv`` composite holds, itself included."""
-    nested = [
-        zstd_depth(child)
-        for child in meta.children_ds.values()
-        if getattr(child, 'ds_type', None) == 'MultiBlock'
-    ]
-    return 1 + max(nested, default=0)
 
 
 def zstd_composite_header(meta: Any) -> dict[str, Any]:
@@ -855,10 +806,15 @@ def zstd_composite_header(meta: Any) -> dict[str, Any]:
                 child.ds_type if child is not None else block_kind(None),
                 child.n_points if child is not None else None,
                 child.n_cells if child is not None else None,
-                TIMES.join(str(d) for d in dims) if dims is not None else '',
+                dimensions(dims) if dims is not None else '',
             )
         )
-    facts, blocks = composite_summary(entries, zstd_depth(meta))
+    facts, blocks = composite_summary(
+        len(meta.children),
+        getattr(meta, 'n_points', None),
+        getattr(meta, 'n_cells', None),
+        entries,
+    )
     datasets = [child for _, child in found if child is not None]
     return {
         'type': 'MultiBlock',
@@ -893,20 +849,39 @@ def xml_attributes(text: str) -> dict[str, str]:
     return {key: html.unescape(value) for key, value in re.findall(r'(\w+)="([^"]*)"', text)}
 
 
-def xml_range(attributes: dict[str, str], kind_code: str, norm: str, tuples: int) -> Extent | None:
-    """Return the range a header records, or the lack of one as the values would give it."""
-    low, high = float(attributes['RangeMin']), float(attributes['RangeMax'])
-    if not no_range(low, high):
-        return low, high, 'f' if norm else kind_code, norm
-    # VTK writes an inverted range for an array without values and for one that is all NaN.
-    return (np.nan, np.nan, 'f', norm) if tuples and kind_code == 'f' else None
+def xml_range(attributes: dict[str, str], kind_code: str, norm: str) -> Extent | None:
+    """Return the range a header records as written, or None for VTK's inverted empty range."""
+    low, high = attributes['RangeMin'], attributes['RangeMax']
+    if float(low) > float(high):
+        return None
+    return low, high, 'f' if norm else kind_code, norm
+
+
+def xml_counts(kind: str, head: str) -> list[list[Any]]:
+    """Return the grid or piece counts a VTK XML header writes, as written."""
+    facts: list[list[Any]] = []
+    if (grid := re.search(rf'<{kind}\b([^>]*)>', head)) is not None:
+        attributes = xml_attributes(grid.group(1))
+        if 'WholeExtent' in attributes:
+            facts.append(['Whole extent', attributes['WholeExtent'].strip()])
+        if 'Spacing' in attributes:
+            facts.append(['Spacing', triple(float(v) for v in attributes['Spacing'].split())])
+    if kind not in XML_PIECE_COUNTS:
+        return facts
+    pieces = [xml_attributes(piece) for piece in re.findall(r'<Piece\b([^>]*)>', head)]
+    if len(pieces) != 1:
+        return [*facts, ['Pieces', count(len(pieces))]]
+    for key, label in XML_PIECE_COUNTS[kind]:
+        if key in pieces[0]:
+            facts.append([label, count(int(pieces[0][key]))])
+    return facts
 
 
 def xml_header(path: Path) -> dict:
     """Return what a serial VTK XML file's header says, ranges included where VTK wrote them.
 
     PyVista stores bool arrays as UInt8 and complex ones as two Float64 components, naming
-    them only in arrays the header does not carry, so those are reported as stored.
+    them in field arrays of its own, so those are reported as stored.
     """
     head = xml_text(path, XML_TAGS_HEAD)
     # Inline data can push later arrays past the window, so only a whole header is used.
@@ -917,25 +892,6 @@ def xml_header(path: Path) -> dict:
     kind = xml_attributes(match.group(1)).get('type') if match else None
     if kind not in DATASET_TYPES:
         return {}
-    points = cells = 0
-    dims: list[int] | None = None
-    spacing: list[float] | None = None
-    if (grid := re.search(rf'<{kind}\b([^>]*)>', head)) is not None:
-        attributes = xml_attributes(grid.group(1))
-        if 'WholeExtent' in attributes:
-            dims, points, cells = grid_counts([int(v) for v in attributes['WholeExtent'].split()])
-        if 'Spacing' in attributes:
-            spacing = [float(v) for v in attributes['Spacing'].split()]
-    if dims is None:
-        for piece in re.finditer(r'<Piece\b([^>]*)>', head):
-            attributes = xml_attributes(piece.group(1))
-            points += int(attributes.get('NumberOfPoints', 0))
-            parts = (
-                ('NumberOfCells',)
-                if kind != 'PolyData'
-                else ('NumberOfVerts', 'NumberOfLines', 'NumberOfStrips', 'NumberOfPolys')
-            )
-            cells += sum(int(attributes.get(part, 0)) for part in parts)
     actives: dict[str, str | None] = {}
     rows: dict[tuple[str, str], dict[str, Any]] = {}
     section = None
@@ -959,12 +915,7 @@ def xml_header(path: Path) -> dict:
                 section = None
             continue
         name = attributes.get('Name')
-        if (
-            section is None
-            or not name
-            or name.startswith(PYVISTA_PREFIX)
-            or (name, section) in rows
-        ):
+        if section is None or not name or name == USER_DICT_KEY or (name, section) in rows:
             continue
         n_components = int(attributes.get('NumberOfComponents', 1))
         dtype = XML_DTYPES.get(attributes.get('type', ''), attributes.get('type', '').lower())
@@ -973,18 +924,15 @@ def xml_header(path: Path) -> dict:
             kind_code = 'f' if dtype.startswith('float') else 'b' if dtype == 'bool' else 'i'
             # VTK records a vector's range over its magnitude, which is said as such.
             norm = VECTOR_NORM if n_components > 1 else ''
-            tuples = {'Point': points, 'Cell': cells}.get(section, 1)
-            tuples = int(attributes.get('NumberOfTuples', tuples))
-            row['extent'] = xml_range(attributes, kind_code, norm, tuples)
+            row['extent'] = xml_range(attributes, kind_code, norm)
         rows[(name, section)] = row
     for (name, association), row in rows.items():
-        if association != 'Field':
-            row['active'] = scalar_roles(actives, association, name)
+        row['active'] = stored_roles(actives, association, name)
     # Listed as a dataset lists them, point arrays first, though a file puts field data first.
-    order = [association for association, _ in ASSOCIATIONS]
+    order = [association for association, _, _ in ASSOCIATIONS]
     return {
         'type': kind,
-        'facts': header_facts(points, cells, dims, spacing),
+        'facts': xml_counts(kind, head),
         'rows': sorted(rows.values(), key=lambda row: order.index(row['association'])),
     }
 
@@ -1033,26 +981,26 @@ def describe(dataset: Any, source: str, header: dict[str, Any] | None = None) ->
     ``header`` describes the arrays a selective read left out.
     """
     info: dict[str, Any] = {'type': type(dataset).__name__}
-    dataset = as_multiblock(dataset)
     rows: list[dict[str, Any]] = []
-    if isinstance(dataset, pv.MultiBlock):
-        found = leaves(dataset)
+    described = isinstance(dataset, pv.DataSet | pv.MultiBlock | pv.PartitionedDataSet)
+    if isinstance(dataset, pv.MultiBlock | pv.PartitionedDataSet):
+        found = leaves(dataset) if isinstance(dataset, pv.MultiBlock) else partitions(dataset)
         facts, blocks = composite_facts(dataset, found)
         info['blocks'] = blocks
         info['block_count'] = len(found)
-        rows = merge_arrays([b for _, b in found if b is not None])
+        rows = merge_arrays(dataset, [b for _, b in found if b is not None])
     elif isinstance(dataset, pv.DataSet):
-        facts = dataset_facts(dataset, Path(source).suffix.lower())
+        facts = dataset_facts(dataset)
         rows = array_rows(dataset)
         if header:
             rows = merged_rows(rows, header)
     else:
         facts = []
-    if isinstance(dataset, pv.DataSet | pv.MultiBlock):
+    if described:
         info['array_count'] = len(rows)
         info['arrays'] = format_rows(rows)
     info['facts'] = facts
-    if isinstance(dataset, pv.DataSet | pv.MultiBlock):
+    if described:
         lines = user_dict(dataset) or (header or {}).get('user_dict')
         if lines:
             info['user_dict'] = lines

@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+import re
 
 import numpy as np
 import pytest
@@ -34,7 +35,7 @@ def facts(info, key='facts'):
 
 
 def test_image_data_lists_its_grid(tmp_path):
-    """An image reports dimensions, spacing, and origin, and no cell types."""
+    """An image reports dimensions, spacing, direction, and its cell type."""
     image = pv.ImageData(dimensions=(4, 5, 6), spacing=(0.5, 1, 2), origin=(1, 2, 3))
     image['scalars'] = np.arange(image.n_points, dtype=np.float32)
     info = described(image, tmp_path, 'grid.vti')
@@ -48,27 +49,34 @@ def test_image_data_lists_its_grid(tmp_path):
     assert 'Origin' not in rows
     assert rows['Bounds'] == [['x', '1.0', '2.5'], ['y', '2.0', '6.0'], ['z', '3.0', '13.0']]
     assert rows['Cell type'] == ['Voxel']
-    assert 'Direction' not in rows
+    assert rows['Direction'] == '1.0, 0.0, 0.0\n0.0, 1.0, 0.0\n0.0, 0.0, 1.0'
     [array] = info['arrays']
     assert array['range'] == '[0.0, 119.0]'
     assert array['active'] == ['scalars']
     assert 'size' not in array
 
 
-@pytest.mark.parametrize(
-    ('name', 'expected'), [('flat.png', f'4{X}3'), ('flat.vti', f'4{X}3{X}1')]
-)
-def test_flat_images_drop_the_single_slice_only_for_raster_formats(tmp_path, name, expected):
-    """A raster image shows two dimensions, a VTK image of one slice still shows three."""
+@pytest.mark.parametrize('name', ['flat.png', 'flat.vti'])
+def test_every_image_shows_the_dimensions_it_reports(tmp_path, name):
+    """An image of one slice shows all three dimensions it reports, whatever its format."""
     image = pv.ImageData(dimensions=(4, 3, 1))
     image['values'] = np.arange(12, dtype=np.uint8)
-    assert facts(described(image, tmp_path, name))['Dimensions'] == expected
+    path = tmp_path / name
+    image.save(path)
+    read = pv.read(path)
+    rows = facts(info_mod.describe(read, str(path)))
+    assert rows['Dimensions'] == X.join(str(d) for d in read.dimensions) == f'4{X}3{X}1'
 
 
-def test_a_rotated_image_says_so(tmp_path):
-    """An image whose axes are turned is marked as such."""
-    image = pv.ImageData(dimensions=(2, 2, 2), direction_matrix=np.diag([1, -1, -1]))
-    assert facts(info_mod.describe(image, str(tmp_path / 'none')))['Direction'] == 'rotated'
+def test_an_image_shows_its_direction_matrix(tmp_path):
+    """An image's direction matrix is shown row by row, as the image reports it."""
+    matrix = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    image = pv.ImageData(dimensions=(2, 2, 2), direction_matrix=matrix)
+    rows = facts(info_mod.describe(image, str(tmp_path / 'none')))
+    assert rows['Direction'].split('\n') == [
+        ', '.join(info_mod.real(v) for v in row) for row in image.direction_matrix
+    ]
+    assert rows['Direction'] == '0.0, -1.0, 0.0\n1.0, 0.0, 0.0\n0.0, 0.0, 1.0'
 
 
 def test_unstructured_grid_lists_cell_types_and_arrays(tmp_path):
@@ -109,9 +117,9 @@ def test_every_cell_type_is_named():
         ]
     }
     grid = pv.UnstructuredGrid(cells, np.random.default_rng(0).random((8, 3)))
-    assert len(facts(info_mod.describe(grid, 'none'))['Cell types']) == len(
-        grid.distinct_cell_types
-    )
+    assert facts(info_mod.describe(grid, 'none'))['Cell types'] == [
+        t.name.title().replace('_', ' ') for t in sorted(grid.distinct_cell_types)
+    ]
 
 
 def test_many_arrays_are_cut_short(tmp_path):
@@ -123,8 +131,8 @@ def test_many_arrays_are_cut_short(tmp_path):
     assert rows[-1] == {'name': '\u2026 6 more arrays', 'more': True}
 
 
-def test_each_kind_of_array_reports_its_range_in_its_own_terms():
-    """Ranges come from get_data_range, of the magnitude for vectors and modulus for complex."""
+def odd_kinds():
+    """Return a mesh with one array of every kind a range is reported for."""
     mesh = pv.PolyData(np.zeros((2, 3)))
     mesh.point_data['floats'] = [0.0, 580.0]
     mesh.point_data['ints'] = [-3, 7]
@@ -136,37 +144,97 @@ def test_each_kind_of_array_reports_its_range_in_its_own_terms():
     mesh.point_data['nan_vectors'] = np.full((2, 3), np.nan)
     mesh.point_data['masks'] = [[True, False, False], [True, True, True]]
     mesh.field_data['time'] = [0.25, 3.0]
+    return mesh
+
+
+def test_each_kind_of_array_reports_its_range_in_its_own_terms():
+    """Ranges are the VTK array's own, of the magnitude for vectors and modulus for complex."""
+    mesh = odd_kinds()
     rows = {row['name']: row['range'] for row in info_mod.describe(mesh, 'none')['arrays']}
     assert rows['floats'] == '[0.0, 580.0]'
     assert rows['ints'] == '[-3, 7]'
     assert rows['vectors'] == '||v|| [1.0, 5.0]'
-    assert rows['mixed'] == '[False, True]'
-    assert rows['all_true'] == 'True'
-    assert rows['nan'] == 'NaN'
+    # VTK holds a bool as a byte, and reports the byte's range.
+    assert rows['mixed'] == '[0, 1]'
+    assert rows['all_true'] == '1'
+    # VTK reports an inverted range for values that are all NaN, which is no range.
+    assert rows['nan'] == ''
     assert rows['complex'] == '||z|| [0.0, 5.0]'
-    assert rows['nan_vectors'] == 'NaN'
     assert rows['masks'] == '||v|| [1.0, 1.732]'
     assert rows['time'] == '[0.25, 3.0]'
-    assert info_mod.data_range(mesh, 'none', 'Point', np.array([])) is None
-    assert (
-        info_mod.range_text(info_mod.data_range(mesh, 'c', 'Point', np.array([np.nan * 1j])))
-        == 'NaN'
-    )
     assert info_mod.text_preview(np.array(['a', 'b', 'c', 'd'])) == 'a, b, c, \u2026'
 
 
+def test_every_range_is_the_one_its_vtk_array_reports():
+    """Each range shown is the VTK array's own: its value range, or GetRange(-1) for more."""
+    mesh = odd_kinds()
+    rows = {row['name']: row['range'] for row in info_mod.describe(mesh, 'none')['arrays']}
+    for association, data in (('Point', mesh.GetPointData()), ('Field', mesh.GetFieldData())):
+        for name in getattr(mesh, f'{association.lower()}_data'):
+            array = data.GetArray(name)
+            if name == 'complex' or array.GetNumberOfComponents() > 1:
+                low, high = array.GetRange(-1)
+                norm = info_mod.COMPLEX_NORM if name == 'complex' else info_mod.VECTOR_NORM
+                expected = (low, high, 'f', norm)
+            else:
+                low, high = array.GetValueRange(0)
+                expected = (low, high, 'f' if isinstance(low, float) else 'i', '')
+            assert rows[name] == info_mod.range_text(expected), name
+    # VTK's magnitude range of all-NaN vectors, shown as VTK reports it.
+    assert rows['nan_vectors'] == info_mod.range_text(
+        (*mesh.GetPointData().GetArray('nan_vectors').GetRange(-1), 'f', info_mod.VECTOR_NORM)
+    )
+
+
+def test_distinct_range_ends_never_read_as_one_value():
+    """Two ends that differ are an interval, even when they look alike once rounded."""
+    assert info_mod.range_text((1.00001, 1.00002, 'f', '')) == '[1.0, 1.0]'
+    assert info_mod.range_text((2.5, 2.5, 'f', '')) == '2.5'
+    assert info_mod.range_text((1e299, -1e299, 'f', '')) == ''
+    assert info_mod.range_text((np.nan, np.nan, 'f', '')) == 'NaN'
+
+
 def test_same_name_on_points_cells_and_field_is_three_rows(tmp_path):
-    """One name on each association gives a row each, with its own range and one active row."""
+    """One name on each association gives a row each, with its own range and its own roles."""
     image = pv.ImageData(dimensions=(4, 4, 4))
     image.point_data['temperature'] = np.linspace(0, 1, image.n_points)
     image.cell_data['temperature'] = np.linspace(100, 200, image.n_cells)
     image.field_data['temperature'] = [42.0]
     rows = described(image, tmp_path, 'same_name.vti')['arrays']
+    # Each association records its own active scalars, and both name this array.
     assert [(row['association'], row['range'], row['active']) for row in rows] == [
         ('Point', '[0.0, 1.0]', ['scalars']),
-        ('Cell', '[100.0, 200.0]', []),
+        ('Cell', '[100.0, 200.0]', ['scalars']),
         ('Field', '42.0', []),
     ]
+
+
+def test_active_roles_are_each_associations_own(tmp_path):
+    """Every role shown is one the array's own association records, on every path."""
+    mesh = pv.Sphere()
+    mesh.point_data['p'] = np.arange(mesh.n_points, dtype=float)
+    mesh.cell_data['c'] = np.arange(mesh.n_cells, dtype=float)
+    mesh.point_data['flow'] = np.ones((mesh.n_points, 3))
+    mesh.cell_data['spin'] = np.ones((mesh.n_cells, 3))
+    mesh.point_data.active_scalars_name = 'p'
+    mesh.cell_data.active_scalars_name = 'c'
+    mesh.point_data.active_vectors_name = 'flow'
+    mesh.cell_data.active_vectors_name = 'spin'
+    for name in ('roles.pv', 'roles.vtp'):
+        head, full = header_and_full(mesh, tmp_path, name)
+        read = pv.read(tmp_path / name)
+        for info in (head, full):
+            rows = rows_by_name(info)
+            for association, data in (('Point', read.point_data), ('Cell', read.cell_data)):
+                for array in data:
+                    expected = [
+                        role
+                        for role, attribute in info_mod.ROLES
+                        if getattr(data, attribute) == array
+                    ]
+                    assert rows[(array, association)]['active'] == expected, (name, array)
+        assert rows_by_name(head)[('c', 'Cell')]['active'] == ['scalars']
+        assert rows_by_name(head)[('spin', 'Cell')]['active'] == ['vectors']
 
 
 def test_odd_arrays_survive_a_file(tmp_path):
@@ -178,7 +246,8 @@ def test_odd_arrays_survive_a_file(tmp_path):
     rows = {row['name']: row for row in described(mesh, tmp_path, 'odd.vtp')['arrays']}
     assert rows['complex']['range'] == '||z|| 5.0'
     assert rows['labels']['dtype'] == 'string'
-    assert rows['flags']['range'] == 'True'
+    assert rows['flags']['dtype'] == 'bool'
+    assert rows['flags']['range'] == '1'
 
 
 def test_user_dict_gets_its_own_lines_and_no_array_row(tmp_path):
@@ -196,6 +265,19 @@ def test_user_dict_gets_its_own_lines_and_no_array_row(tmp_path):
     assert info['user_dict'][1] == '"solver": {'
     assert '"history": ["step 0", \u2026 200 items]' in info['user_dict']
     assert all(row['name'] != info_mod.USER_DICT_KEY for row in info['arrays'])
+
+
+@pytest.mark.parametrize(
+    'dataset',
+    [pv.Sphere(), pv.MultiBlock({'a': pv.Sphere()})],
+    ids=['dataset', 'composite'],
+)
+def test_the_user_dict_is_the_one_pyvista_reads(dataset):
+    """The lines shown are those of the dict ``user_dict`` gives, for datasets and composites."""
+    dataset.user_dict.update({'name': 'mesh', 'steps': [1, 2, 3]})
+    lines = info_mod.describe(dataset, 'x')['user_dict']
+    assert lines == info_mod.budgeted(dict(dataset.user_dict))
+    assert lines == ['"name": "mesh",', '"steps": [1, 2, 3]']
 
 
 def test_a_dataset_without_a_user_dict_has_no_section():
@@ -284,17 +366,21 @@ def test_multiblock_lists_blocks_and_merges_arrays(tmp_path):
     inner = pv.MultiBlock({'cube': cube, 'cone': pv.Cone()})
     nested = pv.MultiBlock({'sphere': sphere, 'inner': inner})
     info = described(nested, tmp_path, 'combo.vtm')
+    read = pv.read(tmp_path / 'combo.vtm')
     rows = facts(info)
-    assert rows['Blocks'] == '3'
-    assert rows['Depth'] == '2'
-    assert rows['Block type'] == '3 PolyData'
+    assert rows['Blocks'] == str(read.n_blocks) == '2'
+    assert info['block_count'] == 3
+    assert 'Depth' not in rows
+    assert rows['Points'] == info_mod.count(read.GetNumberOfPoints())
+    assert rows['Cells'] == info_mod.count(read.GetNumberOfCells())
+    assert rows['Block type'] == 'PolyData'
     assert [block['name'] for block in info['blocks']] == ['sphere', 'inner/cube', 'inner/cone']
     assert {block['dimensions'] for block in info['blocks']} == {''}
     [normals] = [row for row in info['arrays'] if row['name'] == 'Normals']
     assert normals['blocks'] == '2 of 3'
-    assert normals['dtype'] == 'mixed'
-    # Unit normals and zeroed ones, as magnitudes.
-    assert normals['range'] == '||v|| [0.0, 1.0]'
+    assert normals['dtype'] == 'float32, float64'
+    # A composite's vector range has no PyVista source, so none is shown.
+    assert normals['range'] == ''
 
 
 def test_blocks_list_their_dimensions():
@@ -306,8 +392,8 @@ def test_blocks_list_their_dimensions():
     assert [block['dimensions'] for block in blocks] == [f'4{X}3{X}1', f'2{X}2{X}2']
 
 
-def test_merged_ranges_span_every_block():
-    """An array in several blocks gets one range across them, unless the kinds disagree."""
+def test_merged_ranges_are_the_composites_own():
+    """A one component array's range is the composite's get_data_range, and others have none."""
     first, second = pv.Sphere(), pv.Cube()
     first.point_data['t'] = np.linspace(0, 1, first.n_points)
     second.point_data['t'] = np.arange(second.n_points)
@@ -315,14 +401,44 @@ def test_merged_ranges_span_every_block():
     second.point_data['z'] = np.zeros(second.n_points)
     first.point_data['s'] = np.array(['a'] * first.n_points)
     second.point_data['s'] = np.zeros(second.n_points)
+    first.cell_data['only'] = np.arange(first.n_cells)
+    first.point_data['v'] = np.ones((first.n_points, 3))
+    composite = pv.MultiBlock([first, second])
+    rows = {row['name']: row for row in info_mod.describe(composite, 'x')['arrays']}
+    for name, association in (('t', 'point'), ('only', 'cell')):
+        low, high = composite.get_data_range(name, preference=association, allow_missing=True)
+        assert rows[name]['range'] == info_mod.range_text(
+            (low, high, info_mod.reported_kind(low, high), '')
+        )
+    assert rows['t']['range'] == '[0.0, 7.0]'
+    assert rows['only']['range'] == f'[0, {first.n_cells - 1}]'
+    assert rows['z']['range'] == ''
+    assert rows['v']['range'] == ''
+    assert rows['s']['range'] == ''
+    assert rows['s']['dtype'] == 'string, float64'
+    assert rows['z']['dtype'] == 'complex128, float64'
+
+
+def test_merged_rows_show_what_every_block_agrees_on():
+    """Components and roles shown are those all blocks share, else each distinct one."""
+    first, second = pv.Sphere(), pv.Sphere()
+    first.point_data['a'] = np.zeros(first.n_points)
+    second.point_data['a'] = np.zeros((second.n_points, 3))
+    first.point_data['same'] = np.zeros(first.n_points, dtype=np.int32)
+    second.point_data['same'] = np.zeros(second.n_points, dtype=np.int32)
+    first.point_data.active_scalars_name = 'a'
+    second.point_data.active_scalars_name = None
     rows = {
         row['name']: row
         for row in info_mod.describe(pv.MultiBlock([first, second]), 'x')['arrays']
     }
-    assert rows['t']['range'] == '[0.0, 7.0]'
-    assert rows['z']['range'] == ''
-    assert rows['s']['range'] == ''
-    assert rows['s']['dtype'] == 'mixed'
+    assert rows['a']['components'] == '1, 3'
+    assert rows['a']['active'] == 'scalars / none'
+    assert rows['a']['dtype'] == 'float64'
+    assert rows['same']['components'] == 1
+    assert rows['same']['active'] == []
+    assert rows['same']['dtype'] == 'int32'
+    assert rows['Normals']['active'] == ['normals']
 
 
 def test_many_blocks_are_cut_short():
@@ -332,10 +448,20 @@ def test_many_blocks_are_cut_short():
 
 
 def test_partitioned_dataset_is_described_as_blocks():
-    """A partitioned dataset is described the way a composite is."""
-    info = info_mod.describe(pv.PartitionedDataSet([pv.Sphere()]), 'none')
+    """A partitioned dataset's partitions are named by index, its counts its own."""
+    partitioned = pv.PartitionedDataSet([pv.Sphere(), pv.Cube()])
+    info = info_mod.describe(partitioned, 'none')
+    rows = facts(info)
     assert info['type'] == 'PartitionedDataSet'
-    assert facts(info)['Blocks'] == '1'
+    assert rows['Blocks'] == str(partitioned.n_partitions) == '2'
+    assert rows['Points'] == info_mod.count(partitioned.GetNumberOfPoints())
+    assert rows['Cells'] == info_mod.count(partitioned.GetNumberOfCells())
+    assert [block['name'] for block in info['blocks']] == ['0', '1']
+    extent = [0.0] * 6
+    partitioned.GetBounds(extent)
+    assert rows['Bounds'] == info_mod.bounds(extent)
+    # A partitioned dataset reports no range across its partitions.
+    assert {row['range'] for row in info['arrays']} == {''}
 
 
 def test_something_that_is_not_a_dataset_has_no_facts():
@@ -344,13 +470,16 @@ def test_something_that_is_not_a_dataset_has_no_facts():
 
 
 def test_zstd_container_reports_its_compression(tmp_path):
-    """A pyvista-zstd file reports its version, compression, and ratio."""
+    """A pyvista-zstd file reports its version, compression, and the sizes its reader gives."""
     image = pv.ImageData(dimensions=(20, 20, 20))
     image['zeros'] = np.zeros(image.n_points)
     rows = facts(described(image, tmp_path, 'image.pv'), 'file')
     assert rows['Format'].startswith('pyvista-zstd v')
     assert rows['Compression'] == 'zstandard level 3'
-    assert rows['Uncompressed'].endswith(f'{X} ratio)')
+    with pyvista_zstd.Reader(tmp_path / 'image.pv') as reader:
+        assert rows['Uncompressed'] == info_mod.size(reader.nbytes)
+        assert rows['Compressed'] == info_mod.size(reader.compressed_nbytes)
+    assert 'ratio' not in rows['Uncompressed']
 
 
 def test_a_version_3_container_is_described_and_drawn(tmp_path):
@@ -367,18 +496,15 @@ def test_a_version_3_container_is_described_and_drawn(tmp_path):
     assert dict(json.loads(info.read_text())['file'])['Format'] == 'pyvista-zstd v3'
 
 
-@pytest.mark.parametrize(
-    ('save', 'expected'),
-    [
-        ({'binary': True}, {'Format': 'VTK XML ', 'Encoding': 'binary'}),
-        ({'binary': False}, {'Format': 'VTK XML ', 'Encoding': 'ascii', 'Compression': None}),
-    ],
-)
-def test_vtk_xml_reports_its_encoding(tmp_path, save, expected):
-    """A VTK XML file reports its version and how its arrays are stored."""
-    rows = facts(described(pv.Sphere(), tmp_path, 'sphere.vtp', **save), 'file')
-    for key, value in expected.items():
-        assert rows.get(key) is None if value is None else rows[key].startswith(value)
+@pytest.mark.parametrize(('binary', 'encoding'), [(True, 'binary'), (False, 'ascii')])
+def test_vtk_xml_reports_its_encoding(tmp_path, binary, encoding):
+    """A VTK XML file reports its version, how its arrays are stored, and its compressor."""
+    rows = facts(described(pv.Sphere(), tmp_path, 'sphere.vtp', binary=binary), 'file')
+    text = (tmp_path / 'sphere.vtp').read_text(errors='replace')
+    assert rows['Format'].startswith('VTK XML ')
+    assert rows['Encoding'] == encoding
+    # Named whenever the header names a compressor, as an ASCII file's header still does.
+    assert ('Compression' in rows) == ('compressor=' in text)
 
 
 def test_vtk_xml_compressor_is_named(tmp_path):
@@ -390,6 +516,17 @@ def test_vtk_xml_compressor_is_named(tmp_path):
     assert 'Encoding' not in rows
 
 
+def test_vtk_xml_encodings_are_found_as_far_as_the_tags_are(tmp_path):
+    """An encoding written far into the header is reported, as the tags there are read."""
+    path = tmp_path / 'late.vtu'
+    padding = ' ' * (256 * 1024)
+    path.write_text(
+        f'<VTKFile type="UnstructuredGrid" version="1.0">{padding}'
+        '<DataArray type="Float64" Name="a" format="ascii"></DataArray></VTKFile>'
+    )
+    assert dict(info_mod.xml_facts(path))['Encoding'] == 'ascii'
+
+
 def test_xml_without_a_header_reports_nothing(tmp_path):
     """A file named like VTK XML that is not one adds no file rows."""
     path = tmp_path / 'fake.vtu'
@@ -398,7 +535,7 @@ def test_xml_without_a_header_reports_nothing(tmp_path):
 
 
 def test_legacy_vtk_reports_its_version_and_title(tmp_path):
-    """A legacy file reports its version, encoding, and any title worth showing."""
+    """A legacy file reports its version, encoding, and its title line as written."""
     path = tmp_path / 'titled.vtk'
     pv.Sphere().save(path)
     lines = path.read_bytes().split(b'\n', 2)
@@ -409,16 +546,26 @@ def test_legacy_vtk_reports_its_version_and_title(tmp_path):
     assert rows['Title'] == 'My sphere'
     untitled = tmp_path / 'untitled.vtk'
     pv.Sphere().save(untitled)
-    assert 'Title' not in dict(info_mod.legacy_facts(untitled))
+    written = untitled.read_bytes().split(b'\n', 2)[1].decode()
+    assert dict(info_mod.legacy_facts(untitled))['Title'] == written == 'vtk output'
 
 
-def test_ply_reports_encoding_and_comment(tmp_path):
-    """A PLY header's format and first comment are reported."""
+def test_ply_reports_encoding_comments_and_object_info(tmp_path):
+    """A PLY header's format, every comment, and its object info are reported."""
     path = tmp_path / 'sphere.ply'
     pv.Sphere().save(path)
     rows = dict(info_mod.file_facts(path))
     assert rows['Format'] == 'PLY binary little endian'
     assert rows['Comment'] == 'VTK generated PLY File'
+    assert rows['Object info'] == 'vtkPolyData points and polygons: vtk4.0'
+    several = tmp_path / 'several.ply'
+    several.write_text(
+        'ply\nformat ascii 1.0\ncomment first\ncomment second\nobj_info a\nobj_info b\n'
+        'element vertex 0\nend_header\n'
+    )
+    rows = dict(info_mod.ply_facts(several))
+    assert rows['Comment'] == 'first\nsecond'
+    assert rows['Object info'] == 'a\nb'
 
 
 @pytest.mark.parametrize(('binary', 'expected'), [(True, 'STL binary'), (False, 'STL text')])
@@ -465,28 +612,37 @@ def test_a_failed_description_leaves_the_preview(tmp_path, monkeypatch, capsys):
     assert 'info skipped: ValueError: no' in capsys.readouterr().err
 
 
-def test_multiblock_counts_every_block_kind(tmp_path):
-    """Block types count the leaves the block count counts, None blocks included, by name."""
+def test_multiblock_names_every_block_kind(tmp_path):
+    """Block types name each kind of leaf once, None blocks included; Blocks is the top level."""
     inner = pv.MultiBlock({'image': pv.ImageData(dimensions=(2, 2, 2)), 'gap': None})
     outer = pv.MultiBlock(
         {'mesh': pv.Sphere(), 'inner': inner, 'deeper': pv.MultiBlock({'leaf': inner.copy()})}
     )
     info = info_mod.describe(outer, 'x')
     rows = facts(info)
-    assert rows['Blocks'] == str(info['block_count']) == '5'
-    assert rows['Depth'] == '3'
-    assert rows['Block types'] == '2 ImageData\n2 None\n1 PolyData'
+    assert rows['Blocks'] == str(outer.n_blocks) == '3'
+    assert info['block_count'] == 5
+    assert 'Depth' not in rows
+    assert rows['Block types'] == 'ImageData\nNone\nPolyData'
     gap = next(block for block in info['blocks'] if block['name'] == 'inner/gap')
     assert gap['type'] == 'None'
     assert gap['points'] == ''
 
 
 def test_single_kind_labels_are_singular():
-    """One block type or cell type gets a singular label, and a flat composite has no depth."""
+    """One block type or cell type gets a singular label."""
     rows = facts(info_mod.describe(pv.MultiBlock([pv.Sphere(), pv.Cone()]), 'x'))
-    assert rows['Block type'] == '2 PolyData'
-    assert 'Depth' not in rows
+    assert rows['Block type'] == 'PolyData'
     assert facts(info_mod.describe(pv.Sphere(), 'x'))['Cell type'] == ['Triangle']
+
+
+def test_block_names_are_the_stored_names_joined(tmp_path):
+    """A block is named by the path of its stored names, an empty one left empty, on every path."""
+    blocks = pv.MultiBlock({'': pv.Sphere(), 'x': pv.MultiBlock({'': pv.Cube(), 'g': None})})
+    head, full = header_and_full(blocks, tmp_path, 'names.pv')
+    expected = list(blocks.recursive_iterator('names', prepend_names=True, separator='/'))
+    assert [block['name'] for block in full['blocks']] == expected == ['', 'x/', 'x/g']
+    assert [block['name'] for block in head['blocks']] == expected
 
 
 def test_the_array_count_includes_arrays_left_off_the_list():
@@ -578,7 +734,7 @@ def test_a_header_agrees_with_reading_the_file(tmp_path, name):
     save = {'binary': False} if 'ascii' in name else {}
     head, full = header_and_full(mesh, tmp_path, name.replace('_ascii', ''), **save)
     assert head['type'] == full['type']
-    shared = {'Points', 'Cells', 'Dimensions', 'Spacing'}
+    shared = {f[0] for f in head['facts']} & {f[0] for f in full['facts']}
     assert [f for f in head['facts'] if f[0] in shared] == [
         f for f in full['facts'] if f[0] in shared
     ]
@@ -629,6 +785,23 @@ def test_a_pv_header_carries_the_user_dict(tmp_path):
     assert info['array_count'] == 1
 
 
+@pytest.mark.parametrize('stored', ['not json', '[1, 2]', ''], ids=['text', 'list', 'empty'])
+def test_a_stored_user_dict_that_is_not_one_is_not_shown(stored):
+    """Stored text that is not a JSON object shows no user dict."""
+    assert info_mod.user_dict_lines(np.array([stored])) == []
+    assert info_mod.user_dict_lines(np.array([], dtype=str)) == []
+
+
+def test_a_composite_bool_range_is_the_one_pyvista_reports():
+    """A bool array across blocks shows the range PyVista reports, as bools."""
+    block = pv.Sphere()
+    block['flag'] = np.ones(block.n_points, dtype=bool)
+    blocks = pv.MultiBlock([block, block.copy()])
+    reported = blocks.get_data_range('flag', preference='point', allow_missing=True)
+    row = rows_by_name(info_mod.describe(blocks, 'x'))[('flag', 'Point')]
+    assert row['range'] == info_mod.bound(reported[0], 'b') == 'True'
+
+
 def nested_blocks():
     """Return a composite of mixed blocks, an empty one, and a nested level, with a user dict."""
     inner = pv.MultiBlock({'grid': mixed_arrays(), 'gap': None})
@@ -645,14 +818,45 @@ def test_a_pv_composite_header_agrees_with_reading_the_file(tmp_path):
     assert head['type'] == full['type'] == 'MultiBlock'
     assert head['blocks'] == full['blocks']
     assert head['block_count'] == full['block_count'] == 4
-    assert head['facts'] == [fact for fact in full['facts'] if fact[0] != 'Bounds']
+    labels = {fact[0] for fact in head['facts']}
+    assert head['facts'] == [fact for fact in full['facts'] if fact[0] in labels]
+    assert dict(head['facts'])['Blocks'] == '3'
     assert head['array_count'] == full['array_count']
     heads, fulls = rows_by_name(head), rows_by_name(full)
     assert set(heads) == set(fulls)
     for key, row in heads.items():
         for field in ('dtype', 'components', 'active', 'blocks'):
             assert row[field] == fulls[key][field], (key, field)
+        # A composite header holds no values, and per-block ranges are never combined.
+        assert row['range'] == '', key
     assert head['user_dict'] == full['user_dict'] == ['"run": 3']
+
+
+class WithCounts:
+    """Composite metadata as a pyvista-zstd that stores point and cell counts reads it."""
+
+    def __init__(self, meta, n_points, n_cells):
+        """Wrap ``meta`` with the counts given."""
+        self._meta, self.n_points, self.n_cells = meta, n_points, n_cells
+
+    def __getattr__(self, name):
+        """Return what the wrapped metadata holds."""
+        return getattr(self._meta, name)
+
+
+def test_a_pv_composite_shows_the_counts_its_metadata_stores(tmp_path, monkeypatch):
+    """A composite's points and cells come from its own metadata, and are absent without them."""
+    path = tmp_path / 'blocks.pv'
+    blocks = nested_blocks()
+    pyvista_zstd.write(blocks, path)
+    read = info_mod.zstd_metadata
+    if getattr(read(path), 'n_points', None) is None:
+        assert not {'Points', 'Cells'} & set(dict(info_mod.header_info(str(path))['facts']))
+    monkeypatch.setattr(info_mod, 'zstd_metadata', lambda p: WithCounts(read(p), 1234, 56))
+    rows = dict(info_mod.header_info(str(path))['facts'])
+    assert rows['Points'] == info_mod.count(1234)
+    assert rows['Cells'] == '56'
+    assert rows['Blocks'] == str(len(read(path).children))
 
 
 def test_a_pv_composite_header_reads_no_array_values(tmp_path, monkeypatch):
@@ -685,11 +889,40 @@ def test_a_pv_composite_is_read_whole_rather_than_selectively(tmp_path):
     assert export_mod.read_selectively(str(path)) is None
 
 
-def test_polydata_headers_count_every_kind_of_cell(tmp_path):
-    """Vertices, lines, strips, and polygons all count as cells in a PolyData header."""
+def test_polydata_headers_show_each_count_as_written(tmp_path):
+    """A one piece PolyData header shows its points and each kind of cell, as the piece writes."""
     mesh = pv.Sphere() + pv.Line() + pv.PolyData(np.zeros((1, 3)))
-    head, full = header_and_full(mesh, tmp_path, 'mixed.vtp')
-    assert dict(head['facts'])['Cells'] == dict(full['facts'])['Cells']
+    head, _ = header_and_full(mesh, tmp_path, 'mixed.vtp')
+    rows = dict(head['facts'])
+    assert rows['Points'] == info_mod.count(mesh.GetNumberOfPoints())
+    assert rows['Verts'] == info_mod.count(mesh.GetNumberOfVerts())
+    assert rows['Lines'] == info_mod.count(mesh.GetNumberOfLines())
+    assert rows['Strips'] == info_mod.count(mesh.GetNumberOfStrips())
+    assert rows['Polys'] == info_mod.count(mesh.GetNumberOfPolys())
+    assert 'Cells' not in rows
+
+
+def test_an_unstructured_header_shows_its_piece_counts(tmp_path):
+    """A one piece UnstructuredGrid header shows the counts its piece writes."""
+    grid = pv.ImageData(dimensions=(3, 4, 5)).cast_to_unstructured_grid()
+    head, full = header_and_full(grid, tmp_path, 'grid.vtu')
+    assert head['facts'] == [
+        ['Points', info_mod.count(grid.n_points)],
+        ['Cells', info_mod.count(grid.n_cells)],
+    ]
+    assert head['facts'] == [fact for fact in full['facts'] if fact[0] in ('Points', 'Cells')]
+
+
+def test_an_xml_header_of_several_pieces_counts_its_pieces(tmp_path):
+    """A header of several pieces gives how many pieces it writes, and no counts of its own."""
+    path = tmp_path / 'pieces.vtu'
+    path.write_text(
+        '<VTKFile type="UnstructuredGrid"><UnstructuredGrid>'
+        '<Piece NumberOfPoints="4" NumberOfCells="1"></Piece>'
+        '<Piece NumberOfPoints="8" NumberOfCells="2"></Piece>'
+        '</UnstructuredGrid></VTKFile>'
+    )
+    assert info_mod.xml_header(path)['facts'] == [['Pieces', '2']]
 
 
 class WithBounds:
@@ -741,6 +974,18 @@ def test_bounds_written_by_pyvista_zstd_are_shown(tmp_path, mesh):
     """Bounds pyvista-zstd stores read as the full description shows them."""
     head, full = header_and_full(mesh, tmp_path, 'mesh.pv')
     assert dict(head['facts'])['Bounds'] == dict(full['facts'])['Bounds']
+
+
+@pytest.mark.skipif(
+    'n_points' not in pyvista_zstd.MultiBlockMetadata.__dataclass_fields__,
+    reason='this pyvista-zstd stores no composite counts',
+)
+def test_composite_counts_written_by_pyvista_zstd_are_shown(tmp_path):
+    """A composite's stored point and cell totals read as the full description shows them."""
+    blocks = pv.MultiBlock({'a': pv.Sphere(), 'b': pv.MultiBlock({'c': pv.Cube()}), 'd': None})
+    head, full = header_and_full(blocks, tmp_path, 'blocks.pv')
+    for label in ('Blocks', 'Points', 'Cells'):
+        assert dict(head['facts'])[label] == dict(full['facts'])[label]
 
 
 def test_files_without_a_header_reader_get_only_their_file_facts(tmp_path):
@@ -929,12 +1174,25 @@ def test_an_xml_file_coloured_by_cells_keeps_that_array(tmp_path, monkeypatch):
     assert {row['name'] for row in header['rows']} >= {'height', 'flow', 'labels'}
 
 
-def test_a_structured_pv_header_gives_counts_without_image_facts(tmp_path):
-    """A structured grid's header has its counts, and no spacing or origin to give."""
-    head, full = header_and_full(mixed_arrays().cast_to_structured_grid(), tmp_path, 'grid.pv')
+@pytest.mark.parametrize('cast', ['cast_to_structured_grid', 'cast_to_rectilinear_grid'])
+def test_a_structured_pv_header_gives_counts_and_dimensions(tmp_path, cast):
+    """A structured grid's header has its counts and stored dimensions, and no image facts."""
+    grid = getattr(mixed_arrays(), cast)()
+    head, full = header_and_full(grid, tmp_path, 'grid.pv')
     labels = [label for label, _ in head['facts']]
-    assert labels == ['Points', 'Cells']
-    assert head['type'] == full['type'] == 'StructuredGrid'
+    assert labels[:3] == ['Points', 'Cells', 'Dimensions']
+    assert not {'Spacing', 'Direction'} & set(labels)
+    assert dict(head['facts'])['Dimensions'] == dict(full['facts'])['Dimensions']
+    assert dict(head['facts'])['Dimensions'] == X.join(str(d) for d in grid.dimensions)
+    assert head['type'] == full['type'] == type(grid).__name__
+
+
+def test_a_pv_image_header_gives_its_direction(tmp_path):
+    """A ``.pv`` image's stored direction matrix is shown as the full description shows it."""
+    image = pv.ImageData(dimensions=(2, 3, 4), direction_matrix=np.diag([1.0, -1.0, -1.0]))
+    head, full = header_and_full(image, tmp_path, 'turned.pv')
+    assert dict(head['facts'])['Direction'] == dict(full['facts'])['Direction']
+    assert dict(head['facts'])['Direction'] == '1.0, 0.0, 0.0\n0.0, -1.0, 0.0\n0.0, 0.0, -1.0'
 
 
 def test_the_exporter_needs_something_to_write(monkeypatch, tmp_path):
@@ -957,21 +1215,22 @@ def test_the_service_knows_which_formats_have_a_header():
     assert set(convert.HEADER_SUFFIXES) == set(info_mod.HEADERS)
 
 
-def test_an_empty_composite_has_only_its_block_count():
-    """A MultiBlock with nothing in it has no block types or points, and the bounds it reports."""
+def test_an_empty_composite_has_only_what_it_reports():
+    """A MultiBlock with nothing in it shows its counts, no block types, and its bounds."""
     empty = pv.MultiBlock()
     facts, blocks = info_mod.composite_facts(empty, [])
     assert facts == [
         ['Blocks', '0'],
         ['Points', '0'],
         ['Cells', '0'],
-        ['Bounds', info_mod.bounds(empty)],
+        ['Block types', ''],
+        ['Bounds', info_mod.bounds(empty.bounds)],
     ]
     assert blocks == []
     gap = pv.MultiBlock([None])
     facts, _ = info_mod.composite_facts(gap, info_mod.leaves(gap))
-    assert dict(facts)['Block type'] == '1 None'
-    assert dict(facts)['Bounds'] == info_mod.bounds(gap)
+    assert dict(facts)['Block type'] == 'None'
+    assert dict(facts)['Bounds'] == info_mod.bounds(gap.bounds)
 
 
 def test_text_arrays_in_several_blocks_give_no_preview():
@@ -979,18 +1238,24 @@ def test_text_arrays_in_several_blocks_give_no_preview():
     first, second = pv.Sphere(), pv.Cube()
     first.field_data['label'] = ['first']
     second.field_data['label'] = ['second']
-    [row] = [row for row in info_mod.merge_arrays([first, second]) if row['name'] == 'label']
+    composite = pv.MultiBlock([first, second])
+    rows = info_mod.merge_arrays(composite, [first, second])
+    [row] = [row for row in rows if row['name'] == 'label']
     assert row['dtype'] == 'string'
     assert row['range'] == ''
     assert row['blocks'] == '2 of 2'
 
 
-def test_values_extent_skips_what_has_no_order():
-    """Text and empty arrays have no range; vectors have the range of their magnitude."""
+def test_values_extent_is_the_range_vtk_reports():
+    """An array read from a file has the range VTK reports for it, text none."""
     assert info_mod.values_extent(np.array([2, 7, 3])) == (2, 7, 'i', '')
     assert info_mod.values_extent(np.array(['a', 'b'])) is None
-    assert info_mod.values_extent(np.zeros((0, 3))) is None
+    assert info_mod.range_text(info_mod.values_extent(np.zeros((0, 3)))) == ''
     assert info_mod.values_extent(np.array([[3.0, 4.0], [0.0, 1.0]]))[:2] == (1.0, 5.0)
+    big = np.array([-1, 2**62 + 1], dtype=np.int64)
+    assert info_mod.values_extent(big)[:2] == pv.convert_array(big).GetValueRange(0)
+    assert info_mod.values_extent(np.array([3 + 4j, 0j]))[::3] == (0.0, info_mod.COMPLEX_NORM)
+    assert info_mod.values_extent(np.array([True, False]))[:3] == (0, 1, 'i')
 
 
 def test_appended_xml_names_its_encoding(tmp_path):
@@ -1011,13 +1276,15 @@ def test_appended_xml_names_its_encoding(tmp_path):
 
 
 def test_ply_comments_are_shown_only_when_there_are_some(tmp_path):
-    """A PLY header gives its first comment, and none when it has none or never ends."""
+    """A PLY header gives every comment it reads, and none when it has none."""
     plain = tmp_path / 'plain.ply'
     plain.write_text('ply\nformat ascii 1.0\nelement vertex 0\nend_header\n')
     assert [fact[0] for fact in info_mod.ply_facts(plain)] == ['Format']
     endless = tmp_path / 'endless.ply'
     endless.write_text('ply\nformat ascii 1.0\n' + 'comment more\n' * 300)
-    assert info_mod.ply_facts(endless) == [['Format', 'PLY ascii'], ['Comment', 'more']]
+    [fmt, comment] = info_mod.ply_facts(endless)
+    assert fmt == ['Format', 'PLY ascii']
+    assert set(comment[1].split('\n')) == {'more'}
 
 
 def test_a_text_stl_without_a_name_has_no_header(tmp_path):
@@ -1027,10 +1294,26 @@ def test_a_text_stl_without_a_name_has_no_header(tmp_path):
     assert info_mod.stl_facts(path) == [['Format', 'STL text']]
 
 
-def test_cell_types_of_something_without_cells_are_none():
-    """Whatever cannot report its cell types gives none rather than failing."""
-    assert info_mod.cell_types(object()) is None
-    assert info_mod.cell_types(pv.PolyData()) is None
+def test_cell_types_are_the_ones_pyvista_reports():
+    """The cell types listed are ``distinct_cell_types``, none for a dataset without cells."""
+    assert info_mod.cell_types(pv.PolyData()) == [] == list(pv.PolyData().distinct_cell_types)
+    mixed = pv.Sphere() + pv.Line()
+    assert info_mod.cell_types(mixed) == [
+        info_mod.cell_type_name(t) for t in sorted(mixed.distinct_cell_types)
+    ]
+
+
+def test_cell_types_pyvista_cannot_report_leave_the_rest_of_the_panel():
+    """A cell type PyVista cannot name leaves out the cell types, and only them."""
+    cells = np.array([3, 0, 1, 2, 3, 0, 1, 2])
+    types = np.array([pv.CellType.TRIANGLE, 99], dtype=np.uint8)
+    grid = pv.UnstructuredGrid(cells, types, np.random.default_rng(0).random((3, 3)))
+    with pytest.raises(ValueError, match='99'):
+        _ = grid.distinct_cell_types
+    rows = facts(info_mod.describe(grid, 'x'))
+    assert 'Cell type' not in rows
+    assert 'Cell types' not in rows
+    assert rows['Points'] == '3'
 
 
 @pytest.mark.parametrize('error', [KeyError, RuntimeError], ids=['unlisted', 'listed-not-stored'])
@@ -1051,11 +1334,11 @@ def test_a_pv_array_the_reader_cannot_find_is_left_without_a_range(tmp_path, mon
 
 
 def test_an_xml_header_without_its_grid_tag_counts_nothing(tmp_path):
-    """A header naming a type it then never opens has no counts and no arrays."""
+    """A header naming a type it then never opens writes no pieces and no arrays."""
     path = tmp_path / 'empty.vtu'
     path.write_text('<VTKFile type="UnstructuredGrid"></VTKFile>')
     head = info_mod.xml_header(path)
-    assert head['facts'] == [['Points', '0'], ['Cells', '0']]
+    assert head['facts'] == [['Pieces', '0']]
     assert head['rows'] == []
 
 
@@ -1079,13 +1362,13 @@ def test_xml_without_its_root_tag_has_no_facts(tmp_path):
     assert info_mod.xml_facts(path) == []
 
 
-def test_an_empty_dataset_has_its_bounds_but_no_cell_types():
-    """A dataset with no points or cells lists the bounds it reports, but no cell types."""
+def test_an_empty_dataset_shows_what_it_reports():
+    """A dataset with no points or cells lists the bounds and the empty cell types it reports."""
     empty = pv.PolyData()
     rows = facts(info_mod.describe(empty, 'x'))
-    assert rows['Bounds'] == info_mod.bounds(empty)
+    assert rows['Bounds'] == info_mod.bounds(empty.bounds)
+    assert rows['Cell types'] == []
     assert 'Cell type' not in rows
-    assert 'Cell types' not in rows
 
 
 def test_a_header_that_cannot_be_read_says_why(tmp_path, capsys, monkeypatch):
@@ -1121,21 +1404,27 @@ def test_a_non_ascii_array_name_survives_the_header(tmp_path, monkeypatch, capsy
 
 
 def test_header_and_values_agree_on_arrays_without_a_range(tmp_path):
-    """An all-NaN array shows NaN and an empty one nothing, from the header as from the file."""
+    """An all-NaN and an empty array have no range, from the header as from the file."""
     mesh = pv.Sphere()
     mesh.point_data['nan'] = np.full(mesh.n_points, np.nan)
     mesh.field_data['empty'] = np.zeros(0)
     head, full = header_and_full(mesh, tmp_path, 'gaps.vtp')
     heads, fulls = rows_by_name(head), rows_by_name(full)
     for key in (('nan', 'Point'), ('empty', 'Field')):
-        assert heads[key]['range'] == fulls[key]['range'], key
-    assert heads[('nan', 'Point')]['range'] == 'NaN'
-    assert heads[('empty', 'Field')]['range'] == ''
-    # An all-NaN vector array is one VTK writes but cannot read back; its header still says NaN.
-    inverted = {'RangeMin': '3.1622776601683796e+149', 'RangeMax': 'nan'}
-    extent = info_mod.xml_range(inverted, 'f', info_mod.VECTOR_NORM, mesh.n_points)
-    assert info_mod.range_text(extent) == 'NaN'
-    assert info_mod.range_text(info_mod.values_extent(np.full((4, 3), np.nan))) == 'NaN'
+        assert heads[key]['range'] == fulls[key]['range'] == '', key
+
+
+def test_an_xml_range_is_shown_as_the_header_writes_it():
+    """VTK's inverted empty range is no range, and any other range is shown as written."""
+    inverted = {'RangeMin': '1e+299', 'RangeMax': '-1e+299'}
+    assert info_mod.xml_range(inverted, 'f', '') is None
+    big = {'RangeMin': '-1', 'RangeMax': '4.611686018427388e+18'}
+    assert info_mod.range_text(info_mod.xml_range(big, 'i', '')) == '[-1, 4.611686018427388e+18]'
+    exact = {'RangeMin': '-1', 'RangeMax': '4611686018427387905'}
+    assert info_mod.range_text(info_mod.xml_range(exact, 'i', '')) == '[-1, 4611686018427387905]'
+    nan = {'RangeMin': '3.1622776601683796e+149', 'RangeMax': 'nan'}
+    extent = info_mod.xml_range(nan, 'f', info_mod.VECTOR_NORM)
+    assert info_mod.range_text(extent) == f'{info_mod.VECTOR_NORM} [3.162e149, nan]'
 
 
 def test_an_integer_vector_magnitude_matches_the_header(tmp_path):
@@ -1152,54 +1441,65 @@ def test_an_integer_vector_magnitude_matches_the_header(tmp_path):
     assert rows_by_name(full)[key]['range'] == f'{info_mod.VECTOR_NORM} [0.0, 5.0]'
 
 
-def test_merged_integer_ranges_keep_every_digit():
-    """Two blocks' integer ranges are merged as integers, however large."""
-    first = (np.int64(2**62 + 1), np.int64(2**62 + 1), 'i', '')
-    second = (np.int64(-1), np.int64(-1), 'i', '')
-    assert info_mod.range_text(info_mod.merge_extents(first, second)) == f'[-1, {2**62 + 1}]'
-    assert info_mod.merge_extents(first, (0.5, 1.5, 'f', ''))[2] == 'f'
-    assert info_mod.merge_extents((True, True, 'b', ''), (3, 4, 'i', ''))[2] == 'i'
+def test_composite_integer_ranges_keep_every_digit():
+    """A composite's integer range is the one PyVista reports, every digit kept."""
+    first, second = pv.Sphere(), pv.Cube()
+    first.point_data['id'] = np.full(first.n_points, 2**62 + 1, dtype=np.int64)
+    second.point_data['id'] = np.full(second.n_points, -1, dtype=np.int64)
+    composite = pv.MultiBlock([first, second])
+    [row] = [row for row in info_mod.describe(composite, 'x')['arrays'] if row['name'] == 'id']
+    low, high = composite.get_data_range('id', preference='point', allow_missing=True)
+    assert row['range'] == f'[{low}, {high}]' == f'[-1, {2**62 + 1}]'
 
 
-@pytest.mark.parametrize('dimensions', [(1, 1, 1), (2, 1, 1), (2, 2, 1), (3, 3, 3), (0, 0, 0)])
-def test_header_counts_match_vtk_for_every_grid_shape(dimensions):
-    """A header's cell count for a structured extent is the count VTK reports."""
+@pytest.mark.parametrize('dimensions', [(1, 1, 1), (2, 1, 1), (2, 2, 1), (3, 3, 3)])
+def test_a_structured_xml_header_shows_its_whole_extent_as_written(tmp_path, dimensions):
+    """A structured header's extent is the one it writes, which is the grid's own extent."""
     image = pv.ImageData(dimensions=dimensions)
-    _, points, cells = info_mod.grid_counts(list(image.extent))
-    assert (points, cells) == (image.n_points, image.n_cells)
+    path = tmp_path / 'grid.vti'
+    image.save(path)
+    written = re.search(r'WholeExtent="([^"]*)"', path.read_text(errors='replace')).group(1)
+    rows = dict(info_mod.xml_header(path)['facts'])
+    assert rows['Whole extent'] == written.strip()
+    assert [int(v) for v in rows['Whole extent'].split()] == list(image.extent)
+    assert not {'Points', 'Cells', 'Dimensions'} & set(rows)
 
 
-def test_pyvista_bookkeeping_fields_are_skipped_by_every_path(tmp_path):
-    """Arrays PyVista keeps for itself are listed neither from the header nor from the file."""
+def test_pyvista_bookkeeping_fields_are_listed_by_every_path(tmp_path):
+    """PyVista's own arrays are listed wherever the data holds them, the user dict never."""
     mesh = pv.Sphere()
     mesh.point_data['flags'] = np.ones(mesh.n_points, dtype=bool)
     mesh.point_data['z'] = np.full(mesh.n_points, 3 + 4j)
     mesh.field_data[info_mod.USER_DICT_KEY] = np.array([json.dumps({'name': 'sphere'})])
     for name in ('odd.pv', 'odd.vtp'):
         head, full = header_and_full(mesh, tmp_path, name)
+        read = pv.read(tmp_path / name)
+        stored = {key for key in read.field_data if key != info_mod.USER_DICT_KEY}
+        assert {key for key, a in rows_by_name(full) if a == 'Field'} == stored
         for info in (head, full):
-            assert not any(
-                row['name'].startswith(info_mod.PYVISTA_PREFIX) for row in info['arrays']
+            assert all(row['name'] != info_mod.USER_DICT_KEY for row in info['arrays'])
+        # A header lists every field array the file stores, PyVista's own included.
+        if name.endswith('.pv'):
+            written = set(info_mod.zstd_metadata(tmp_path / name).field_data_keys)
+        else:
+            text = (tmp_path / name).read_text(errors='replace')
+            written = set(
+                re.findall(r'<(?:Data)?Array[^>]*Name="([^"]+)"', text.split('<Piece')[0])
             )
-        assert head['array_count'] == full['array_count']
-        assert set(rows_by_name(head)) == set(rows_by_name(full))
+        written.discard(info_mod.USER_DICT_KEY)
+        assert {key for key, a in rows_by_name(head) if a == 'Field'} == written
+    assert {'_PYVISTA_BITARRAY_POINT_', '_PYVISTA_COMPLEX_POINT_'} <= written
     heads, fulls = rows_by_name(head), rows_by_name(full)
     assert fulls[('flags', 'Point')]['dtype'] == 'bool'
     assert fulls[('z', 'Point')]['dtype'] == 'complex128'
     # VTK XML stores a bool as bytes and a complex as two floats, and the header says so.
     assert heads[('flags', 'Point')]['dtype'] == 'uint8'
     assert heads[('z', 'Point')]['components'] == 2
-    pv_head, _ = header_and_full(mesh, tmp_path, 'again.pv')
+    pv_head, pv_full = header_and_full(mesh, tmp_path, 'again.pv')
     assert rows_by_name(pv_head)[('flags', 'Point')]['dtype'] == 'bool'
     assert rows_by_name(pv_head)[('z', 'Point')]['dtype'] == 'complex128'
-
-
-def test_an_unknown_cell_type_is_listed_by_its_id():
-    """A cell type VTK has no name for is listed by its id beside the named ones."""
-    cells = np.array([3, 0, 1, 2, 3, 0, 1, 2])
-    types = np.array([pv.CellType.TRIANGLE, 99], dtype=np.uint8)
-    grid = pv.UnstructuredGrid(cells, types, np.random.default_rng(0).random((3, 3)))
-    assert facts(info_mod.describe(grid, 'x'))['Cell types'] == ['Triangle', 'Type 99']
+    assert set(rows_by_name(pv_head)) == set(rows_by_name(pv_full))
+    assert pv_head['array_count'] == pv_full['array_count']
 
 
 def test_the_header_suffixes_are_the_header_readers():
