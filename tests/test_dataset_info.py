@@ -629,6 +629,40 @@ def test_a_pv_header_carries_the_user_dict(tmp_path):
     assert info['array_count'] == 1
 
 
+def nested_blocks():
+    """Return a composite of mixed blocks, an empty one, and a nested level, with a user dict."""
+    inner = pv.MultiBlock({'grid': mixed_arrays(), 'gap': None})
+    sphere = pv.Sphere()
+    sphere.point_data['height'] = sphere.points[:, 2].astype(np.float32)
+    blocks = pv.MultiBlock({'sphere': sphere, 'inner': inner, 'empty': None})
+    blocks.field_data[info_mod.USER_DICT_KEY] = np.array([json.dumps({'run': 3})])
+    return blocks
+
+
+def test_a_pv_composite_header_agrees_with_reading_the_file(tmp_path):
+    """A ``.pv`` composite's metadata gives the blocks, counts, and arrays the values do."""
+    head, full = header_and_full(nested_blocks(), tmp_path, 'blocks.pv')
+    assert head['type'] == full['type'] == 'MultiBlock'
+    assert head['blocks'] == full['blocks']
+    assert head['block_count'] == full['block_count'] == 4
+    assert head['facts'] == [fact for fact in full['facts'] if fact[0] != 'Bounds']
+    assert head['array_count'] == full['array_count']
+    heads, fulls = rows_by_name(head), rows_by_name(full)
+    assert set(heads) == set(fulls)
+    for key, row in heads.items():
+        for field in ('dtype', 'components', 'active', 'blocks'):
+            assert row[field] == fulls[key][field], (key, field)
+    assert head['user_dict'] == full['user_dict'] == ['"run": 3']
+
+
+def test_a_pv_composite_is_read_whole_rather_than_selectively(tmp_path):
+    """A ``.pv`` composite is read whole, as the selective read takes a single dataset."""
+    path = tmp_path / 'blocks.pv'
+    pyvista_zstd.write(nested_blocks(), path)
+    assert 'blocks' in info_mod.zstd_header(path)
+    assert export_mod.read_selectively(str(path)) is None
+
+
 def test_polydata_headers_count_every_kind_of_cell(tmp_path):
     """Vertices, lines, strips, and polygons all count as cells in a PolyData header."""
     mesh = pv.Sphere() + pv.Line() + pv.PolyData(np.zeros((1, 3)))

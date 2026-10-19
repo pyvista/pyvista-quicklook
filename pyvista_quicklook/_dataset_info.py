@@ -10,6 +10,7 @@ import re
 import sys
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import NamedTuple
 import warnings
 
 import numpy as np
@@ -403,9 +404,14 @@ def budgeted(value: dict[Any, Any]) -> list[str]:
 
 def merge_arrays(blocks: list[pv.DataSet]) -> list[dict[str, Any]]:
     """Return array rows for a composite dataset, one per name and association."""
+    return merge_rows([array_rows(block) for block in blocks])
+
+
+def merge_rows(per_block: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Return one row per name and association from each block's array rows."""
     merged: dict[tuple[str, str], dict[str, Any]] = {}
-    for block in blocks:
-        for row in array_rows(block):
+    for block_rows in per_block:
+        for row in block_rows:
             key = (row['name'], row['association'])
             if key not in merged:
                 merged[key] = {**row, 'blocks': 1}
@@ -418,7 +424,7 @@ def merge_arrays(blocks: list[pv.DataSet]) -> list[dict[str, Any]]:
                 seen['range'] = ''
             seen['extent'] = merge_extents(seen['extent'], row['extent'])
     for row in merged.values():
-        row['blocks'] = f'{row["blocks"]} of {len(blocks)}'
+        row['blocks'] = f'{row["blocks"]} of {len(per_block)}'
     return list(merged.values())
 
 
@@ -492,35 +498,61 @@ def composite_facts(
     multiblock: pv.MultiBlock, found: list[tuple[str, pv.DataSet | None]]
 ) -> tuple[list[list[Any]], list[dict[str, Any]]]:
     """Return the summary rows and per-block rows of a composite, given its leaves."""
-    datasets = [block for _, block in found if block is not None]
-    depth = nesting_depth(multiblock)
+    entries = [
+        BlockEntry(
+            name,
+            block_kind(block),
+            block.n_points if block is not None else None,
+            block.n_cells if block is not None else None,
+            dimensions(block, '') if hasattr(block, 'dimensions') else '',
+        )
+        for name, block in found
+    ]
+    facts, blocks = composite_summary(entries, nesting_depth(multiblock))
+    if any(block.n_points for _, block in found if block is not None):
+        facts.append(['Bounds', bounds(multiblock)])
+    return facts, blocks
+
+
+class BlockEntry(NamedTuple):
+    """One dataset or empty block of a composite, as its block list shows it."""
+
+    name: str
+    kind: str
+    points: int | None
+    cells: int | None
+    dimensions: str
+
+
+def composite_summary(
+    found: list[BlockEntry], depth: int
+) -> tuple[list[list[Any]], list[dict[str, Any]]]:
+    """Return a composite's summary rows, bounds aside, and its per-block rows."""
     # Counted as the block list counts them: every dataset or empty block, at any depth.
     kinds: dict[str, int] = {}
-    for _, block in found:
-        kinds[block_kind(block)] = kinds.get(block_kind(block), 0) + 1
+    for entry in found:
+        kinds[entry.kind] = kinds.get(entry.kind, 0) + 1
     facts = [['Blocks', count(len(found))]]
     if depth > 1:
         facts.append(['Depth', str(depth)])
     facts += [
-        ['Points', count(sum(b.n_points for b in datasets))],
-        ['Cells', count(sum(b.n_cells for b in datasets))],
+        ['Points', count(sum(entry.points or 0 for entry in found))],
+        ['Cells', count(sum(entry.cells or 0 for entry in found))],
     ]
     if kinds:
         label = 'Block type' if len(kinds) == 1 else 'Block types'
         facts.append(
             [label, '\n'.join(f'{count(kinds[k])} {k}' for k in sorted(kinds, key=str.lower))]
         )
-    if any(b.n_points for b in datasets):
-        facts.append(['Bounds', bounds(multiblock)])
     blocks = [
         {
-            'name': name,
-            'type': block_kind(block),
-            'points': count(block.n_points) if block is not None else '',
-            'cells': count(block.n_cells) if block is not None else '',
-            'dimensions': dimensions(block, '') if hasattr(block, 'dimensions') else '',
+            'name': entry.name,
+            'type': entry.kind,
+            'points': count(entry.points) if entry.points is not None else '',
+            'cells': count(entry.cells) if entry.cells is not None else '',
+            'dimensions': entry.dimensions,
         }
-        for name, block in found[:MAX_BLOCKS]
+        for entry in found[:MAX_BLOCKS]
     ]
     if len(found) > MAX_BLOCKS:
         hidden = len(found) - MAX_BLOCKS
@@ -729,8 +761,32 @@ def zstd_header(path: Path) -> dict:
     """
     meta = zstd_metadata(path)
     kind = getattr(meta, 'ds_type', None)
-    if kind not in DATASET_TYPES:
+    if kind == 'MultiBlock':
+        info = zstd_composite_header(meta)
+    elif kind in DATASET_TYPES:
+        dims = list(meta.dimensions) if getattr(meta, 'dimensions', None) is not None else None
+        spacing = meta.spacing if kind == 'ImageData' else None
+        if dims is not None and kind != 'ImageData':
+            dims = None
+        info = {
+            'type': kind,
+            'facts': header_facts(meta.n_points, meta.n_cells, dims, spacing),
+            'rows': zstd_rows(meta),
+        }
+    else:
         return {}
+    if USER_DICT_KEY in (meta.field_data_keys or {}):
+        import pyvista_zstd
+
+        with pyvista_zstd.Reader(path) as reader:
+            values = zstd_array(reader, USER_DICT_KEY, 'Field')
+        if values is not None:
+            info['user_dict'] = user_dict_lines(values)
+    return info
+
+
+def zstd_rows(meta: Any) -> list[dict[str, Any]]:
+    """Return the array rows of one ``.pv`` dataset's metadata, their ranges still to be found."""
     actives = {
         f'{association} {role}': getattr(
             meta, f'{association.lower()}_data_active_{attribute}_name'
@@ -760,23 +816,56 @@ def zstd_header(path: Path) -> dict:
                     roles,
                 )
             )
-    dims = list(meta.dimensions) if getattr(meta, 'dimensions', None) is not None else None
-    spacing = meta.spacing if kind == 'ImageData' else None
-    if dims is not None and kind != 'ImageData':
-        dims = None
-    info: dict[str, Any] = {
-        'type': kind,
-        'facts': header_facts(meta.n_points, meta.n_cells, dims, spacing),
-        'rows': rows,
-    }
-    if USER_DICT_KEY in (meta.field_data_keys or {}):
-        import pyvista_zstd
+    return rows
 
-        with pyvista_zstd.Reader(path) as reader:
-            values = zstd_array(reader, USER_DICT_KEY, 'Field')
-        if values is not None:
-            info['user_dict'] = user_dict_lines(values)
-    return info
+
+def zstd_leaves(meta: Any, prefix: str = '') -> list[tuple[str, Any]]:
+    """Return every dataset and empty block of a ``.pv`` composite, named by its nesting path."""
+    found = []
+    for index, (uid, name) in enumerate(zip(meta.children, meta.children_keys, strict=True)):
+        path = f'{prefix}{name or index}'
+        child = meta.children_ds.get(uid)
+        if getattr(child, 'ds_type', None) == 'MultiBlock':
+            found += zstd_leaves(child, f'{path}/')
+        else:
+            found.append((path, child))
+    return found
+
+
+def zstd_depth(meta: Any) -> int:
+    """Return how many levels of composite a ``.pv`` composite holds, itself included."""
+    nested = [
+        zstd_depth(child)
+        for child in meta.children_ds.values()
+        if getattr(child, 'ds_type', None) == 'MultiBlock'
+    ]
+    return 1 + max(nested, default=0)
+
+
+def zstd_composite_header(meta: Any) -> dict[str, Any]:
+    """Return what a ``.pv`` composite's metadata says: its blocks, counts, and arrays."""
+    found = zstd_leaves(meta)
+    entries = []
+    for name, child in found:
+        dims = getattr(child, 'dimensions', None)
+        entries.append(
+            BlockEntry(
+                name,
+                child.ds_type if child is not None else 'None',
+                child.n_points if child is not None else None,
+                child.n_cells if child is not None else None,
+                TIMES.join(str(d) for d in dims) if dims is not None else '',
+            )
+        )
+    facts, blocks = composite_summary(entries, zstd_depth(meta))
+    datasets = [child for _, child in found if child is not None]
+    return {
+        'type': 'MultiBlock',
+        'facts': facts,
+        'rows': merge_rows([zstd_rows(child) for child in datasets]),
+        'blocks': blocks,
+        'block_count': len(found),
+    }
 
 
 def zstd_ranges(path: Path, header: dict, skip: set[tuple[str, str]] = frozenset()) -> dict:
@@ -921,6 +1010,9 @@ def header_info(source: str) -> dict[str, Any]:
         info['facts'] = header['facts']
         info['array_count'] = len(rows)
         info['arrays'] = format_rows(rows)
+        if 'blocks' in header:
+            info['blocks'] = header['blocks']
+            info['block_count'] = header['block_count']
         if header.get('user_dict'):
             info['user_dict'] = header['user_dict']
     info['file'] = file_facts(path)
