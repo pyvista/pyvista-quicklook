@@ -301,7 +301,7 @@ def test_a_description_alone_converts_nothing(
 def test_previews_follow_the_settings_unless_a_tab_asks_otherwise(
     tmp_path, monkeypatch, stored, payload, interactive
 ):
-    """A preview follows the settings or the tab asked for, but a saved theme is drawn in 3D."""
+    """A preview follows the settings or the view asked for, but a saved theme is drawn in 3D."""
     asked = []
 
     def produce(target, config, identity):

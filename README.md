@@ -112,7 +112,7 @@ it below, `side` beside, `compact` keeps one line, and `hidden` leaves it out.
 | --- | --- | --- |
 | `theme` | PyVista's own | A PyVista theme by name, such as `document` or `paraview`, or the path of one saved with `Theme.save` |
 | `interactive` | `true` | Show a turnable surface; `false` renders a still image instead |
-| `force_interactive` | `false` | Open a `.pv` file on the surface even when it carries a picture, without the tabs |
+| `force_interactive` | `false` | Open a `.pv` file on the surface even when it carries a picture |
 | `info_panel` | `automatic` | Where the dataset's details go: `side`, `below`, `compact`, `hidden`, or `automatic` to choose by the panel's size |
 | `max_file_size_mb` | `2048` | Files above this size show their header and a Preview Anyway button instead of a preview; `0` for no limit |
 | `max_scene_points` | `2000000` | Thin surfaces above this many points; `0` never does |
@@ -258,11 +258,12 @@ pyvista_zstd.write(mesh, 'mesh.pv', thumbnail=True)
 ```
 
 A file with a current picture shows it in the Finder as its icon, and opens on it
-without reading the data. **Static** and **Interactive** tabs above the preview
-switch between the picture and the turnable surface, which opens on the same view. Every
-other file, and a `.pv` file whose picture is older than its data, goes straight to the
-turnable surface, without tabs. `pvql config set force_interactive true` opens every file
-that way, and a picture then only stands in while the surface loads. Opening a file with
+without reading the data, with the dataset's details beside it. Clicking, dragging,
+scrolling or pinching the picture loads the turnable surface in its place, on the same
+view, with the picture dimmed until it is ready. Every other file, and a `.pv` file whose
+picture is older than its data, goes straight to the turnable surface.
+`pvql config set force_interactive true` opens every file that way, and a picture then
+only stands in while the surface loads. Opening a file with
 the app always shows it in 3D.
 
 `thumbnail=True` renders a 512 × 512 PNG with PyVista's default camera, in the global
