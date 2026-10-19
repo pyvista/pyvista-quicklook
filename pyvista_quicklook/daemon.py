@@ -418,7 +418,7 @@ def respond(request: Path, source: str, payload: dict[str, Any], asked: float) -
         write_json(reply, {'ok': True, 'info': description_only(source, config, identity)})
         return
     if 'scene' in payload:
-        # A file with a picture of its own asks for the 3D view by its tab, whatever the settings.
+        # A file with a picture of its own asks for the 3D view when handled.
         config = {**config, 'interactive': payload['scene'] is True}
     if config_mod.saved_theme(config):
         # `pyvista plot` takes a theme by name only, so a saved theme is drawn in 3D.

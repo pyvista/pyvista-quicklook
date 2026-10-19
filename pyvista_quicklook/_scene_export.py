@@ -210,7 +210,7 @@ def read_selectively(source: str) -> tuple[object, dict[str, Any]] | None:
         header = _dataset_info.xml_header(path)
     else:
         return None
-    if not header:
+    if not header or 'blocks' in header:
         return None
     choice = colour_choice(header['rows'])
     point = {choice[0]} if choice and choice[1] == 'Point' else set()

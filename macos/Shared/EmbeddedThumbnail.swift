@@ -65,6 +65,8 @@ enum EmbeddedThumbnail {
         let length = Int(uint32(head, recordOffset + 24))
         let recordLength = Int(uint32(head, recordOffset - 4))
         guard header >= descriptorBytes, length <= maximumBytes, header + length == recordLength,
+              let index = trailer(handle),
+              recordFrameEnd(handle, index) == UInt64(recordOffset + recordLength),
               (try? handle.seek(toOffset: UInt64(recordOffset + header))) != nil,
               let png = try? handle.read(upToCount: length), png.count == length,
               png.starts(with: pngSignature)
@@ -73,21 +75,46 @@ enum EmbeddedThumbnail {
         }
         return Picture(
             png: png,
-            isStale: !matchesData(handle, crc: uint32(head, recordOffset + 28))
+            isStale: !matchesData(handle, index, crc: uint32(head, recordOffset + 28))
         )
     }
 
-    /// Returns whether the file's index still has the checksum the picture was taken with.
-    static func matchesData(_ handle: FileHandle, crc: UInt32) -> Bool {
+    /// The file's size and the number of frames its trailing index lists.
+    typealias Trailer = (size: UInt64, frames: UInt64)
+
+    /// Returns the file's size and frame count, or nil when the index would not fit in the file.
+    static func trailer(_ handle: FileHandle) -> Trailer? {
         guard let size = try? handle.seekToEnd(), size >= 8,
               (try? handle.seek(toOffset: size - 8)) != nil,
               let tail = try? handle.read(upToCount: 8), tail.count == 8
         else {
-            return false
+            return nil
         }
         let frames = tail.withUnsafeBytes { UInt64(littleEndian: $0.loadUnaligned(as: UInt64.self)) }
+        guard frames < size / 16, size - 8 >= 16 * frames else {
+            return nil
+        }
+        return (size, frames)
+    }
+
+    /// Returns where the file's index says the frame holding the picture ends, or nil.
+    static func recordFrameEnd(_ handle: FileHandle, _ index: Trailer) -> UInt64? {
+        let (size, frames) = index
+        // Each index entry is the frame's end offset and decompressed size; entry 1 is the record.
+        guard frames >= 2,
+              (try? handle.seek(toOffset: size - 8 - 16 * (frames - 1))) != nil,
+              let entry = try? handle.read(upToCount: 8), entry.count == 8
+        else {
+            return nil
+        }
+        return entry.withUnsafeBytes { UInt64(littleEndian: $0.loadUnaligned(as: UInt64.self)) }
+    }
+
+    /// Returns whether the file's index still has the checksum the picture was taken with.
+    static func matchesData(_ handle: FileHandle, _ index: Trailer, crc: UInt32) -> Bool {
+        let (size, frames) = index
         // The checksum covers the entries after the first two frames, so fewer leave nothing to check.
-        guard frames < size / 16, 16 * frames > 32, size - 8 >= 16 * frames else {
+        guard frames > 2 else {
             return false
         }
         let start = size - 8 - 16 * frames + 32

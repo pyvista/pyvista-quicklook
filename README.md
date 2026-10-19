@@ -7,6 +7,13 @@ Selecting `flow.vtu` and pressing space shows its surface in the Quick Look pane
 coloured by the active scalars and free to rotate and zoom, with a panel of what the
 dataset holds beside it.
 
+> [!NOTE]
+> A preview is for a quick look, not for measuring. Its geometry may be processed
+> before it is shown: a large surface is thinned, a volume is cut into slices, cells
+> are split apart to colour them. What you turn in the panel can therefore differ from
+> the mesh PyVista loads from the file. The counts, bounds and ranges in the dataset
+> panel describe the file itself.
+
 ## Install
 
 macOS 15 or newer. Nothing else needs to be installed first.
@@ -112,7 +119,7 @@ it below, `side` beside, `compact` keeps one line, and `hidden` leaves it out.
 | --- | --- | --- |
 | `theme` | PyVista's own | A PyVista theme by name, such as `document` or `paraview`, or the path of one saved with `Theme.save` |
 | `interactive` | `true` | Show a turnable surface; `false` renders a still image instead |
-| `force_interactive` | `false` | Open a `.pv` file on the surface even when it carries a picture, without the tabs |
+| `force_interactive` | `false` | Open a `.pv` file on the surface even when it carries a picture |
 | `info_panel` | `automatic` | Where the dataset's details go: `side`, `below`, `compact`, `hidden`, or `automatic` to choose by the panel's size |
 | `max_file_size_mb` | `2048` | Files above this size show their header and a Preview Anyway button instead of a preview; `0` for no limit |
 | `max_scene_points` | `2000000` | Thin surfaces above this many points; `0` never does |
@@ -243,10 +250,13 @@ app that reads them, such as ParaView, says it is, and Open With chooses between
 The compressed formats claimed through gzip and DICOM folders are not opened by the app,
 since it would otherwise offer to open every gzip archive and folder.
 
-## Pictures a file carries
+## Fast previews with pyvista-zstd
 
-[pyvista-zstd](https://github.com/pyvista/pyvista-zstd) can embed a picture of the dataset
-in the `.pv` file it writes:
+A very large file previews fastest when saved with
+[pyvista-zstd](https://github.com/pyvista/pyvista-zstd) with `thumbnail=True`, which
+stores a pre-rendered picture. `pyvista-quicklook` reads the thumbnail and the file's
+metadata almost instantly, so a file saved this way opens on its picture without
+loading the mesh or rendering it.
 
 ```python
 import pyvista_zstd
@@ -255,19 +265,20 @@ pyvista_zstd.write(mesh, 'mesh.pv', thumbnail=True)
 ```
 
 A file with a current picture shows it in the Finder as its icon, and opens on it
-without reading the data. **Static** and **Interactive** tabs above the preview
-switch between the picture and the turnable surface, which opens on the same view. Every
-other file, and a `.pv` file whose picture is older than its data, goes straight to the
-turnable surface, without tabs. `pvql config set force_interactive true` opens every file
-that way, and a picture then only stands in while the surface loads. Opening a file with
+without reading the data, with the dataset's details beside it. Clicking, dragging,
+scrolling or pinching the picture loads the turnable surface in its place, on the same
+view, with the picture dimmed until it is ready. Every other file, and a `.pv` file whose
+picture is older than its data, goes straight to the turnable surface.
+`pvql config set force_interactive true` opens every file that way, and a picture then
+only stands in while the surface loads. Opening a file with
 the app always shows it in 3D.
 
 `thumbnail=True` renders a 512 × 512 PNG with PyVista's default camera, in the global
 theme, cropped to the dataset on a transparent background; PNG bytes of your own are
 embedded as they are. The picture sits uncompressed near the start of the file, with a
 checksum of the file's index, so the extension reads it with a few small reads and can
-tell when the data was changed after the picture was taken. This needs a pyvista-zstd
-release with thumbnail support.
+tell when the data was changed after the picture was taken. Thumbnails need
+pyvista-zstd 0.7 or newer.
 
 ## How it works
 
@@ -306,7 +317,10 @@ preload` does the same on demand.
 Surfaces are sent whole up to `max_scene_points`. Above that, images and volumes are
 thinned on their lattice and other surfaces are decimated, or binned onto a grid above
 4 million points. The grid uses at most about 1 GB of memory, so a compact surface
-binned that way can end below a large `max_scene_points`.
+binned that way can end below a large `max_scene_points`. The preview then has fewer
+points and cells than the file, and its shape can differ in fine detail.
+`pvql config set max_scene_points 0` sends every surface whole, at the cost of slower
+previews of large files.
 
 ### Large files
 

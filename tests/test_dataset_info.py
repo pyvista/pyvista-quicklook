@@ -351,6 +351,20 @@ def test_zstd_container_reports_its_compression(tmp_path):
     assert rows['Uncompressed'].endswith(f'{X} ratio)')
 
 
+def test_a_version_3_container_is_described_and_drawn(tmp_path):
+    """A MultiBlock with field data, which pyvista-zstd stamps version 3, still previews."""
+    blocks = pv.MultiBlock({'sphere': pv.Sphere()})
+    blocks.field_data['note'] = np.array([1.0, 2.0])
+    path = tmp_path / 'blocks.pv'
+    pyvista_zstd.write(blocks, path)
+    with pyvista_zstd.Reader(path) as reader:
+        assert reader.file_metadata.file_version == 3
+    out, info = tmp_path / 'blocks.ply', tmp_path / 'blocks.json'
+    export_mod.export(str(path), str(out), 0, str(info))
+    assert pv.read(out).n_points == pv.Sphere().n_points
+    assert dict(json.loads(info.read_text())['file'])['Format'] == 'pyvista-zstd v3'
+
+
 @pytest.mark.parametrize(
     ('save', 'expected'),
     [
@@ -613,6 +627,62 @@ def test_a_pv_header_carries_the_user_dict(tmp_path):
     assert info['array_count'] == 1
 
 
+def nested_blocks():
+    """Return a composite of mixed blocks, an empty one, and a nested level, with a user dict."""
+    inner = pv.MultiBlock({'grid': mixed_arrays(), 'gap': None})
+    sphere = pv.Sphere()
+    sphere.point_data['height'] = sphere.points[:, 2].astype(np.float32)
+    blocks = pv.MultiBlock({'sphere': sphere, 'inner': inner, 'empty': None})
+    blocks.field_data[info_mod.USER_DICT_KEY] = np.array([json.dumps({'run': 3})])
+    return blocks
+
+
+def test_a_pv_composite_header_agrees_with_reading_the_file(tmp_path):
+    """A ``.pv`` composite's metadata gives the blocks, counts, and arrays the values do."""
+    head, full = header_and_full(nested_blocks(), tmp_path, 'blocks.pv')
+    assert head['type'] == full['type'] == 'MultiBlock'
+    assert head['blocks'] == full['blocks']
+    assert head['block_count'] == full['block_count'] == 4
+    assert head['facts'] == [fact for fact in full['facts'] if fact[0] != 'Bounds']
+    assert head['array_count'] == full['array_count']
+    heads, fulls = rows_by_name(head), rows_by_name(full)
+    assert set(heads) == set(fulls)
+    for key, row in heads.items():
+        for field in ('dtype', 'components', 'active', 'blocks'):
+            assert row[field] == fulls[key][field], (key, field)
+    assert head['user_dict'] == full['user_dict'] == ['"run": 3']
+
+
+def test_a_pv_composite_header_reads_no_array_values(tmp_path, monkeypatch):
+    """A ``.pv`` composite is described from its metadata and its user dict alone."""
+    path = tmp_path / 'blocks.pv'
+    pyvista_zstd.write(nested_blocks(), path)
+    user_dict = pyvista_zstd.Reader.read_array
+
+    def refuse(*_args, **_kwargs):
+        message = 'array values were read'
+        raise AssertionError(message)
+
+    def only_the_user_dict(self, name, *, association):
+        assert name == info_mod.USER_DICT_KEY, name
+        return user_dict(self, name, association=association)
+
+    monkeypatch.setattr(pyvista_zstd.Reader, 'read', refuse)
+    monkeypatch.setattr(pyvista_zstd.Reader, 'read_array', only_the_user_dict)
+    monkeypatch.setattr(pyvista_zstd._capi.CoreReader, 'read_arrays', refuse)
+    head = info_mod.header_info(str(path))
+    assert head['block_count'] == 4
+    assert head['user_dict'] == ['"run": 3']
+
+
+def test_a_pv_composite_is_read_whole_rather_than_selectively(tmp_path):
+    """A ``.pv`` composite is read whole, as the selective read takes a single dataset."""
+    path = tmp_path / 'blocks.pv'
+    pyvista_zstd.write(nested_blocks(), path)
+    assert 'blocks' in info_mod.zstd_header(path)
+    assert export_mod.read_selectively(str(path)) is None
+
+
 def test_polydata_headers_count_every_kind_of_cell(tmp_path):
     """Vertices, lines, strips, and polygons all count as cells in a PolyData header."""
     mesh = pv.Sphere() + pv.Line() + pv.PolyData(np.zeros((1, 3)))
@@ -866,13 +936,18 @@ def test_cell_types_of_something_without_cells_are_none():
     assert info_mod.cell_types(pv.PolyData()) is None
 
 
-def test_a_pv_array_without_a_frame_is_left_without_a_range(tmp_path, monkeypatch):
-    """An array the metadata lists but the file does not hold gets no range or user dict."""
+@pytest.mark.parametrize('error', [KeyError, RuntimeError], ids=['unlisted', 'listed-not-stored'])
+def test_a_pv_array_the_reader_cannot_find_is_left_without_a_range(tmp_path, monkeypatch, error):
+    """An array pyvista-zstd cannot read, however it says so, gets no range or user dict."""
     mesh = mixed_arrays()
     mesh.field_data[info_mod.USER_DICT_KEY] = np.array([json.dumps({'a': 1})])
     path = tmp_path / 'grid.pv'
     pyvista_zstd.write(mesh, path)
-    monkeypatch.setattr(info_mod, 'zstd_frame', lambda *args: 'no such frame')
+
+    def missing(self, name, *, association):
+        raise error(name)
+
+    monkeypatch.setattr(pyvista_zstd.Reader, 'read_array', missing)
     header = info_mod.zstd_ranges(path, info_mod.zstd_header(path))
     assert 'user_dict' not in header
     assert all(row['extent'] is None and row['range'] == '' for row in header['rows'])
