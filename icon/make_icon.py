@@ -30,8 +30,8 @@ LOGO = HERE.parent / 'doc' / '_static' / 'logo.png'
 # Space around the docs logo, as a share of the magnifier's larger side.
 LOGO_MARGIN = 0.02
 # The logo's glow: its opacity, and its blur as a share of the canvas.
-GLOW = 0.55
-GLOW_BLUR = 0.02
+GLOW = 0.35
+GLOW_BLUR = 0.008
 # The lettering is kept about as wide as it is drawn.
 LETTERING_WIDTH = 1100
 # Pictures this wide or wider are stored with a 256-colour palette, which keeps the .icns small.
