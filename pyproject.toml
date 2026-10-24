@@ -14,6 +14,13 @@ dev = [
   'pyvista-zstd==0.7.0',
   'pyvista[io,io-override]==0.49.0',
 ]
+docs = [
+  'sphinx-book-theme==1.1.4',
+  'sphinx-copybutton==0.5.2',
+  'sphinx-design==0.7.0',
+  'sphinx-notfound-page==1.1.0',
+  'sphinx==8.2.3',
+]
 
 [project]
 authors = [{ name = 'Erik Bedard' }]
@@ -43,6 +50,7 @@ pvql = 'pyvista_quicklook.cli:main'
 pyvista-quicklook-daemon = 'pyvista_quicklook.cli:main'
 
 [project.urls]
+Documentation = 'https://pyvista.github.io/pyvista-quicklook/'
 Homepage = 'https://github.com/pyvista/pyvista-quicklook'
 
 [tool.coverage.run]

@@ -22,11 +22,11 @@ def test_every_known_format_is_claimed_by_default():
     assert set(formats.FORMATS).isdisjoint(formats.UNCLAIMED)
 
 
-def test_readme_lists_exactly_the_known_formats():
-    """The README's Supported files section names every format and every unclaimed one."""
-    readme = (Path(__file__).parents[1] / 'README.md').read_text()
-    section = readme.split('## Supported files', 1)[1].split('\n## ', 1)[0]
-    listed = set(re.findall(r'`(\.[a-z0-9.]+)`', section))
+def test_docs_list_exactly_the_known_formats():
+    """The docs' Supported files page names every format and every unclaimed one."""
+    page = (Path(__file__).parents[1] / 'doc' / 'formats.rst').read_text()
+    section = page.split('.. formats-start', 1)[1].split('.. formats-end', 1)[0]
+    listed = set(re.findall(r'``(\.[a-z0-9.]+)``', section))
     known = set(formats.FORMATS) | set(formats.UNCLAIMED) | set(formats.VIA_SYSTEM_TYPE)
     assert listed == known | set(formats.NATIVE_TYPES)
 

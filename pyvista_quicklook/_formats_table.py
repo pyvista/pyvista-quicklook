@@ -1,12 +1,11 @@
-"""Build the README's format tables from PyVista's reader tables.
+"""Build the docs' format tables from PyVista's reader tables.
 
 This module is run by the PyVista interpreter, not by ``pvql`` itself:
-``python -m pyvista_quicklook._formats_table README.md`` rewrites the tables in place.
+``python -m pyvista_quicklook._formats_table doc/formats.rst`` rewrites the tables in place.
 """
 
 from __future__ import annotations
 
-from itertools import zip_longest
 from pathlib import Path
 import sys
 from typing import NamedTuple
@@ -22,8 +21,8 @@ from .formats import SYSTEM_TYPES
 from .formats import UNCLAIMED
 from .formats import VIA_SYSTEM_TYPE
 
-START = '## Supported files\n'
-END = 'Claims on an extension that another kind of file owns'
+START = '.. formats-start\n'
+END = '.. formats-end\n'
 
 
 class Row(NamedTuple):
@@ -62,17 +61,12 @@ def rows() -> list[Row]:
 
 
 def section() -> str:
-    """Return the README text between the Supported files heading and the closing note."""
+    """Return the text of the docs page between its start and end markers."""
     claimed = rows()
 
-    def cell(row: Row) -> str:
-        return ', '.join(f'`{ext}`' for ext in row.extensions)
+    def literals(extensions: list[str]) -> str:
+        return ', '.join(f'``{ext}``' for ext in extensions)
 
-    def pair(left: Row, right: Row | None) -> str:
-        tail = f' {right.name} | {cell(right)} |' if right else ' | |'
-        return f'| {left.name} | {cell(left)} |{tail}'
-
-    half = (len(claimed) + 1) // 2
     via: dict[str, list[str]] = {}
     for ext, uti in VIA_SYSTEM_TYPE.items():
         via.setdefault(uti, []).append(ext)
@@ -82,52 +76,52 @@ def section() -> str:
     lines = [
         '',
         f'{len(FORMATS)} extensions are claimed, so pressing space on any of these files opens',
-        'this preview. A file that turns out not to be a mesh, such as a `.dat` holding a table',
-        'of numbers, is shown as plain text instead, the way Quick Look would have shown it.',
+        'this preview. A file that turns out not to be a mesh, such as a ``.dat`` holding a',
+        'table of numbers, is shown as plain text instead, the way Quick Look would have shown',
+        'it.',
         '',
-        '| Format | Extensions | Format | Extensions |',
-        '| --- | --- | --- | --- |',
-        *(pair(left, right) for left, right in zip_longest(claimed[:half], claimed[half:])),
+        '.. list-table::',
+        '   :header-rows: 1',
         '',
-        (
-            f'{len(VIA_SYSTEM_TYPE)} more are claimed through a type macOS declares, since'
-            ' Launch Services sees only'
+        '   * - Format',
+        '     - Extensions',
+        *(
+            line
+            for row in claimed
+            for line in (f'   * - {row.name}', f'     - {literals(row.extensions)}')
         ),
-        'the last suffix of a compressed dataset:',
+        '',
+        f'{len(VIA_SYSTEM_TYPE)} more are claimed through a type macOS declares, since Launch',
+        'Services sees only the last suffix of a compressed dataset:',
         '',
         *(
-            f'- {SYSTEM_TYPES[uti]} (`{uti}`): ' + ', '.join(f'`{e}`' for e in sorted(exts))
+            f'- {SYSTEM_TYPES[uti]} (``{uti}``): {literals(sorted(exts))}'
             for uti, exts in via.items()
         ),
         '',
-        'A folder of DICOM slices is claimed the same way, through `public.folder`.',
+        'A folder of DICOM slices is claimed the same way, through ``public.folder``.',
         '',
-        (
-            f'{len(NATIVE_TYPES)} more have a type and a preview of their own in macOS, which'
-            ' Quick Look prefers;'
-        ),
-        'the `native_formats` setting previews them here (see [Native formats](#native-formats)):',
+        f'{len(NATIVE_TYPES)} more have a type and a preview of their own in macOS, which Quick',
+        'Look prefers; the ``native_formats`` setting previews them here (see',
+        ':ref:`native-formats`):',
         '',
-        *(f'- `{ext}` (`{uti}`)' for ext, uti in sorted(NATIVE_TYPES.items())),
+        *(f'- ``{ext}`` (``{uti}``)' for ext, uti in sorted(NATIVE_TYPES.items())),
         '',
         'PyVista can also read these, which are not claimed:',
         '',
-        *(
-            f'- {reason}: ' + ', '.join(f'`{e}`' for e in sorted(exts))
-            for reason, exts in reasons.items()
-        ),
+        *(f'- {reason}: {literals(sorted(exts))}' for reason, exts in reasons.items()),
         '',
         '',
     ]
     return '\n'.join(lines)
 
 
-def rewrite(readme: Path) -> None:
-    """Replace the tables in a README with freshly generated ones."""
-    text = readme.read_text()
+def rewrite(page: Path) -> None:
+    """Replace the tables in a docs page with freshly generated ones."""
+    text = page.read_text()
     head, rest = text.split(START, 1)
     _, tail = rest.split(END, 1)
-    readme.write_text(head + START + section() + END + tail)
+    page.write_text(head + START + section() + END + tail)
 
 
 if __name__ == '__main__':

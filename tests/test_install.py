@@ -109,10 +109,11 @@ def test_lockfile_excludes_stock_vtk():
     assert 'vtk' not in {package['name'] for package in lock['package']}
 
 
-def test_readme_names_the_installer_python():
-    """Every Python the README names is the one the installer and project use."""
-    readme = (ROOT / 'README.md').read_text()
-    assert set(re.findall(r'Python,? (3\.\d+)', readme)) == {PYTHON_VERSION}
+def test_docs_name_the_installer_python():
+    """Every Python the README and docs name is the one the installer and project use."""
+    pages = [ROOT / 'README.md', *sorted((ROOT / 'doc').glob('*.rst'))]
+    text = '\n'.join(page.read_text() for page in pages)
+    assert set(re.findall(r'Python,? (3\.\d+)', text)) == {PYTHON_VERSION}
     project = tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']
     assert project['requires-python'].split(',')[0] == f'>={PYTHON_VERSION}'
 
@@ -229,7 +230,7 @@ def test_upgrades_from_before_0_7_are_retired_by_python_3_17():
         '- tests/test_install.py: the Finder restart and check tests, script_lines,\n'
         '  run_strict, ask_to_restart_finder, check_finder, and this test\n'
         '- tests/test_cli.py: the finder tests\n'
-        '- README.md: the Finder troubleshooting entry\n'
+        '- doc/troubleshooting.rst: the Finder troubleshooting entry\n'
         '- tests/test_cli.py: test_uninstall_removes_a_bundle_under_the_old_name,\n'
         '  test_uninstall_removes_the_service_under_the_old_label, and\n'
         '  test_service_install_retires_the_agent_of_the_old_label\n'

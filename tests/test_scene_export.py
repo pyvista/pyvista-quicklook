@@ -599,10 +599,10 @@ def readable_extensions() -> set[str]:
     )
 
 
-def test_readme_tables_match_the_readers():
-    """The README's format tables are exactly what PyVista's reader tables generate."""
-    readme = (Path(__file__).parents[1] / 'README.md').read_text()
-    section = readme.split(_formats_table.START, 1)[1].split(_formats_table.END, 1)[0]
+def test_docs_tables_match_the_readers():
+    """The docs' format tables are exactly what PyVista's reader tables generate."""
+    page = (Path(__file__).parents[1] / 'doc' / 'formats.rst').read_text()
+    section = page.split(_formats_table.START, 1)[1].split(_formats_table.END, 1)[0]
     assert section == _formats_table.section()
 
 

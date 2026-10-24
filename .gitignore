@@ -10,3 +10,4 @@ pyvista_quicklook/_version.py
 .idea/
 coverage.xml
 .DS_Store
+doc/_build/

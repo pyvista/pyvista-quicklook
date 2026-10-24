@@ -2,7 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["numpy", "pillow"]
 # ///
-"""Draw AppIcon.icns: a magnifier over the PyVista logo.
+"""Draw AppIcon.icns and the docs logo: a magnifier over the PyVista logo.
 
 From 128 px up the lens holds "PyVista"; below that it holds "Vista" alone, which stays
 legible where the icon is small. Run ``uv run icon/make_icon.py``;
@@ -26,6 +26,7 @@ from PIL import ImageFilter
 
 HERE = Path(__file__).resolve().parent
 PYVISTA = HERE / 'pyvista.png'
+LOGO = HERE.parent / 'doc' / '_static' / 'logo.png'
 # The lettering is kept about as wide as it is drawn.
 LETTERING_WIDTH = 1100
 # Pictures this wide or wider are stored with a 256-colour palette, which keeps the .icns small.
@@ -360,17 +361,22 @@ def draw_icon(design: dict) -> Image.Image:
     return canvas
 
 
+def icon_picture(large: Image.Image, small: Image.Image, size: int) -> Image.Image:
+    """Return the icon at one size, as the .icns stores it."""
+    icon = large if size >= LARGE_FROM else small
+    picture = icon.resize((size, size), Image.LANCZOS)
+    if size >= PALETTE_FROM:
+        picture = picture.quantize(256, method=Image.Quantize.FASTOCTREE)
+    return picture
+
+
 def write_icns(large: Image.Image, small: Image.Image, destination: Path) -> None:
     """Write every size macOS asks for into an .iconset and pack it with iconutil."""
     with tempfile.TemporaryDirectory() as tmp:
         iconset = Path(tmp) / 'AppIcon.iconset'
         iconset.mkdir()
         for name, size in ICONSET:
-            icon = large if size >= LARGE_FROM else small
-            picture = icon.resize((size, size), Image.LANCZOS)
-            if size >= PALETTE_FROM:
-                picture = picture.quantize(256, method=Image.Quantize.FASTOCTREE)
-            picture.save(iconset / name, optimize=True)
+            icon_picture(large, small, size).save(iconset / name, optimize=True)
         subprocess.run(
             ['iconutil', '--convert', 'icns', '--output', str(destination), str(iconset)],
             check=True,
@@ -378,17 +384,20 @@ def write_icns(large: Image.Image, small: Image.Image, destination: Path) -> Non
 
 
 def main() -> None:
-    """Cut the lettering if asked, then write the .icns, beside this script by default."""
+    """Cut the lettering if asked, then write the .icns beside this script and the docs logo."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--logo', type=Path, help='PyVista logo to cut the lettering from')
     parser.add_argument('--output', type=Path, default=HERE / 'AppIcon.icns')
+    parser.add_argument('--png', type=Path, default=LOGO, help='512 px picture for the docs')
     args = parser.parse_args()
     if args.logo:
         cut_lettering(args.logo).save(PYVISTA, optimize=True)
     if shutil.which('iconutil') is None:
         msg = 'iconutil not found; the .icns can only be built on macOS'
         raise SystemExit(msg)
-    write_icns(draw_icon(LARGE), draw_icon(SMALL), args.output)
+    large, small = draw_icon(LARGE), draw_icon(SMALL)
+    write_icns(large, small, args.output)
+    icon_picture(large, small, 512).save(args.png, optimize=True)
 
 
 if __name__ == '__main__':

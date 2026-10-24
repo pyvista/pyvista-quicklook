@@ -6,6 +6,7 @@ uv run pytest tests/          # helper and exporter tests, with coverage
 uvx --python 3.14 pre-commit run --all-files
 ./scripts/build.sh            # compile and sign the app bundle
 ./scripts/install-from-source.sh   # build, install and register the result
+uv run --no-default-groups --group docs sphinx-build -W --keep-going doc doc/_build/html
 ```
 
 Everything runs on one Python, 3.14: the tests, the `pvql` helper in its uv tool
@@ -18,12 +19,19 @@ PyVista, cvista and pyvista-zstd are pinned to one release each, in `pyproject.t
 compares every extension the environment can read with the format table, so a reader
 that PyVista adds, drops, or moves to a package of its own shows up as a failure to
 resolve in `formats.py`.
-The README's format tables are generated from PyVista's reader tables and checked by
-another test:
+The format tables in `doc/formats.rst` are generated from PyVista's reader tables and
+checked by another test:
 
 ```bash
-uv run python -m pyvista_quicklook._formats_table README.md
+uv run python -m pyvista_quicklook._formats_table doc/formats.rst
 ```
+
+## Documentation
+
+The site in `doc/` is built by CI on every pull request and published to
+<https://pyvista.github.io/pyvista-quicklook/> from each release tag. The README stays
+short and links to its pages. `doc/_static/logo.png` is drawn by `icon/make_icon.py`
+alongside the app icon.
 
 ## Names
 
@@ -62,7 +70,8 @@ git push origin v0.9.1
 
 CI does the rest. The `release` job builds the app and creates the GitHub release with
 `PyVistaQuickLook.zip` and `install.sh` attached and generated notes; the `publish` job
-uploads the helper to PyPI. The two are independent, so check both. The version comes
+uploads the helper to PyPI; the `deploy-docs` job publishes the site. They are
+independent, so check each. The version comes
 from the tag through setuptools-scm, and PyPI never reuses one.
 
 A release can also be made from the GitHub web interface, since publishing it creates
