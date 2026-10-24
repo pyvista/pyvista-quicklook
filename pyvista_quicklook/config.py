@@ -329,6 +329,8 @@ def check_theme_name(name: str) -> None:
             text=True,
             check=False,
             timeout=120,
+            # Plain text, as FORCE_COLOR would otherwise colour the error it reports.
+            env={**os.environ, 'PYTHON_COLORS': '0'},
         )
     except OSError, subprocess.TimeoutExpired:
         return
