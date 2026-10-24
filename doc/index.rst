@@ -5,7 +5,7 @@ Press the space bar on a mesh file in the Finder and turn it with the mouse, the
 way macOS already previews ``.ply`` and ``.obj`` models.
 
 .. image:: _static/quicklook.gif
-   :alt: Pressing space on a mesh file in the Finder and turning the preview with the mouse
+   :alt: The Quick Look panel previewing flow.vtu, turned and zoomed with the mouse beside its dataset details
    :align: center
 
 Selecting ``flow.vtu`` and pressing space shows its surface in the Quick Look panel,
@@ -48,15 +48,15 @@ macOS 15 or newer. Nothing else needs to be installed first. Then select a ``.vt
 
    .. grid-item-card:: Pictures in the Finder
       :img-top: _static/finder-thumbnails.png
-      :link: usage
-      :link-type: doc
+      :link: fast-previews
+      :link-type: ref
 
       Files saved with a pyvista-zstd thumbnail show it as their icon.
 
    .. grid-item-card:: Details in the Finder
       :img-top: _static/finder-column.png
-      :link: usage
-      :link-type: doc
+      :link: fast-previews
+      :link-type: ref
 
       The Finder's preview column shows the picture and what the dataset holds.
 

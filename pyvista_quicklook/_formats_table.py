@@ -75,10 +75,10 @@ def section() -> str:
         reasons.setdefault(reason, []).append(ext)
     lines = [
         '',
-        f'{len(FORMATS)} extensions are claimed, so pressing space on any of these files opens',
-        'this preview. A file that turns out not to be a mesh, such as a ``.dat`` holding a',
-        'table of numbers, is shown as plain text instead, the way Quick Look would have shown',
-        'it.',
+        f'{len(FORMATS)} extensions are claimed, so pressing space on any of these files',
+        'opens this preview. A file that turns out not to be a mesh, such as a ``.dat``',
+        'holding a table of numbers, is shown as plain text instead, the way Quick Look would',
+        'have shown it.',
         '',
         '.. list-table::',
         '   :header-rows: 1',

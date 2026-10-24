@@ -9,7 +9,7 @@ way macOS already previews `.ply` and `.obj` models. Over 80 formats PyVista rea
 claimed, each shown coloured by its active scalars with a panel of what the dataset holds
 beside it.
 
-![Pressing space on a mesh file in the Finder and turning the preview](https://raw.githubusercontent.com/pyvista/pyvista-quicklook/main/doc/_static/quicklook.gif)
+![The Quick Look panel previewing flow.vtu, turned and zoomed with the mouse beside its dataset details](https://raw.githubusercontent.com/pyvista/pyvista-quicklook/main/doc/_static/quicklook.gif)
 
 ## Install
 

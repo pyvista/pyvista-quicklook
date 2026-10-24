@@ -71,8 +71,8 @@ git push origin v0.9.1
 CI does the rest. The `release` job builds the app and creates the GitHub release with
 `PyVistaQuickLook.zip` and `install.sh` attached and generated notes; the `publish` job
 uploads the helper to PyPI; the `deploy-docs` job publishes the site. They are
-independent, so check each. The version comes
-from the tag through setuptools-scm, and PyPI never reuses one.
+independent, so check each. The version comes from the tag through setuptools-scm, and
+PyPI never reuses one.
 
 A release can also be made from the GitHub web interface, since publishing it creates
 the tag. Save it as a draft, though: the one-line installer downloads from the latest
