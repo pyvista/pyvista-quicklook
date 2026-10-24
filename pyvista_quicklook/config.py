@@ -7,6 +7,7 @@ import json
 import math
 import os
 from pathlib import Path
+import subprocess
 from typing import Any
 
 from .plist import EXT_BUNDLE_ID
@@ -19,6 +20,8 @@ MIRROR_PATH = (
 )
 CACHE_DIR = Path.home() / 'Library' / 'Caches' / 'PyVistaQuickLook'
 LOG_PATH = APP_SUPPORT / 'pvql.log'
+# Run by the PyVista interpreter to check a theme's name, which pvql cannot import itself.
+THEME_CHECK = 'import sys, pyvista; pyvista.set_plot_theme(sys.argv[1])'
 
 DEFAULTS: dict[str, Any] = {
     'python': None,
@@ -305,12 +308,34 @@ def resolve_pyvista(config: dict[str, Any] | None = None) -> str | None:
 def theme_spec(value: str) -> str:
     """Return a theme's name as given, or the absolute path of a theme saved as JSON."""
     if not (value.lower().endswith('.json') or os.sep in value or value.startswith('~')):
+        check_theme_name(value)
         return value
     path = Path(value).expanduser()
     if not path.is_file():
         message = f'{value} is not a file; theme takes a theme name or a theme saved as JSON.'
         raise SettingError(message)
     return str(path.absolute())
+
+
+def check_theme_name(name: str) -> None:
+    """Refuse a name the PyVista environment has no theme for; without one, accept any name."""
+    interpreter = find_python(load())
+    if interpreter is None:
+        return
+    try:
+        result = subprocess.run(
+            [interpreter, '-c', THEME_CHECK, name],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+    except OSError, subprocess.TimeoutExpired:
+        return
+    if result.returncode:
+        # The last line is PyVista's error, which lists the themes there are.
+        lines = result.stderr.strip().splitlines() or [f'Theme "{name}" could not be loaded.']
+        raise SettingError(lines[-1].partition('Error: ')[2] or lines[-1])
 
 
 def theme_token(config: dict[str, Any]) -> str:
