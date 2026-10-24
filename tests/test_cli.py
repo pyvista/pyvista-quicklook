@@ -382,6 +382,33 @@ def test_config_takes_a_theme_name_or_a_saved_theme(home, tmp_path):
         config.parse('theme', [str(tmp_path / 'missing.json')])
 
 
+def test_config_refuses_a_theme_name_pyvista_does_not_know(home):
+    """With a PyVista environment, a misspelt theme name is refused with the themes there are."""
+    config.put('python', sys.executable)
+    assert config.parse('theme', ['document']) == 'document'
+    with pytest.raises(config.SettingError, match=r'^Theme "documwnt" not found\. Available'):
+        config.parse('theme', ['documwnt'])
+
+
+def test_config_says_a_theme_name_failed_when_pyvista_says_nothing(home, tmp_path):
+    """An interpreter that fails without a word still refuses the name."""
+    silent = tmp_path / 'python'
+    silent.write_text('#!/bin/sh\nexit 1\n')
+    silent.chmod(0o755)
+    config.put('python', str(silent))
+    with pytest.raises(config.SettingError, match='Theme "mine" could not be loaded'):
+        config.parse('theme', ['mine'])
+
+
+def test_config_keeps_a_theme_name_it_cannot_check(home, tmp_path):
+    """An interpreter that cannot be run leaves the name as given."""
+    broken = tmp_path / 'python'
+    broken.write_bytes(b'\x00not a program')
+    broken.chmod(0o755)
+    config.put('python', str(broken))
+    assert config.parse('theme', ['mine']) == 'mine'
+
+
 def test_run_and_succeeds_survive_a_missing_program(tmp_path):
     """A program that cannot be started gives no output and does not succeed."""
     missing = str(tmp_path / 'no-such-program')
