@@ -735,7 +735,7 @@ final class PVQLPreviewViewController: NSViewController, QLPreviewingController 
                 url: url,
                 force: false,
                 carried: EmbeddedThumbnail.picture(url),
-                picturesFirst: self.prefersPicture && !settings.forceInteractive,
+                picturesFirst: self.prefersPicture && !settings.forceInteractive && !settings.themed,
                 settings: settings
             )
             self.load(request, handler: handler)

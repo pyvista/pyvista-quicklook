@@ -86,7 +86,8 @@ A file with a current picture shows it in the Finder as its icon, and opens on i
 without reading the data, with the dataset's details beside it. Clicking, dragging,
 scrolling or pinching the picture loads the turnable surface in its place, on the same
 view, with the picture dimmed until it is ready. Every other file, and a ``.pv`` file
-whose picture is older than its data, goes straight to the turnable surface.
+whose picture is older than its data, goes straight to the turnable surface. So does
+every file while a theme is set, since the picture keeps the theme it was drawn in.
 ``pvql config set force_interactive true`` opens every file that way, and a picture then
 only stands in while the surface loads. Opening a file with the app always shows it in
 3D.
