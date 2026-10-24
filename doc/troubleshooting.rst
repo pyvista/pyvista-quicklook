@@ -24,6 +24,12 @@ The panel says "Extension org.pyvista.PyVistaQuickLook.QuickLook not found"
 A dataset made of several files fails in Desktop, Documents or Downloads
    Those folders are private to each program; see :ref:`protected-folders`.
 
+Files show a blank icon in the Finder
+   The Finder draws a file's icon from the app that opens it. ParaView 6 says it opens
+   ``.vtk``, ``.vtp``, ``.vtu``, ``.vti`` and the other VTK formats, but its bundle lacks the
+   icon it names for them. Select such a file, press ⌘I, choose PyVista Quick Look under
+   Open With, and click Change All.
+
 Previews are stale
    ``pvql cache --clear``.
 
