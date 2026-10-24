@@ -162,6 +162,8 @@ enum Helper {
     struct Settings {
         /// Whether a file opens in 3D rather than on the picture it carries.
         let forceInteractive: Bool
+        /// Whether a theme is set, which a file's picture, drawn when it was saved, does not follow.
+        let themed: Bool
         /// Where the info panel goes, as the settings name it; nil leaves it to the panel.
         let infoPanel: String?
         /// Files above this many bytes are not staged; the service refuses them at the same size.
@@ -172,6 +174,8 @@ enum Helper {
         init(_ configuration: [String: Any]?) {
             // False when unset, as config.py's DEFAULTS has it.
             forceInteractive = configuration?["force_interactive"] as? Bool ?? false
+            // None in config.py's DEFAULTS leaves PyVista's own theme, the one pictures are drawn in.
+            themed = !((configuration?["theme"] as? String) ?? "").isEmpty
             infoPanel = configuration?["info_panel"] as? String
             let megabytes = (configuration?["max_file_size_mb"] as? NSNumber)?.intValue ?? 2048
             maximumFileBytes = megabytes > 0 ? megabytes * 1_000_000 : Int.max
