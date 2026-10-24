@@ -27,6 +27,8 @@ from PIL import ImageFilter
 HERE = Path(__file__).resolve().parent
 PYVISTA = HERE / 'pyvista.png'
 LOGO = HERE.parent / 'doc' / '_static' / 'logo.png'
+# Space around the docs logo, as a share of the magnifier's larger side.
+LOGO_MARGIN = 0.02
 # The lettering is kept about as wide as it is drawn.
 LETTERING_WIDTH = 1100
 # Pictures this wide or wider are stored with a 256-colour palette, which keeps the .icns small.
@@ -308,9 +310,9 @@ def reflections(canvas: Image.Image, centre, radius: float) -> None:
     canvas.alpha_composite(white(ImageChops.multiply(bounce, lens)))
 
 
-def draw_icon(design: dict) -> Image.Image:
-    """Return the icon at S x S."""
-    canvas, mask = tile()
+def draw_icon(design: dict, *, tiled: bool = True) -> Image.Image:
+    """Return the icon at S x S, on its rounded square or, untiled, the magnifier alone."""
+    canvas, mask = tile() if tiled else (Image.new('RGBA', (S, S), (0, 0, 0, 0)), None)
     content = canvas.copy()
     centre = (S * design['centre'][0], S * design['centre'][1])
     radius = S * design['radius']
@@ -353,6 +355,8 @@ def draw_icon(design: dict) -> Image.Image:
     content.alpha_composite(magnify(letters, centre, radius, design['zoom'], design['flat']))
     reflections(content, centre, radius)
     rim(content, centre, radius - 1, width)
+    if mask is None:
+        return content
 
     # Everything stays inside the rounded square; the square keeps its own shadow.
     clipped = Image.new('RGBA', (S, S), (0, 0, 0, 0))
@@ -368,6 +372,15 @@ def icon_picture(large: Image.Image, small: Image.Image, size: int) -> Image.Ima
     if size >= PALETTE_FROM:
         picture = picture.quantize(256, method=Image.Quantize.FASTOCTREE)
     return picture
+
+
+def logo_picture(magnifier: Image.Image, size: int = 512) -> Image.Image:
+    """Return the untiled magnifier cropped to itself and centred in a square of the given size."""
+    content = magnifier.crop(magnifier.getbbox())
+    side = round(max(content.size) * (1 + 2 * LOGO_MARGIN))
+    square = Image.new('RGBA', (side, side), (0, 0, 0, 0))
+    square.alpha_composite(content, ((side - content.width) // 2, (side - content.height) // 2))
+    return square.resize((size, size), Image.LANCZOS)
 
 
 def write_icns(large: Image.Image, small: Image.Image, destination: Path) -> None:
@@ -388,7 +401,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--logo', type=Path, help='PyVista logo to cut the lettering from')
     parser.add_argument('--output', type=Path, default=HERE / 'AppIcon.icns')
-    parser.add_argument('--png', type=Path, default=LOGO, help='512 px picture for the docs')
+    parser.add_argument('--png', type=Path, default=LOGO, help='512 px logo for the docs')
     args = parser.parse_args()
     if args.logo:
         cut_lettering(args.logo).save(PYVISTA, optimize=True)
@@ -397,7 +410,7 @@ def main() -> None:
         raise SystemExit(msg)
     large, small = draw_icon(LARGE), draw_icon(SMALL)
     write_icns(large, small, args.output)
-    icon_picture(large, small, 512).save(args.png, optimize=True)
+    logo_picture(draw_icon(LARGE, tiled=False)).save(args.png, optimize=True)
 
 
 if __name__ == '__main__':
