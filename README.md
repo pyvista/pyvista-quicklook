@@ -5,7 +5,7 @@
 # PyVista Quick Look
 
 Press the space bar on a mesh file in the Finder and turn it with the mouse, the same
-way macOS already previews `.ply` and `.usdz` models. Over 80 formats PyVista reads are
+way macOS already previews `.ply` and `.obj` models. Over 80 formats PyVista reads are
 claimed, each shown coloured by its active scalars with a panel of what the dataset holds
 beside it.
 

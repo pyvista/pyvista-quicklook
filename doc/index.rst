@@ -2,7 +2,7 @@ PyVista Quick Look
 ==================
 
 Press the space bar on a mesh file in the Finder and turn it with the mouse, the same
-way macOS already previews ``.ply`` and ``.usdz`` models.
+way macOS already previews ``.ply`` and ``.obj`` models.
 
 .. image:: _static/quicklook.gif
    :alt: Pressing space on a mesh file in the Finder and turning the preview with the mouse
