@@ -4,9 +4,11 @@ Using the preview
 Select a claimed file in the Finder and press space. The preview shows the surface
 coloured by the active scalars, with the dataset panel beside it.
 
-.. image:: _static/preview-panel.png
+.. figure:: _static/preview-panel.png
    :alt: A Quick Look preview of an unstructured grid with the dataset panel beside it
    :align: center
+
+   ``flow.vtu`` in the ``paraview`` theme, coloured by its displacement.
 
 Turning the surface
 -------------------
@@ -74,6 +76,11 @@ the mesh or rendering it.
 .. image:: _static/finder-thumbnails.png
    :alt: Finder icon view of .pv files, each showing its embedded picture as its icon
    :align: center
+
+.. image:: _static/finder-column.png
+   :alt: Finder column view of a .pv file, with its picture and point and cell counts
+   :align: center
+   :width: 60%
 
 A file with a current picture shows it in the Finder as its icon, and opens on it
 without reading the data, with the dataset's details beside it. Clicking, dragging,

@@ -45,9 +45,11 @@ Or save your own from PyVista and name the file:
 Editing the file redraws previews on the next look. Without a theme, previews look like
 PyVista's own plots.
 
-.. image:: _static/preview-document-theme.png
-   :alt: A preview drawn in PyVista's document theme
+.. figure:: _static/preview-panel.png
+   :alt: A preview drawn in PyVista's paraview theme
    :align: center
+
+   A preview with ``pvql config set theme paraview``.
 
 Every setting
 -------------

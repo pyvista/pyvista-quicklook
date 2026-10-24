@@ -36,7 +36,8 @@ macOS 15 or newer. Nothing else needs to be installed first. Then select a ``.vt
       :link: usage
       :link-type: doc
 
-      Type, points, cells, arrays and bounds, beside or below the preview.
+      Type, points, cells, arrays and bounds, beside or below the preview, in your
+      PyVista theme.
 
    .. grid-item-card:: Volumes as slices
       :img-top: _static/preview-volume.png
@@ -52,12 +53,12 @@ macOS 15 or newer. Nothing else needs to be installed first. Then select a ``.vt
 
       Files saved with a pyvista-zstd thumbnail show it as their icon.
 
-   .. grid-item-card:: Your PyVista theme
-      :img-top: _static/preview-document-theme.png
-      :link: settings
+   .. grid-item-card:: Details in the Finder
+      :img-top: _static/finder-column.png
+      :link: usage
       :link-type: doc
 
-      Colours, colormap, shading and lighting follow a PyVista theme.
+      The Finder's preview column shows the picture and what the dataset holds.
 
 .. toctree::
    :maxdepth: 2
