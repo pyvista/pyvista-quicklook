@@ -29,6 +29,9 @@ PYVISTA = HERE / 'pyvista.png'
 LOGO = HERE.parent / 'doc' / '_static' / 'logo.png'
 # Space around the docs logo, as a share of the magnifier's larger side.
 LOGO_MARGIN = 0.02
+# The logo's glow: its opacity, and its blur as a share of the canvas.
+GLOW = 0.55
+GLOW_BLUR = 0.02
 # The lettering is kept about as wide as it is drawn.
 LETTERING_WIDTH = 1100
 # Pictures this wide or wider are stored with a 256-colour palette, which keeps the .icns small.
@@ -192,7 +195,7 @@ def rim(canvas: Image.Image, centre, radius: float, width: float) -> None:
     canvas.alpha_composite(Image.fromarray(rgba, 'RGBA'), (x0, y0))
 
 
-def handle(canvas: Image.Image, start, angle_deg: float, segments) -> None:
+def handle(canvas: Image.Image, start, angle_deg: float, segments, *, shadow: bool = True) -> None:
     """Draw the handle as cylinders end to end; segments are (length, width, material)."""
     a = math.radians(angle_deg)
     d = np.array([math.cos(a), math.sin(a)])
@@ -235,9 +238,10 @@ def handle(canvas: Image.Image, start, angle_deg: float, segments) -> None:
     rgba = np.dstack([out[..., :3], out[..., 3] * 255]).clip(0, 255).astype(np.uint8)
     layer = Image.new('RGBA', (S, S), (0, 0, 0, 0))
     layer.alpha_composite(Image.fromarray(rgba, 'RGBA'), (x0, y0))
-    canvas.alpha_composite(
-        soft_shadow(layer.getchannel('A'), S * 0.012, S * 0.018, S * 0.012, 0.4)
-    )
+    if shadow:
+        canvas.alpha_composite(
+            soft_shadow(layer.getchannel('A'), S * 0.012, S * 0.018, S * 0.012, 0.4)
+        )
     canvas.alpha_composite(layer)
 
 
@@ -310,6 +314,16 @@ def reflections(canvas: Image.Image, centre, radius: float) -> None:
     canvas.alpha_composite(white(ImageChops.multiply(bounce, lens)))
 
 
+def glow(picture: Image.Image) -> Image.Image:
+    """Return the picture over a soft white glow, which sets it apart from a dark page."""
+    alpha = picture.getchannel('A').filter(ImageFilter.MaxFilter(9))
+    halo = white(
+        alpha.filter(ImageFilter.GaussianBlur(S * GLOW_BLUR)).point(lambda v: int(v * GLOW))
+    )
+    halo.alpha_composite(picture)
+    return halo
+
+
 def draw_icon(design: dict, *, tiled: bool = True) -> Image.Image:
     """Return the icon at S x S, on its rounded square or, untiled, the magnifier alone."""
     canvas, mask = tile() if tiled else (Image.new('RGBA', (S, S), (0, 0, 0, 0)), None)
@@ -329,8 +343,9 @@ def draw_icon(design: dict, *, tiled: bool = True) -> Image.Image:
         (int(centre[0] - lw / 2), int(centre[1] - lh / 2)),
     )
 
-    lens_shadow = circle_mask((centre[0] + S * 0.012, centre[1] + S * 0.02), radius + width)
-    content.alpha_composite(soft_shadow(lens_shadow, 0, 0, S * 0.02, 0.45))
+    if tiled:
+        lens_shadow = circle_mask((centre[0] + S * 0.012, centre[1] + S * 0.02), radius + width)
+        content.alpha_composite(soft_shadow(lens_shadow, 0, 0, S * 0.02, 0.45))
     a = math.radians(HANDLE_ANGLE)
     reach = radius + width * 0.6
     start = (centre[0] + reach * math.cos(a), centre[1] + reach * math.sin(a))
@@ -339,6 +354,7 @@ def draw_icon(design: dict, *, tiled: bool = True) -> Image.Image:
         start,
         HANDLE_ANGLE,
         [(S * 0.03, S * 0.045, 'gloss'), (S * design['grip'], S * 0.075, 'satin')],
+        shadow=tiled,
     )
 
     glass = radial_gradient(
@@ -356,7 +372,7 @@ def draw_icon(design: dict, *, tiled: bool = True) -> Image.Image:
     reflections(content, centre, radius)
     rim(content, centre, radius - 1, width)
     if mask is None:
-        return content
+        return glow(content)
 
     # Everything stays inside the rounded square; the square keeps its own shadow.
     clipped = Image.new('RGBA', (S, S), (0, 0, 0, 0))
